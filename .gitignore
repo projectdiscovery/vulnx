@@ -23,4 +23,5 @@ go.work
 /cmd/vulnx/vulnx
 /dist
 /cmd/integration-test/vulnx
-/cmd/integration-test/integration-test
+cmd/integration-test/integration-test
+/cmd/vulnx/vulnx
