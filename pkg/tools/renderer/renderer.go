@@ -1,6 +1,8 @@
 package renderer
 
 import (
+	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -10,6 +12,52 @@ import (
 // Render generates formatted output for vulnerability entries using the provided layout
 func Render(entries []*Entry, layout []LayoutLine, totalResults, shownResults int) string {
 	return RenderWithColors(entries, layout, totalResults, shownResults, DefaultColorConfig())
+}
+
+// RenderCSV generates a CSV representation of vulnerability entries.
+// Columns: id, severity, cvss_score, epss_score, is_kev, is_template, poc_count,
+// hackerone, is_patch_available, age_in_days, vendors, products, tags, title
+func RenderCSV(entries []*Entry) ([]byte, error) {
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+
+	header := []string{
+		"id", "severity", "cvss_score", "epss_score",
+		"is_kev", "is_template", "poc_count", "hackerone",
+		"is_patch_available", "age_in_days", "vendors", "products", "tags", "title",
+	}
+	if err := w.Write(header); err != nil {
+		return nil, err
+	}
+
+	for _, e := range entries {
+		vendors := extractDistinctVendors(e.AffectedProducts)
+		products := extractDistinctProducts(e.AffectedProducts)
+		hackerone := e.H1 != nil && e.H1.Reports > 0
+
+		row := []string{
+			e.DocID,
+			e.Severity,
+			strconv.FormatFloat(e.CvssScore, 'f', -1, 64),
+			strconv.FormatFloat(e.EpssScore, 'f', -1, 64),
+			strconv.FormatBool(e.IsKev),
+			strconv.FormatBool(e.IsTemplate),
+			strconv.Itoa(e.PocCount),
+			strconv.FormatBool(hackerone),
+			strconv.FormatBool(e.IsPatchAvailable),
+			strconv.Itoa(e.AgeInDays),
+			strings.Join(vendors, ";"),
+			strings.Join(products, ";"),
+			strings.Join(e.Tags, ";"),
+			e.Name,
+		}
+		if err := w.Write(row); err != nil {
+			return nil, err
+		}
+	}
+
+	w.Flush()
+	return buf.Bytes(), w.Error()
 }
 
 // RenderDetailed generates detailed formatted output for a single vulnerability
