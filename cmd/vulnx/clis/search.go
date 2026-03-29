@@ -243,6 +243,39 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 				return
 			}
 
+			// Handle CSV output
+			if csvFile != "" {
+				csvEntries := make([]*renderer.Entry, 0, len(resp.Results))
+				for _, vuln := range resp.Results {
+					entry := renderer.FromVulnerability(&vuln)
+					if entry != nil {
+						csvEntries = append(csvEntries, entry)
+					}
+				}
+				csvBytes, err := renderer.RenderCSV(csvEntries)
+				if err != nil {
+					gologger.Fatal().Msgf("Failed to render CSV: %s", err)
+				}
+				// Check if file exists
+				if _, err := os.Stat(csvFile); err == nil {
+					gologger.Fatal().Msgf("Output file already exists: %s", csvFile)
+				}
+				f, err := os.OpenFile(csvFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+				if err != nil {
+					gologger.Fatal().Msgf("Failed to create output file: %s", err)
+				}
+				defer func() {
+					if err := f.Close(); err != nil {
+						gologger.Error().Msgf("Failed to close output file: %s", err)
+					}
+				}()
+				if _, err := f.Write(csvBytes); err != nil {
+					gologger.Fatal().Msgf("Failed to write to output file: %s", err)
+				}
+				gologger.Info().Msgf("Wrote output to file: %s", csvFile)
+				return
+			}
+
 			// Default CLI renderer format
 			layout, err := renderer.ParseLayout([]byte(defaultLayoutJSON))
 			if err != nil {
@@ -587,6 +620,13 @@ func validateSearchInputs() error {
 	if outputFile != "" {
 		if !strings.HasSuffix(outputFile, ".json") {
 			return fmt.Errorf("output file must have .json extension")
+		}
+	}
+
+	// Validate csv output file path if specified
+	if csvFile != "" {
+		if !strings.HasSuffix(csvFile, ".csv") {
+			return fmt.Errorf("csv output file must have .csv extension")
 		}
 	}
 
