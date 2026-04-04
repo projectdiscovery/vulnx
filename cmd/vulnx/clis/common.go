@@ -505,6 +505,32 @@ func removeDuplicateStrings(ids []string) []string {
 	return result
 }
 
+// csvRequiredFields are the API field names needed to populate every CSV column.
+var csvRequiredFields = []string{
+	"doc_id", "name", "severity", "cvss_score", "epss_score",
+	"is_kev", "is_template", "poc_count", "h1",
+	"is_patch_available", "age_in_days", "affected_products", "tags",
+}
+
+// mergeFields returns base with any elements from extra appended that are not already present.
+func mergeFields(base, extra []string) []string {
+	if len(base) == 0 {
+		return base // no field restriction at all — API returns everything
+	}
+	seen := make(map[string]bool, len(base))
+	for _, f := range base {
+		seen[f] = true
+	}
+	result := make([]string, len(base))
+	copy(result, base)
+	for _, f := range extra {
+		if !seen[f] {
+			result = append(result, f)
+		}
+	}
+	return result
+}
+
 // validateOutputFlags enforces mutual exclusivity and extension rules for the
 // three output-mode flags (--json, --output, --csv). Called from PersistentPreRunE
 // so it applies uniformly to every subcommand, including the stdin auto-detect path.

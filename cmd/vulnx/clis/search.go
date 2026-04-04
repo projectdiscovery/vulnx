@@ -153,6 +153,11 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 			if len(searchFields) > 0 {
 				params.Fields = searchFields
 			}
+			// When writing CSV, ensure all columns the exporter needs are present
+			// even if the user narrowed the response via --fields.
+			if csvFile != "" {
+				params.Fields = mergeFields(params.Fields, csvRequiredFields)
+			}
 			if len(searchTermFacets) > 0 {
 				params.TermFacets = searchTermFacets
 				for i, facet := range params.TermFacets {
