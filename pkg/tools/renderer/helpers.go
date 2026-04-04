@@ -65,6 +65,32 @@ func truncateProductName(productName string, maxLength int) string {
 	return productName[:maxLength-3] + "..."
 }
 
+// distinctVendors returns untruncated distinct vendor names, suitable for data-export formats.
+func distinctVendors(products []*vulnx.ProductInfo) []string {
+	seen := make(map[string]bool)
+	var vendors []string
+	for _, p := range products {
+		if p != nil && p.Vendor != "" && !seen[p.Vendor] {
+			seen[p.Vendor] = true
+			vendors = append(vendors, p.Vendor)
+		}
+	}
+	return vendors
+}
+
+// distinctProducts returns untruncated distinct product names, suitable for data-export formats.
+func distinctProducts(products []*vulnx.ProductInfo) []string {
+	seen := make(map[string]bool)
+	var names []string
+	for _, p := range products {
+		if p != nil && p.Product != "" && !seen[p.Product] {
+			seen[p.Product] = true
+			names = append(names, p.Product)
+		}
+	}
+	return names
+}
+
 // extractDistinctVendors extracts distinct vendors from a slice of ProductInfo
 func extractDistinctVendors(products []*vulnx.ProductInfo) []string {
 	seen := make(map[string]bool)
