@@ -159,7 +159,7 @@ func WithClient(hc *retryablehttp.Client) Option {
 }
 
 // WithPDCPKey sets the ProjectDiscovery Cloud Platform (PDCP) API key that will
-// be sent in the `X-PDCP-Key` HTTP header.
+// be sent in the `X-Api-Key` HTTP header.
 func WithPDCPKey(apiKey string) Option {
 	return func(c *Client) {
 		c.apiKey = apiKey
@@ -301,7 +301,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	}
 	// Only set API key header if one is provided
 	if c.apiKey != "" {
-		req.Header.Set("X-PDCP-Key", c.apiKey)
+		req.Header.Set("X-Api-Key", c.apiKey)
 	}
 	req.Header.Set("User-Agent", c.userAgent)
 	return req, nil
