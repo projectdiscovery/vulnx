@@ -5,12 +5,10 @@ go 1.24.0
 toolchain go1.24.4
 
 require (
-	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/jedib0t/go-pretty/v6 v6.7.8
 	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/pkg/errors v0.9.1
-	github.com/projectdiscovery/goflags v0.1.74
 	github.com/projectdiscovery/gologger v1.1.54
 	github.com/projectdiscovery/retryablehttp-go v1.0.101
 	github.com/projectdiscovery/utils v0.4.17
@@ -43,7 +41,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.3.2 // indirect
 	github.com/cheggaaa/pb/v3 v3.1.5 // indirect
 	github.com/cloudflare/circl v1.6.1 // indirect
-	github.com/cnf/structhash v0.0.0-20201127153200-e1b16c1ebc08 // indirect
 	github.com/dimchansky/utfbom v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
@@ -54,7 +51,6 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/go-github/v30 v30.1.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect

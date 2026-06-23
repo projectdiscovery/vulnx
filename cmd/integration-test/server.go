@@ -26,10 +26,6 @@ func SetupMockServer() {
 	// Setup HTTP server with mux for path-based routing
 	mux := http.NewServeMux()
 
-	// Legacy v1 endpoint
-	mux.HandleFunc("/api/v1/cves", RequireAPIKey(handleLegacyRequest))
-
-	// New v2 endpoints
 	mux.HandleFunc("/v2/vulnerability/search", RequireAPIKey(handleSearchRequest))
 	mux.HandleFunc("/v2/vulnerability/", RequireAPIKey(handleGetByIDRequest))
 
@@ -42,36 +38,16 @@ func SetupMockServer() {
 	}()
 }
 
-// RequireAPIKey is a middleware that checks for the X-PDCP-Key header.
+// RequireAPIKey is a middleware that checks for the X-Api-Key header.
 func RequireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		apiKey := r.Header.Get("X-PDCP-Key")
+		apiKey := r.Header.Get("X-Api-Key")
 		if apiKey != xPDCPHeaderTestKey {
-			http.Error(w, "Unauthorized: X-PDCP-Key header is required", http.StatusUnauthorized)
+			http.Error(w, "Unauthorized: X-Api-Key header is required", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
-}
-
-// handleLegacyRequest handles the legacy /api/v1/cves endpoint
-func handleLegacyRequest(w http.ResponseWriter, r *http.Request) {
-	// Handle the case where "cve_id" is a query parameter
-	cveID := r.URL.Query().Get("cve_id")
-	if cveID == "" {
-		http.NotFound(w, r)
-		return
-	}
-	for _, data := range cveData.Cves {
-		if data.CveID == cveID {
-			// Return the data corresponding to the given CVE ID
-			if err := json.NewEncoder(w).Encode(cveData); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
-	}
-	http.NotFound(w, r)
 }
 
 // handleGetByIDRequest handles GET /v2/vulnerability/{id} endpoint

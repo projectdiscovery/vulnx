@@ -138,7 +138,3 @@ type OutputShodanData struct {
 type ErrorMessage struct {
 	Message string `json:"message"`
 }
-
-type CVEIdList struct {
-	Cves []string `json:"cves"`
-}
