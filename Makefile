@@ -8,7 +8,10 @@ GOFLAGS := -v
 LDFLAGS := -s -w
 
 # Version from source; override with: make build VERSION=v2.0.3
-VERSION ?= $(shell grep '^\s*Version = ' cmd/vulnx/clis/version.go | sed -E 's/.*"([^"]+)".*/\1/')
+VERSION ?= $(shell awk -F'"' '/Version = /{print $$2; exit}' cmd/vulnx/clis/version.go)
+ifeq ($(VERSION),)
+VERSION := dev
+endif
 VERSION_LDFLAG := -X github.com/projectdiscovery/vulnx/v2/cmd/vulnx/clis.Version=$(VERSION)
 
 ifneq ($(shell go env GOOS),darwin)
