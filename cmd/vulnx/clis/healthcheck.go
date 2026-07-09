@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/filters"
-	"github.com/projectdiscovery/gologger"
 	"github.com/spf13/cobra"
 )
 

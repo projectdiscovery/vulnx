@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"

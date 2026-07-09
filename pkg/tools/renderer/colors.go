@@ -211,12 +211,14 @@ func (c *ColorConfig) ColorBoolean(checkmark string) string {
 		return checkmark
 	}
 
-	if checkmark == "✔" {
+	switch checkmark {
+	case "✔":
 		return c.Colorize(checkmark, c.Success)
-	} else if checkmark == "✘" {
+	case "✘":
 		return c.Colorize(checkmark, c.Error)
+	default:
+		return checkmark
 	}
-	return checkmark
 }
 
 // ColorExposure colors exposure values with appropriate colors

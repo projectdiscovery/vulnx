@@ -8,8 +8,8 @@ import (
 
 	"github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
-	"github.com/projectdiscovery/vulnx/v2/pkg/testutils"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/vulnx/v2/pkg/testutils"
 )
 
 var (

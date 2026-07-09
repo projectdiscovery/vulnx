@@ -6,9 +6,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/projectdiscovery/vulnx/v2/pkg/tools/filters"
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/utils/auth/pdcp"
+	"github.com/projectdiscovery/vulnx/v2/pkg/tools/filters"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -66,14 +66,8 @@ func runAuthCommand() {
 
 		// Temporarily set the API key in environment for validation
 		originalEnvKey := os.Getenv("PDCP_API_KEY")
-		os.Setenv("PDCP_API_KEY", nonInteractiveAPIKey)
-		defer func() {
-			if originalEnvKey != "" {
-				os.Setenv("PDCP_API_KEY", originalEnvKey)
-			} else {
-				os.Unsetenv("PDCP_API_KEY")
-			}
-		}()
+		setPDCPAPIKeyEnv(nonInteractiveAPIKey)
+		defer restorePDCPAPIKeyEnv(originalEnvKey)
 
 		// Validate the API key with the server
 		if !validateCurrentAPIKey(nonInteractiveAPIKey, "provided API key") {
@@ -272,14 +266,8 @@ func runAuthCommand() {
 
 	// Temporarily set the API key in environment for validation
 	originalEnvKey := os.Getenv("PDCP_API_KEY")
-	os.Setenv("PDCP_API_KEY", apiKey)
-	defer func() {
-		if originalEnvKey != "" {
-			os.Setenv("PDCP_API_KEY", originalEnvKey)
-		} else {
-			os.Unsetenv("PDCP_API_KEY")
-		}
-	}()
+	setPDCPAPIKeyEnv(apiKey)
+	defer restorePDCPAPIKeyEnv(originalEnvKey)
 
 	// Initialize the vulnx client to test the API key
 	err = ensureVulnxClientInitialized(nil)
@@ -326,8 +314,8 @@ func validateCurrentAPIKey(apiKey, source string) bool {
 	// Temporarily set the API key in environment if it's not already set
 	originalEnvKey := os.Getenv("PDCP_API_KEY")
 	if originalEnvKey == "" {
-		os.Setenv("PDCP_API_KEY", apiKey)
-		defer os.Unsetenv("PDCP_API_KEY")
+		setPDCPAPIKeyEnv(apiKey)
+		defer restorePDCPAPIKeyEnv("")
 	}
 
 	// Initialize the vulnx client (same method as healthcheck)
@@ -352,6 +340,24 @@ func validateCurrentAPIKey(apiKey, source string) bool {
 	}
 
 	return true
+}
+
+func setPDCPAPIKeyEnv(key string) {
+	if err := os.Setenv("PDCP_API_KEY", key); err != nil {
+		gologger.Warning().Msgf("Failed to set PDCP_API_KEY: %s", err)
+	}
+}
+
+func restorePDCPAPIKeyEnv(original string) {
+	var err error
+	if original != "" {
+		err = os.Setenv("PDCP_API_KEY", original)
+	} else {
+		err = os.Unsetenv("PDCP_API_KEY")
+	}
+	if err != nil {
+		gologger.Warning().Msgf("Failed to restore PDCP_API_KEY: %s", err)
+	}
 }
 
 func init() {

@@ -13,29 +13,29 @@ type LayoutLine struct {
 
 // Entry represents a vulnerability entry with all fields needed for rendering
 type Entry struct {
-	DocID            string                `json:"doc_id"`
-	Name             string                `json:"name"`
-	Severity         string                `json:"severity"`
-	Author           []string              `json:"author"`
-	AgeInDays        int                   `json:"age_in_days"`
-	EpssScore        float64               `json:"epss_score"`
-	CvssScore        float64               `json:"cvss_score"`
+	DocID            string               `json:"doc_id"`
+	Name             string               `json:"name"`
+	Severity         string               `json:"severity"`
+	Author           []string             `json:"author"`
+	AgeInDays        int                  `json:"age_in_days"`
+	EpssScore        float64              `json:"epss_score"`
+	CvssScore        float64              `json:"cvss_score"`
 	Exposure         *vulnx.VulnExposure  `json:"exposure"`
 	AffectedProducts []*vulnx.ProductInfo `json:"affected_products"`
-	IsPatchAvailable bool                  `json:"is_patch_available"`
-	PocCount         int                   `json:"poc_count"`
-	IsKev            bool                  `json:"is_kev"`
+	IsPatchAvailable bool                 `json:"is_patch_available"`
+	PocCount         int                  `json:"poc_count"`
+	IsKev            bool                 `json:"is_kev"`
 	Kev              []*vulnx.KevInfo     `json:"kev"`
-	IsTemplate       bool                  `json:"is_template"`
+	IsTemplate       bool                 `json:"is_template"`
 	H1               *vulnx.H1Stats       `json:"h1"`
-	Tags             []string              `json:"tags"`
+	Tags             []string             `json:"tags"`
 	Pocs             []*vulnx.POC         `json:"pocs"`
 	Citations        []*vulnx.Citation    `json:"citations"`
-	Description      string                `json:"description"`
-	Impact           string                `json:"impact"`
-	Remediation      string                `json:"remediation"`
-	TemplateURI      string                `json:"template_uri"`
-	TemplateRaw      string                `json:"template_raw"`
+	Description      string               `json:"description"`
+	Impact           string               `json:"impact"`
+	Remediation      string               `json:"remediation"`
+	TemplateURI      string               `json:"template_uri"`
+	TemplateRaw      string               `json:"template_raw"`
 }
 
 // FromVulnerability converts a vulnx.Vulnerability to an Entry

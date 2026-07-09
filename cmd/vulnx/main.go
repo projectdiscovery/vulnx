@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/projectdiscovery/vulnx/v2/cmd/vulnx/clis"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/vulnx/v2/cmd/vulnx/clis"
 )
 
 func main() {

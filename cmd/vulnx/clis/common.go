@@ -20,18 +20,18 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/gologger/levels"
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
+	"github.com/projectdiscovery/vulnx/v2"
 
 	"github.com/mark3labs/mcp-go/server"
+	fileutil "github.com/projectdiscovery/utils/file"
+	updateutils "github.com/projectdiscovery/utils/update"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/analyze"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/id"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
-	fileutil "github.com/projectdiscovery/utils/file"
-	updateutils "github.com/projectdiscovery/utils/update"
 )
 
 //go:embed banner.txt
@@ -127,7 +127,7 @@ var (
 			}
 			s := server.NewMCPServer(
 				"ProjectDiscovery vulnerability.sh (vulnx)",
-				"1.0.0",
+				strings.TrimPrefix(Version, "v"),
 				server.WithToolCapabilities(false),
 				server.WithRecovery(),
 			)

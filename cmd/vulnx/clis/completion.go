@@ -264,7 +264,7 @@ func installBashCompletion(userOnly bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create completion file: %w", err)
 	}
-	defer file.Close()
+	defer closeCompletionFile(file)
 
 	// Generate completion script
 	if err := generateBashCompletionRobust(file); err != nil {
@@ -333,7 +333,7 @@ func installZshCompletion(userOnly bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create completion file: %w", err)
 	}
-	defer file.Close()
+	defer closeCompletionFile(file)
 
 	// Generate completion script
 	if err := rootCmd.GenZshCompletion(file); err != nil {
@@ -401,7 +401,7 @@ func installFishCompletion(userOnly bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create completion file: %w", err)
 	}
-	defer file.Close()
+	defer closeCompletionFile(file)
 
 	// Generate completion script
 	if err := rootCmd.GenFishCompletion(file, true); err != nil {
@@ -441,8 +441,8 @@ func installPowerShellCompletion(userOnly bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
+	defer removeTempFile(tempFile.Name())
+	defer closeCompletionFile(tempFile)
 
 	if err := rootCmd.GenPowerShellCompletion(tempFile); err != nil {
 		return fmt.Errorf("failed to generate PowerShell completion: %w", err)
@@ -473,7 +473,7 @@ func installPowerShellCompletion(userOnly bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to open profile file: %w", err)
 	}
-	defer file.Close()
+	defer closeCompletionFile(file)
 
 	if _, err := file.WriteString("\n# vulnx completion\n"); err != nil {
 		return fmt.Errorf("failed to write completion header: %w", err)
@@ -504,6 +504,18 @@ func confirmOverwrite(path string) bool {
 
 func isWindows() bool {
 	return os.PathSeparator == '\\'
+}
+
+func closeCompletionFile(file *os.File) {
+	if err := file.Close(); err != nil {
+		gologger.Warning().Msgf("Failed to close completion file: %s", err)
+	}
+}
+
+func removeTempFile(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		gologger.Warning().Msgf("Failed to remove temp file: %s", err)
+	}
 }
 
 func init() {

@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/jedib0t/go-pretty/v6/table"

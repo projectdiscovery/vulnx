@@ -8,7 +8,7 @@ import (
 
 var (
 	// Version can be set via ldflags during build
-	Version = "v1.0.0"
+	Version = "v2.0.2"
 
 	disableUpdateCheck bool
 
@@ -41,15 +41,15 @@ vulnx version --disable-update-check
 )
 
 func showVersion() {
-	gologger.Info().Msgf("Current vulnx version %s", Version)
-
 	if disableUpdateCheck {
+		gologger.Info().Msgf("Current vulnx version %s", Version)
 		return
 	}
 
 	// Check for latest version using PDTM API
 	latestVersion, err := updateutils.GetToolVersionCallback("vulnx", Version)()
 	if err != nil {
+		gologger.Info().Msgf("Current vulnx version %s", Version)
 		if verbose || debug {
 			gologger.Error().Msgf("vulnx version check failed: %v", err.Error())
 		}
