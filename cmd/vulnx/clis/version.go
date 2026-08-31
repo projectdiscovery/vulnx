@@ -1,6 +1,8 @@
 package clis
 
 import (
+	"strings"
+
 	"github.com/projectdiscovery/gologger"
 	updateutils "github.com/projectdiscovery/utils/update"
 	"github.com/spf13/cobra"
@@ -62,7 +64,7 @@ func showVersion() {
 		gologger.Info().Msgf("Current vulnx version %s %s", Version, description)
 
 		// If there's a newer version available, provide helpful information
-		if latestVersion != Version {
+		if latestVersion != strings.TrimPrefix(Version, "v") {
 			gologger.Info().Msg("To update vulnx, use:")
 			gologger.Info().Msg("vulnx --update  or  vulnx update")
 			gologger.Info().Msg("Or install via pdtm: pdtm -u vulnx")
