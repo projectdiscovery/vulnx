@@ -1,13 +1,18 @@
 package clis
 
 import (
+	"fmt"
+	"io"
+	"os"
 	"slices"
 	"strings"
 
-	"github.com/projectdiscovery/gologger"
-
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/filters"
 )
+
+// unknownFieldWriter is stderr so the hint still shows with --silent.
+// gologger Info/Warning are dropped at LevelSilent, and Silent() writes stdout.
+var unknownFieldWriter io.Writer = os.Stderr
 
 // warnUnknownSearchFields hints at typos or outdated field names when a query
 // matched nothing, since the API silently matches no documents for them.
@@ -24,9 +29,12 @@ func warnUnknownSearchFields(query string) {
 		known[i] = def.Field
 	}
 	for _, field := range unknownSearchFields(query, known) {
-		// gologger hides Warning() at the default level, so label an Info line instead
-		gologger.Info().Label("WRN").Msgf("%q is not a known search field, run 'vulnx filters' to list available fields", field)
+		logUnknownSearchField(field)
 	}
+}
+
+func logUnknownSearchField(field string) {
+	fmt.Fprintf(unknownFieldWriter, "[WRN] %q is not a known search field, run 'vulnx filters' to list available fields\n", field)
 }
 
 // The filters endpoint is hand-curated and omits some indexed fields that

@@ -1,7 +1,9 @@
 package clis
 
 import (
+	"bytes"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +54,19 @@ func TestUnknownSearchFields(t *testing.T) {
 				t.Errorf("unknownSearchFields(%q) = %v, want %v", tt.query, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLogUnknownSearchFieldWritesStderr(t *testing.T) {
+	var buf bytes.Buffer
+	orig := unknownFieldWriter
+	t.Cleanup(func() { unknownFieldWriter = orig })
+	unknownFieldWriter = &buf
+
+	logUnknownSearchField("vulnerable_cpe")
+
+	got := buf.String()
+	if !strings.Contains(got, `not a known search field`) || !strings.Contains(got, "vulnerable_cpe") {
+		t.Errorf("stderr warning = %q, want unknown-field hint", got)
 	}
 }
