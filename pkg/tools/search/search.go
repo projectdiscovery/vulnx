@@ -17,6 +17,9 @@ const MaxResultWindow = 10000
 // MaxResultWindow. A limit of 0 means the server default, so only the
 // offset itself is checked.
 func ValidateResultWindow(offset, limit int) error {
+	if offset < 0 || limit < 0 {
+		return fmt.Errorf("offset and limit must be non-negative")
+	}
 	if offset >= MaxResultWindow || offset+limit > MaxResultWindow {
 		return fmt.Errorf("offset + limit must not exceed %d (API result window); narrow the query to reach older results", MaxResultWindow)
 	}
