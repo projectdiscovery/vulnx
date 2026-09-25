@@ -197,6 +197,7 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 			resp, err := handler.Search(params)
 			if err != nil {
 				if errors.Is(err, vulnx.ErrNotFound) {
+					warnUnknownSearchFields(finalQuery)
 					gologger.Fatal().Msgf("No results found for query: %s", query)
 				}
 				if errors.Is(err, vulnx.ErrTooManyRequests) {
@@ -205,6 +206,7 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 				gologger.Fatal().Msgf("Failed to perform search: %s", err)
 			}
 			if resp.Count == 0 {
+				warnUnknownSearchFields(finalQuery)
 				if query != "" {
 					gologger.Info().Msgf("No results found for query: %s", query)
 				} else {
