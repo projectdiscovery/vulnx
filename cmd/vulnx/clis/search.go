@@ -562,13 +562,16 @@ func buildScoreQuery(field, scoreFilter string) (string, error) {
 // validateSearchInputs performs input validation for search command
 func validateSearchInputs() error {
 	// Validate limit
-	if searchLimit < 0 || searchLimit > 10000 {
-		return fmt.Errorf("limit must be between 0 and 10000")
+	if searchLimit < 0 || searchLimit > searchtool.MaxResultWindow {
+		return fmt.Errorf("limit must be between 0 and %d", searchtool.MaxResultWindow)
 	}
 
 	// Validate offset
 	if searchOffset < 0 {
 		return fmt.Errorf("offset must be non-negative")
+	}
+	if err := searchtool.ValidateResultWindow(searchOffset, searchLimit); err != nil {
+		return err
 	}
 
 	// Validate conflicting sort options
