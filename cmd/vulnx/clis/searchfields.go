@@ -34,7 +34,7 @@ func warnUnknownSearchFields(query string) {
 }
 
 func logUnknownSearchField(field string) {
-	fmt.Fprintf(unknownFieldWriter, "[WRN] %q is not a known search field, run 'vulnx filters' to list available fields\n", field)
+	_, _ = fmt.Fprintf(unknownFieldWriter, "[WRN] %q is not a known search field, run 'vulnx filters' to list available fields\n", field)
 }
 
 // The filters endpoint is hand-curated and omits some indexed fields that
