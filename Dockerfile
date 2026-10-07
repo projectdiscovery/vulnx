@@ -1,4 +1,4 @@
-FROM alpine:3.18.2
+FROM alpine:latest
 
 LABEL org.opencontainers.image.authors="ProjectDiscovery"
 LABEL org.opencontainers.image.description="Modern CLI for exploring vulnerability data with powerful search, filtering, and analysis capabilities"
