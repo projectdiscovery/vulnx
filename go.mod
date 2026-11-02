@@ -7,9 +7,9 @@ require (
 	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/mark3labs/mcp-go v1.4.0
 	github.com/pkg/errors v0.9.1
-	github.com/projectdiscovery/gologger v1.1.73
-	github.com/projectdiscovery/retryablehttp-go v1.3.31
-	github.com/projectdiscovery/utils v0.11.10
+	github.com/projectdiscovery/gologger v1.1.75
+	github.com/projectdiscovery/retryablehttp-go v1.3.33
+	github.com/projectdiscovery/utils v0.11.12
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.47.0
 )
@@ -18,7 +18,6 @@ require (
 	aead.dev/minisign v0.2.1 // indirect
 	github.com/Masterminds/semver/v3 v3.2.1 // indirect
 	github.com/Mzack9999/gcache v0.0.0-20230410081825-519e28eab057 // indirect
-	github.com/Mzack9999/go-http-digest-auth-client v0.6.1-0.20220414142836-eb8883508809 // indirect
 	github.com/VividCortex/ewma v1.2.0 // indirect
 	github.com/akrylysov/pogreb v0.10.2 // indirect
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
