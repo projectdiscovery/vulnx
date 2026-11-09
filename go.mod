@@ -8,8 +8,8 @@ require (
 	github.com/mark3labs/mcp-go v1.5.0
 	github.com/pkg/errors v0.9.1
 	github.com/projectdiscovery/gologger v1.1.75
-	github.com/projectdiscovery/retryablehttp-go v1.3.33
-	github.com/projectdiscovery/utils v0.11.12
+	github.com/projectdiscovery/retryablehttp-go v1.3.34
+	github.com/projectdiscovery/utils v0.11.13
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.47.0
 )
@@ -62,11 +62,11 @@ require (
 	github.com/muesli/termenv v0.15.3-0.20240618155329-98d742f6907a // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/projectdiscovery/blackrock v0.0.2 // indirect
-	github.com/projectdiscovery/fastdialer v0.5.26 // indirect
-	github.com/projectdiscovery/hmap v0.0.102 // indirect
+	github.com/projectdiscovery/fastdialer v0.6.1 // indirect
+	github.com/projectdiscovery/hmap v0.0.104 // indirect
 	github.com/projectdiscovery/machineid v0.0.0-20250715113114-c77eb3567582 // indirect
-	github.com/projectdiscovery/networkpolicy v0.1.54 // indirect
-	github.com/projectdiscovery/retryabledns v1.0.116 // indirect
+	github.com/projectdiscovery/networkpolicy v0.1.57 // indirect
+	github.com/projectdiscovery/retryabledns v1.0.118 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d // indirect
