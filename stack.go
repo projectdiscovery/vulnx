@@ -417,11 +417,12 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 }
 
 // ErrExpiryUnsupported: the API cannot expire a stored stack, so nothing was uploaded.
-var ErrExpiryUnsupported = errkit.New("this SecurityContext API cannot expire a stored report, so nothing was uploaded")
+var ErrExpiryUnsupported = errkit.New("this SecurityContext API cannot expire a stored report's link, so nothing was uploaded")
 
-// ShareFile uploads a file as a stored stack that expires: after expires its link stops answering and
-// SecurityContext deletes its rows. It returns the stack's id and when it expires. An API that cannot expire
-// stacks is not sent the file at all (ErrExpiryUnsupported): a stack stored there could not be taken back.
+// ShareFile uploads a file as a stored stack whose link expires: after expires it stops answering (SecurityContext
+// keeps the names and versions for analysis, no longer tied to who sent them). It returns the stack's id and when
+// the link expires. An API that cannot expire a link is not sent the file at all (ErrExpiryUnsupported): the link
+// would work forever.
 func (c *Client) ShareFile(ctx context.Context, path string, expires time.Duration) (id, expiresAt string, err error) {
 	if err := c.StackExpirySupported(ctx); err != nil {
 		return "", "", err

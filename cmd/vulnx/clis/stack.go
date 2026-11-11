@@ -124,7 +124,7 @@ cat versions.txt | vulnx scan`,
 				}
 				if scanShare { // before the scan: a report that could not expire is never uploaded
 					if err := vulnxClient.StackExpirySupported(ctx); errkit.Is(err, vulnx.ErrExpiryUnsupported) {
-						gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a stored report yet, so nothing was scanned or uploaded")
+						gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a report's link yet, so nothing was scanned or uploaded")
 					} else if err != nil {
 						fatalAPI("share", err)
 					}
@@ -186,13 +186,14 @@ cat versions.txt | vulnx scan`,
 						}
 						hostProgress("")
 						if errkit.Is(err, vulnx.ErrExpiryUnsupported) {
-							gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a stored report yet, so nothing was uploaded")
+							gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a report's link yet, so nothing was uploaded")
 						}
 						if err != nil {
 							fatalAPI("share", err)
 						}
 						fmt.Printf("  Unlisted report: %s\n", vulnxClient.StackPage(id))
-						fmt.Printf("  Anyone with the link can read it until %s, when it is deleted\n", localTime(expiresAt))
+						fmt.Printf("  Anyone with the link can read it until %s; then the link stops working\n", localTime(expiresAt))
+						fmt.Println("  SecurityContext keeps the component names and versions for analysis, not tied to you")
 					}
 				}
 				if failsOn(scanFailOn, inv, res) {
@@ -506,7 +507,7 @@ func init() {
 	scanCmd.Flags().Lookup("report").NoOptDefVal = "auto"
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
-	scanCmd.Flags().BoolVar(&scanShare, "share", false, "with --host: write the SBOM, upload it to SecurityContext and print its unlisted report link; the link works for a day, then the report is deleted (until then anyone with the link can read the machine's component list)")
+	scanCmd.Flags().BoolVar(&scanShare, "share", false, "with --host: write the SBOM, upload it to SecurityContext and print its unlisted report link; the link works for a day (until then anyone with it can read the machine's component list), and SecurityContext keeps the list for analysis")
 	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the report and open it in the browser")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")

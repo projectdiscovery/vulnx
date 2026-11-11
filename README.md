@@ -288,7 +288,7 @@ vulnx scan --host --report              # also write vulnx-host-<date>.html and 
 vulnx scan --host --open                # write the report and open it in the browser
 vulnx scan --host --report=out.html     # name the file
 vulnx scan --host --sbom                # also write what was checked as a CycloneDX SBOM (vulnx-host-<date>.cdx.json)
-vulnx scan --host --share               # write the SBOM, upload it, print its unlisted link (deleted after a day)
+vulnx scan --host --share               # write the SBOM, upload it, print its unlisted link (works for a day)
 vulnx scan --host --view actions        # in the terminal: what to update, most urgent first
 vulnx scan --host --view details        # per component (also: brief, programs, markdown)
 vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited (or critical, high)
@@ -300,8 +300,9 @@ matched, and what was not checked.
 
 `--share` is the one option that uploads more than a check does: it stores the machine's component names and
 versions on SecurityContext under an unlisted link, which anyone who has the link can read. The link works for a
-day; then the report is deleted. Against an API that cannot expire a stored report, `--share` uploads nothing. The
-hosted page shows the verdicts; where each component was found and Go reachability stay in the local report. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+day. After that it stops answering; SecurityContext keeps the names and versions for analysis, no longer tied to who
+sent them. Against an API that cannot expire a link, `--share` uploads nothing. The hosted page shows the verdicts;
+where each component was found and Go reachability stay in the local report. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

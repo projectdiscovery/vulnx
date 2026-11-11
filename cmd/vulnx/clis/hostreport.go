@@ -1595,7 +1595,7 @@ func writeHostSBOM(path string, inv vulnx.HostInventory) (string, error) {
 	return abs, os.WriteFile(abs, raw, 0o644)
 }
 
-// shareExpiry is how long a shared host report's link works before SecurityContext deletes it.
+// shareExpiry is how long a shared host report's link works.
 const shareExpiry = 24 * time.Hour
 
 // localTime is an API timestamp in the machine's time zone ("12 Nov 15:04 CET"); as given when it is not RFC 3339.
