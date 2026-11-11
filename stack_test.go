@@ -1,7 +1,12 @@
 package vulnx
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +128,81 @@ func TestVEX(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"state": "exploitable"`) || !strings.Contains(string(raw), `"state": "in_triage"`) {
 		t.Errorf("cyclonedx: %s", raw)
+	}
+}
+
+// pagingServer answers a list two items a page with a cursor (or, cursorless, cut with none), counting requests;
+// staleOnce answers the first cursor with the API's invalid-cursor 400.
+func pagingServer(t *testing.T, cursorless, staleOnce bool) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	stale := staleOnce
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		var body struct{ Packages []string }
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Error(err)
+		}
+		offset := 0
+		if c := r.URL.Query().Get("cursor"); c != "" {
+			if stale {
+				stale = false
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error": "invalid cursor", "field": "cursor"}`))
+				return
+			}
+			_, _ = fmt.Sscan(c, &offset)
+		}
+		end := min(offset+2, len(body.Packages))
+		if cursorless && len(body.Packages) > 2 {
+			end = 1 // cut, with no way to the rest
+		}
+		page := map[string]any{"total": len(body.Packages), "truncated": end < len(body.Packages),
+			"summary": map[string]any{"packages": len(body.Packages)}}
+		var items []map[string]string
+		for _, p := range body.Packages[offset:end] {
+			items = append(items, map[string]string{"input": p, "status": "clean"})
+		}
+		page["items"] = items
+		if end < len(body.Packages) && !cursorless {
+			page["cursor"] = fmt.Sprint(end)
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+func TestCheckFollowsTheCursor(t *testing.T) {
+	entries := []string{"pkg:npm/a@1", "pkg:npm/b@1", "pkg:npm/c@1", "pkg:npm/d@1", "pkg:npm/e@1"}
+	for _, c := range []struct {
+		name              string
+		cursorless, stale bool
+		requests          int
+	}{
+		{"pages", false, false, 3},                // 2 + 2 + 1
+		{"stale cursor restarts", false, true, 5}, // page, stale 400, then 3 pages again
+		{"no cursor splits", true, false, 5},      // all cut -> [a b] whole, [c d e] cut -> [c], [d e]
+	} {
+		srv, calls := pagingServer(t, c.cursorless, c.stale)
+		cl, err := New(WithBaseURL(srv.URL))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := cl.CheckMany(context.Background(), entries)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var got []string
+		for _, it := range res.Items {
+			got = append(got, it.Input)
+		}
+		if strings.Join(got, ",") != strings.Join(entries, ",") || *calls != c.requests {
+			t.Errorf("%s: %d requests, items %v", c.name, *calls, got)
+		}
+		if !c.cursorless && (res.Total != 5 || res.Summary.Packages != 5) {
+			t.Errorf("%s: total %d, summary %d: the first page's, once", c.name, res.Total, res.Summary.Packages)
+		}
 	}
 }

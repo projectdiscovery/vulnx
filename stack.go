@@ -191,38 +191,78 @@ func (c *Client) checkPackages(ctx context.Context, entries []string, functions 
 	return c.checkChunk(ctx, norm, functions)
 }
 
-// checkChunk posts a list and, when the answer is cut at the API's response size (truncated, no cursor), splits
-// the list in halves and asks again until every answer is whole. (save: true would page it, but a saved stack
-// loses an rpm's binary package name and with it advisories that name the binary, so lists are never saved.)
+// checkChunk posts a list and reads the whole answer. An answer cut at the API's response size carries a cursor:
+// the same POST is repeated with ?cursor= until the last item, the summary (over the whole list) taken from the
+// first page. An API that cuts without a cursor gets the list split in halves instead. A cursor the API no longer
+// accepts (the dataset was rebuilt between pages) restarts the list once. (save: true would page it too, but a
+// saved stack loses an rpm's binary package name and with it advisories that name the binary.)
 func (c *Client) checkChunk(ctx context.Context, entries []string, functions bool) (StackResult, error) {
+	res, err := c.checkPages(ctx, entries, functions)
+	if err != nil && staleCursor(err) {
+		return c.checkPages(ctx, entries, functions)
+	}
+	return res, err
+}
+
+// maxCheckPages bounds the pages one list is read in: 500 entries at one item a page.
+const maxCheckPages = MaxCheckEntries
+
+func (c *Client) checkPages(ctx context.Context, entries []string, functions bool) (StackResult, error) {
 	var res StackResult
 	body := map[string]any{"packages": entries}
 	if functions {
 		body["functions"] = true
 	}
-	req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", nil, body)
-	if err != nil {
-		return res, errkit.Append(ErrRequestBuildFailure, err)
+	cursor := ""
+	for n := 0; n < maxCheckPages; n++ {
+		var query url.Values
+		if cursor != "" {
+			query = url.Values{"cursor": {cursor}}
+		}
+		req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", query, body)
+		if err != nil {
+			return res, errkit.Append(ErrRequestBuildFailure, err)
+		}
+		var page stackPage
+		if err := c.do(req, &page); err != nil {
+			return res, errkit.Append(ErrRequestFailed, err)
+		}
+		if n == 0 {
+			res.Summary, res.Total = page.Summary, page.Total
+		}
+		mergeStack(&res, StackResult{Items: page.Items, GoFunctions: page.Functions})
+		if !page.Truncated || len(res.Items) >= res.Total {
+			return res, nil
+		}
+		if page.Cursor == "" {
+			if n > 0 || len(entries) < 2 {
+				return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the answer was cut with no cursor after %d of %d items", len(res.Items), res.Total))
+			}
+			return c.checkHalves(ctx, entries, functions)
+		}
+		cursor = page.Cursor
 	}
-	var page stackPage
-	if err := c.do(req, &page); err != nil {
-		return res, errkit.Append(ErrRequestFailed, err)
-	}
-	if !page.Truncated || len(page.Items) >= page.Total || len(entries) < 2 {
-		res.Summary, res.Items, res.Total, res.GoFunctions = page.Summary, page.Items, page.Total, page.Functions
-		return res, nil
-	}
+	return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the answer took more than %d pages", maxCheckPages))
+}
+
+// checkHalves checks a list in two halves, for an API that cuts an answer without a cursor.
+func (c *Client) checkHalves(ctx context.Context, entries []string, functions bool) (StackResult, error) {
 	half := len(entries) / 2
 	first, err := c.checkChunk(ctx, entries[:half], functions)
 	if err != nil {
-		return res, err
+		return first, err
 	}
 	second, err := c.checkChunk(ctx, entries[half:], functions)
 	if err != nil {
-		return res, err
+		return first, err
 	}
 	mergeStack(&first, second)
 	return first, nil
+}
+
+// staleCursor is the API's 400 for a cursor of another list or dataset.
+func staleCursor(err error) bool {
+	return errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "invalid cursor")
 }
 
 // mergeStack adds b's items and counts to a.
