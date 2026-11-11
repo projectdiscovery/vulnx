@@ -603,13 +603,14 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 	}
 	const bar = 6
 	cell := func(v int, sev string) string {
+		// the number first, so numbers line up and every bar starts at the same column
 		if v == 0 {
-			return strings.Repeat(" ", bar) + dim(fmt.Sprintf(" %4s", "-"))
+			return dim(fmt.Sprintf("%4s ", "-")) + strings.Repeat(" ", bar)
 		}
 		blocks := max(1, (v*bar+peak-1)/peak)
-		return strings.Repeat(" ", bar-blocks) + c.ColorSeverity(strings.Repeat("█", blocks)) + fmt.Sprintf(" %4d", v)
+		return fmt.Sprintf("%4d ", v) + c.ColorSeverity(strings.Repeat("█", blocks)) + strings.Repeat(" ", bar-blocks)
 	}
-	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %11s  %11s  %11s  %11s  %9s  %8s", width, "SOURCE", "CRITICAL", "HIGH", "MEDIUM", "LOW",
+	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %-11s  %-11s  %-11s  %-11s  %9s  %8s", width, "SOURCE", "CRITICAL", "HIGH", "MEDIUM", "LOW",
 		"EXPLOITED", "CHECKED")) + "\n")
 	line := func(r gridRow, bars bool) {
 		fmt.Fprintf(&b, "  %-*s", width, r.Name)
@@ -617,7 +618,7 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 			if bars {
 				b.WriteString("  " + cell(v, gridSeverities[i]))
 			} else {
-				fmt.Fprintf(&b, "  %11s", thousands(v))
+				fmt.Fprintf(&b, "  %4s%7s", thousands(v), "")
 			}
 		}
 		exploited := fmt.Sprintf("%9s", "-")

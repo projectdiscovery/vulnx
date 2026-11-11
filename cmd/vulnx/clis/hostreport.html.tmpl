@@ -32,7 +32,9 @@ td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
 tr:last-child td{border-bottom:0}
 .num{text-align:right;font-variant-numeric:tabular-nums}
 tfoot td{font-weight:600;background:var(--surface-2)}
-.bar{display:inline-block;height:9px;border-radius:2px;margin-right:8px;vertical-align:middle}
+.bar{display:inline-block;height:9px;border-radius:2px;vertical-align:middle}
+.n{display:inline-block;width:2.6em;text-align:right;margin-right:10px;font-variant-numeric:tabular-nums}
+#sources table{table-layout:fixed}.sevh{padding-left:calc(14px + 2.6em - 1.2em)}
 .critical{color:var(--crit)}.high{color:var(--high)}.medium{color:var(--med)}.low{color:var(--low)}
 .bar.critical{background:var(--crit)}.bar.high{background:var(--high)}.bar.medium{background:var(--med)}.bar.low{background:var(--low)}
 .sev{font-weight:600;font-size:13px;text-transform:capitalize}
@@ -105,9 +107,9 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 <h2>By source</h2>
 <p class="note">Reachable findings per source, by their worst severity.</p>
 <div class="surface"><table>
-<thead><tr><th>Source</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th class="num">Known exploited</th><th class="num">Checked</th></tr></thead>
-<tbody>{{range .Grid}}<tr><td>{{.Name}}</td>{{range .Cells}}<td>{{if .N}}<span class="bar {{.Severity}}" style="width:{{.Width}}px"></span>{{thousands .N}}{{else}}<span class="dim">-</span>{{end}}</td>{{end}}<td class="num">{{if .Exploited}}<b class="critical">{{.Exploited}}</b>{{else}}<span class="dim">-</span>{{end}}</td><td class="num">{{thousands .Checked}}</td></tr>{{end}}</tbody>
-<tfoot><tr><td>Total</td>{{range .Total.Cells}}<td>{{thousands .N}}</td>{{end}}<td class="num">{{.Total.Exploited}}</td><td class="num">{{thousands .Total.Checked}}</td></tr></tfoot>
+<thead><tr><th style="width:18%">Source</th><th class="sevh">Critical</th><th class="sevh">High</th><th class="sevh">Medium</th><th class="sevh">Low</th><th class="num" style="width:13%">Known exploited</th><th class="num" style="width:11%">Checked</th></tr></thead>
+<tbody>{{range .Grid}}<tr><td>{{.Name}}</td>{{range .Cells}}<td>{{if .N}}<span class="n">{{thousands .N}}</span><span class="bar {{.Severity}}" style="width:{{.Width}}px"></span>{{else}}<span class="n dim">-</span>{{end}}</td>{{end}}<td class="num">{{if .Exploited}}<b class="critical">{{.Exploited}}</b>{{else}}<span class="dim">-</span>{{end}}</td><td class="num">{{thousands .Checked}}</td></tr>{{end}}</tbody>
+<tfoot><tr><td>Total</td>{{range .Total.Cells}}<td><span class="n">{{thousands .N}}</span></td>{{end}}<td class="num">{{.Total.Exploited}}</td><td class="num">{{thousands .Total.Checked}}</td></tr></tfoot>
 </table></div>
 </section>
 

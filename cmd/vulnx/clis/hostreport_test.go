@@ -260,11 +260,11 @@ func TestRenderHostGrid(t *testing.T) {
 	for _, want := range []string{
 		"macOS 26.4: 9 components scanned in 7s\n",
 		"  7 affected   6 reachable   3 known exploited   1 public exploit\n",
-		"  SOURCE           CRITICAL         HIGH       MEDIUM          LOW  EXPLOITED   CHECKED\n",
-		"  macOS         ██████    1            -            -            -          1         1\n",
-		"  python                  -  ██████    1  ██████    1            -          -         2\n",
-		"  go binaries   ██████    1            -            -            -          1         2\n",
-		"  total                   3            2            1            0          3         9\n",
+		"  SOURCE        CRITICAL     HIGH         MEDIUM       LOW          EXPLOITED   CHECKED\n",
+		"  macOS            1 ██████     -            -            -                 1         1\n",
+		"  python           -            1 ██████     1 ██████     -                 -         2\n",
+		"  go binaries      1 ██████     -            -            -                 1         2\n",
+		"  total            3            2            1            0                 3         9\n",
 		"Not checked: 1 with no exact identifier (1 homebrew)",
 		"Not counted: 1 Go module versions no program can reach",
 	} {
