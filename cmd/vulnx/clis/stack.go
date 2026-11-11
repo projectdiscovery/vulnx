@@ -532,7 +532,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 
 	notAssessed := len(inv.NotAssessed)
 	title(fmt.Sprintf("%s · %s components checked · %s not assessed", inv.OS, thousands(len(inv.Entries)), thousands(notAssessed)))
-	fmt.Fprintf(&b, "  %-14s %8s %13s  %s\n", dim("SOURCE"), dim("CHECKED"), dim("NOT ASSESSED"), dim("READ FROM"))
+	b.WriteString("  " + dim(fmt.Sprintf("%-14s %8s %13s  %s", "SOURCE", "CHECKED", "NOT ASSESSED", "READ FROM")) + "\n")
 	for _, s := range inv.Sources {
 		na := "-"
 		if s.NotAssessed > 0 {

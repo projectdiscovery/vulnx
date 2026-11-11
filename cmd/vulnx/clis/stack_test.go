@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -117,5 +118,15 @@ func TestRenderHostReachability(t *testing.T) {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("unexpected %q in\n%s", unwanted, out)
 		}
+	}
+}
+
+// TestRenderHostTextColorAligns pads the sources header before coloring it, so it lines up with its rows.
+func TestRenderHostTextColorAligns(t *testing.T) {
+	inv := vulnx.HostInventory{OS: "macOS", Sources: []vulnx.HostSource{{Name: "python", Sent: 1, Detail: "1 dir"}}}
+	out := renderHostText(inv, vulnx.StackResult{}, false, renderer.DefaultColorConfig())
+	plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(out, "")
+	if !strings.Contains(plain, "  SOURCE          CHECKED  NOT ASSESSED  READ FROM\n") {
+		t.Errorf("header misaligned:\n%s", plain)
 	}
 }
