@@ -480,8 +480,8 @@ func SBOMEntries(raw []byte) (entries []string, format string, ok bool) {
 	return nil, "", false
 }
 
-// withUpstream adds the source package to an OS package purl that lacks it, from the SBOM tool's own fields
-// (Trivy: SrcName, SrcEpoch, SrcVersion, SrcRelease). A distribution's advisories name the source package
+// withUpstream adds the source package to an OS package purl that lacks it, from the component properties some
+// SBOM generators add (SrcName, SrcEpoch, SrcVersion, SrcRelease). A distribution's advisories name the source package
 // (glibc, not libc6), so without it most OS packages would be looked up under the wrong name.
 func withUpstream(purl string, props map[string]string) string {
 	low := strings.ToLower(purl)

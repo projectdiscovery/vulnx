@@ -271,7 +271,7 @@ on macOS it checks the macOS version against Apple's per-release fixes. It also 
 OS packages: Python, npm and Ruby packages outside the distribution's own directories, the modules linked into Go
 binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formulae and applications. Homebrew
 formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
-listed as not assessed, with a count per source. Only names and versions are sent. OS packages in SBOMs from syft or Trivy are judged the same way.
+listed as not assessed, with a count per source. Only names and versions are sent. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.
