@@ -24,6 +24,7 @@ import (
 	"compress/zlib"
 	"debug/buildinfo"
 	"debug/elf"
+	"debug/gosym"
 	"debug/macho"
 	"encoding/json"
 	"encoding/xml"
@@ -42,15 +43,19 @@ import (
 
 // HostInventory is what vulnx found on a machine.
 type HostInventory struct {
-	OS          string              `json:"os"`                  // "debian 12", "macOS 26.4", ...
-	Source      string              `json:"os_source,omitempty"` // where the OS packages came from: dpkg, rpm, apk, sw_vers
-	Entries     []string            `json:"-"`                   // purls and CPEs, each once (the result's items)
-	FoundIn     map[string][]string `json:"found_in"`            // entry -> where it was found: a binary, an app, a formula, a directory
-	Sources     []HostSource        `json:"sources"`             // what each reader found
-	NotAssessed []HostComponent     `json:"not_assessed"`        // read, but with no identifier SecurityContext judges exactly
-	NotRead     []string            `json:"not_read"`            // what no reader covers
-	Note        string              `json:"-"`                   // per source counts, and what is not read, as text
+	OS          string                  `json:"os"`                  // "debian 12", "macOS 26.4", ...
+	Source      string                  `json:"os_source,omitempty"` // where the OS packages came from: dpkg, rpm, apk, sw_vers
+	Entries     []string                `json:"-"`                   // purls and CPEs, each once (the result's items)
+	FoundIn     map[string][]string     `json:"found_in"`            // entry -> where it was found: a binary, an app, a formula, a directory
+	Sources     []HostSource            `json:"sources"`             // what each reader found
+	NotAssessed []HostComponent         `json:"not_assessed"`        // read, but with no identifier SecurityContext judges exactly
+	NotRead     []string                `json:"not_read"`            // what no reader covers
+	GoBinaries  map[string][]HostBinary `json:"-"`                   // Go entry -> the binaries linking it, for MarkReachability
+	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
 }
+
+// HostBinary is an executable vulnx read: its real path and the name it was found under (a PATH link's).
+type HostBinary struct{ Path, Name string }
 
 // HostComponent is an installed component vulnx read but could not identify exactly.
 type HostComponent struct {
@@ -103,7 +108,7 @@ func HostEntries(root string) (HostInventory, error) {
 
 func newHostReader(root, goos string) *hostReader {
 	return &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
-		inv: HostInventory{FoundIn: map[string][]string{}}}
+		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}}}
 }
 
 type hostReader struct {
@@ -702,9 +707,14 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 			if err != nil || !st.Mode().IsRegular() || st.Mode()&0o111 == 0 {
 				continue
 			}
-			if mods, ok := goModules(real); ok {
+			if mods, renamed, ok := goModules(real); ok {
 				b.goBins++
 				b.goEntries = append(b.goEntries, foundIn(e.Name(), mods)...)
+				for _, m := range mods {
+					if !renamed[m] {
+						h.inv.GoBinaries[m] = append(h.inv.GoBinaries[m], HostBinary{Path: real, Name: e.Name()})
+					}
+				}
 			} else if crates, ok := rustCrates(real); ok {
 				b.rustBins++
 				b.rustEntries = append(b.rustEntries, foundIn(e.Name(), crates)...)
@@ -720,27 +730,34 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 
 // goModules reads a Go executable's build info: the toolchain as pkg:golang/stdlib and every module linked in
 // (a replaced module as its replacement; one replaced by a local directory has no version and is left out).
-func goModules(path string) ([]string, bool) {
+// renamed holds the entries of modules replaced by another module path: their code is compiled under the original
+// import paths, so an advisory's function names for the replacement cannot be looked up in the binary.
+func goModules(path string) (out []string, renamed map[string]bool, ok bool) {
 	bi, err := buildinfo.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
-	var out []string
+	renamed = map[string]bool{}
 	if v := strings.TrimPrefix(bi.GoVersion, "go"); v != "" {
 		v, _, _ = strings.Cut(v, " ") // "go1.22.1 X:boringcrypto"
 		out = append(out, "pkg:golang/stdlib@"+url.PathEscape(v))
 	}
 	mods := append([]*debug.Module{&bi.Main}, bi.Deps...)
 	for _, m := range mods {
+		moved := m.Replace != nil && m.Replace.Path != m.Path
 		if m.Replace != nil {
 			m = m.Replace
 		}
 		if m.Path == "" || m.Version == "" || m.Version == "(devel)" {
 			continue
 		}
-		out = append(out, fmt.Sprintf("pkg:golang/%s@%s", m.Path, url.PathEscape(m.Version)))
+		entry := fmt.Sprintf("pkg:golang/%s@%s", m.Path, url.PathEscape(m.Version))
+		out = append(out, entry)
+		if moved {
+			renamed[entry] = true
+		}
 	}
-	return out, true
+	return out, renamed, true
 }
 
 // rustCrates reads the crate list a Rust executable embeds when built for auditing: a zlib-compressed JSON
@@ -1031,4 +1048,160 @@ func plistStrings(raw []byte) map[string]string {
 			depth--
 		}
 	}
+}
+
+// MarkReachability marks a host scan's Go findings by what each binary links, from the advisories' function lists
+// (res.GoFunctions). A row is reachable when a binary carrying the module version links a function its advisory
+// names as affected, and not_reachable when none of those binaries links any function of the packages it names; it
+// stays unmarked (unknown) without a list, or when a binary links the package but none of the functions by name
+// (goFunctions.verdict). Each item gets, per binary, reachable / not_reachable / unknown. Binaries are read one at
+// a time: a large Go binary links tens of thousands of functions.
+func (inv HostInventory) MarkReachability(res *StackResult) {
+	type use struct {
+		item int
+		bin  HostBinary
+	}
+	byPath := map[string][]use{}
+	for i, it := range res.Items {
+		if it.Status != "affected" {
+			continue
+		}
+		for _, b := range inv.GoBinaries[it.Input] {
+			byPath[b.Path] = append(byPath[b.Path], use{i, b})
+		}
+	}
+	rowState := map[int]map[int]string{} // item -> row -> the most reachable verdict over its binaries
+	rank := map[string]int{"reachable": 0, "unknown": 1, "not_reachable": 2}
+	for path, uses := range byPath {
+		fns, err := goFunctionTable(path)
+		for _, u := range uses {
+			it := &res.Items[u.item]
+			if it.Reachability == nil {
+				it.Reachability = &ItemReachability{}
+			}
+			if rowState[u.item] == nil {
+				rowState[u.item] = map[int]string{}
+			}
+			state := "not_reachable" // the binary's: the most reachable of its rows
+			for r, row := range it.AdvisoryRows {
+				v := "unknown"
+				if lists, ok := res.GoFunctions[it.Package][row.AdvisoryID]; ok && err == nil {
+					v = fns.verdict(lists)
+				}
+				if prev, ok := rowState[u.item][r]; !ok || rank[v] < rank[prev] {
+					rowState[u.item][r] = v
+				}
+				if rank[v] < rank[state] {
+					state = v
+				}
+			}
+			switch state {
+			case "reachable":
+				it.Reachability.Reachable = append(it.Reachability.Reachable, u.bin.Name)
+			case "not_reachable":
+				it.Reachability.NotReachable = append(it.Reachability.NotReachable, u.bin.Name)
+			default:
+				it.Reachability.Unknown = append(it.Reachability.Unknown, u.bin.Name)
+			}
+		}
+	}
+	for i, rows := range rowState {
+		for r, v := range rows {
+			if v != "unknown" {
+				res.Items[i].AdvisoryRows[r].Reachability = v
+			}
+		}
+	}
+}
+
+// goFunctions is a Go binary's function table: every function it links, as the advisories name them
+// (path.Func, path.Type.Method), and the packages they are in.
+type goFunctions struct{ funcs, packages map[string]bool }
+
+var goTypeParams = regexp.MustCompile(`\[[^\]]*\]`)
+
+// goFunctionTable reads a Go executable's pclntab (present in stripped binaries too: the runtime needs it).
+func goFunctionTable(path string) (goFunctions, error) {
+	tab, text, err := pclntab(path)
+	if err != nil {
+		return goFunctions{}, err
+	}
+	t, err := gosym.NewTable(nil, gosym.NewLineTable(tab, text))
+	if err != nil {
+		return goFunctions{}, err
+	}
+	out := goFunctions{funcs: map[string]bool{}, packages: map[string]bool{}}
+	for _, f := range t.Funcs {
+		// "net/http.(*Client).Do" -> "net/http.Client.Do"; "pkg.Map[...].Get" -> "pkg.Map.Get"; a closure
+		// ("pkg.F.func1") or method value ("pkg.T.M-fm") counts as its function
+		name := strings.NewReplacer("(*", "", ")", "").Replace(goTypeParams.ReplaceAllString(f.Name, ""))
+		name = strings.TrimSuffix(name, "-fm")
+		if i := strings.Index(name, ".func"); i > 0 {
+			name = name[:i]
+		}
+		out.funcs[name] = true
+		slash := strings.LastIndex(name, "/")
+		if dot := strings.Index(name[slash+1:], "."); dot > 0 {
+			out.packages[name[:slash+1+dot]] = true
+		}
+	}
+	return out, nil
+}
+
+// verdict is what the binary's function table says of an advisory's lists: reachable when it links a listed
+// function (a package listed with no functions: any of it), not_reachable when it links no function of any listed
+// package, and unknown when it links the package but none of the listed functions by name: a function the compiler
+// inlined at every call has no entry of its own, so its absence proves nothing (strings.Contains is in no table).
+func (g goFunctions) verdict(lists []AffectedPackage) string {
+	linkedPackage := false
+	for _, l := range lists {
+		if !g.packages[l.Package] {
+			continue
+		}
+		if len(l.Functions) == 0 {
+			return "reachable"
+		}
+		linkedPackage = true
+		for _, f := range l.Functions {
+			if g.funcs[l.Package+"."+f] {
+				return "reachable"
+			}
+		}
+	}
+	if linkedPackage {
+		return "unknown"
+	}
+	return "not_reachable"
+}
+
+// pclntab returns a Go executable's pclntab section and the address of its text section (ELF, Mach-O, universal).
+func pclntab(path string) (tab []byte, text uint64, err error) {
+	if f, err := elf.Open(path); err == nil {
+		defer func() { _ = f.Close() }()
+		s, t := f.Section(".gopclntab"), f.Section(".text")
+		if s == nil || t == nil {
+			return nil, 0, fmt.Errorf("%s: no Go function table", path)
+		}
+		tab, err := s.Data()
+		return tab, t.Addr, err
+	}
+	var mf *macho.File
+	if ff, err := macho.OpenFat(path); err == nil {
+		defer func() { _ = ff.Close() }()
+		if len(ff.Arches) > 0 {
+			mf = ff.Arches[0].File
+		}
+	} else if f, err := macho.Open(path); err == nil {
+		defer func() { _ = f.Close() }()
+		mf = f
+	}
+	if mf == nil {
+		return nil, 0, fmt.Errorf("%s: not an ELF or Mach-O executable", path)
+	}
+	s, t := mf.Section("__gopclntab"), mf.Section("__text")
+	if s == nil || t == nil {
+		return nil, 0, fmt.Errorf("%s: no Go function table", path)
+	}
+	tab, err = s.Data()
+	return tab, t.Addr, err
 }

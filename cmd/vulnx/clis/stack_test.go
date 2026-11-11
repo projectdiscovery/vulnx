@@ -66,7 +66,7 @@ func TestRenderHostText(t *testing.T) {
 		"Not read: virtualenvs",
 		"2 affected · 0 undetermined · 1 clean",
 		"Fix first · 1 affected component\n",
-		"high         go      golang.org/x/net                 2 versions            9 0.38.0       caddy, act, gh",
+		"high         go      golang.org/x/net                 2 versions            9 0.38.0       -       caddy, act, gh",
 		"high         caddy                                       1 golang.org/x/net",
 		"homebrew (1): cairo",
 	} {
@@ -76,5 +76,46 @@ func TestRenderHostText(t *testing.T) {
 	}
 	if strings.Contains(out, "requests") {
 		t.Errorf("a clean component is listed:\n%s", out)
+	}
+}
+
+// TestRenderHostReachability leaves out a module version no binary can run, counts only the binaries that link an
+// affected function, and drops a binary that links none from the places to update.
+func TestRenderHostReachability(t *testing.T) {
+	gone, part, open := "pkg:golang/github.com/a/b@v1.0.0", "pkg:golang/golang.org/x/net@v0.7.0", "pkg:golang/github.com/c/d@v2.0.0"
+	inv := vulnx.HostInventory{OS: "macOS 26.4", Entries: []string{gone, part, open},
+		FoundIn: map[string][]string{gone: {"tool1"}, part: {"caddy", "act"}, open: {"tool2", "tool3"}}}
+	res := vulnx.StackResult{
+		Summary: vulnx.StackSummary{Packages: 2, Affected: 2},
+		Items: []vulnx.StackItem{
+			{Input: gone, Package: "go/github.com/a/b", Status: "affected", WorstSeverity: "critical", Advisories: 1,
+				AdvisoryRows: []vulnx.StackAdvisory{{AdvisoryID: "GO-1", Severity: "critical", Reachability: "not_reachable"}},
+				Reachability: &vulnx.ItemReachability{NotReachable: []string{"tool1"}}},
+			{Input: part, Package: "go/golang.org/x/net", Status: "affected", WorstSeverity: "critical", Advisories: 2,
+				AdvisoryRows: []vulnx.StackAdvisory{{AdvisoryID: "GO-2", Severity: "critical", Reachability: "not_reachable"},
+					{AdvisoryID: "GO-3", Severity: "medium", Reachability: "reachable"}},
+				Reachability: &vulnx.ItemReachability{Reachable: []string{"caddy"}, NotReachable: []string{"act"}}},
+			{Input: open, Package: "go/github.com/c/d", Status: "affected", WorstSeverity: "medium", Advisories: 1,
+				AdvisoryRows: []vulnx.StackAdvisory{{AdvisoryID: "GO-4", Severity: "medium"}},
+				Reachability: &vulnx.ItemReachability{NotReachable: []string{"tool2"}, Unknown: []string{"tool3"}}},
+		},
+	}
+	out := renderHostText(inv, res, false, renderer.NoColorConfig())
+	for _, want := range []string{
+		"Go reachability: of 5 affected module copies in binaries, 1 link an affected function, 3 link none, 1 unknown",
+		// the critical row no binary runs no longer sets the severity; one of two binaries links the medium one, and
+		// it comes before an equally severe one no binary is shown to link
+		"medium       go      golang.org/x/net                 v0.7.0                1              1/2     caddy\n" +
+			"  medium       go      github.com/c/d                   v2.0.0                1              0/2?    tool3",
+		"left out: 1 Go module versions whose binaries link none of the affected functions",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"github.com/a/b", "tool1", "act  "} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("unexpected %q in\n%s", unwanted, out)
+		}
 	}
 }

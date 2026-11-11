@@ -271,7 +271,14 @@ on macOS it checks the macOS version against Apple's per-release fixes. It also 
 OS packages: Python, npm and Ruby packages outside the distribution's own directories, the modules linked into Go
 binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formulae and applications. Homebrew
 formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
-listed as not assessed, with a count per source. Only names and versions are sent. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+listed as not assessed, with a count per source. Only names and versions are sent.
+
+For Go binaries it also checks reachability: SecurityContext returns the functions each Go advisory names as affected,
+and vulnx looks them up in each binary's own function table (present in stripped binaries too). A finding is
+reachable when the binary links a listed function, and not reachable when it links no function of any affected
+package; it stays unknown when the package is linked but no listed function is, since the compiler may have inlined
+it. "Fix first" leaves out module versions no binary can reach and shows, per component, how many of the binaries
+carrying it link an affected function (LINKED). OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

@@ -376,3 +376,73 @@ func TestCPEEscape(t *testing.T) {
 		t.Error(got)
 	}
 }
+
+// TestGoFunctionTable reads this test binary's own function table, as advisories name functions.
+func TestGoFunctionTable(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fns, err := goFunctionTable(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"testing.T.Run", "github.com/projectdiscovery/vulnx/v2.goFunctionTable"} {
+		if !fns.funcs[f] {
+			t.Errorf("%s not in the table", f)
+		}
+	}
+	// a function inlined at every call has no entry: why a linked package with no listed function is unknown
+	if fns.funcs["strings.Contains"] || !fns.packages["strings"] {
+		t.Error("strings.Contains is expected to be inlined away while package strings is linked")
+	}
+	for _, c := range []struct {
+		lists []AffectedPackage
+		want  string
+	}{
+		{[]AffectedPackage{{Package: "example.com/never", Functions: []string{"F"}}, {Package: "testing"}}, "reachable"},
+		{[]AffectedPackage{{Package: "testing", Functions: []string{"T.Run"}}}, "reachable"},
+		{[]AffectedPackage{{Package: "strings", Functions: []string{"Contains"}}}, "unknown"},
+		{[]AffectedPackage{{Package: "example.com/never", Functions: []string{"F"}}}, "not_reachable"},
+	} {
+		if got := fns.verdict(c.lists); got != c.want {
+			t.Errorf("%v: %s, want %s", c.lists, got, c.want)
+		}
+	}
+	if _, err := goFunctionTable(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("a missing file should fail")
+	}
+}
+
+// TestMarkReachability marks each row and binary by what the binary links: a listed function it links, a package
+// it does not link at all, and an advisory with no list (unknown).
+func TestMarkReachability(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := "pkg:golang/example.com/m@v1.0.0"
+	inv := HostInventory{GoBinaries: map[string][]HostBinary{mod: {{Path: self, Name: "tool"}}}}
+	res := StackResult{
+		Items: []StackItem{{Input: mod, Package: "go/example.com/m", Status: "affected", AdvisoryRows: []StackAdvisory{
+			{AdvisoryID: "GO-LINKED"}, {AdvisoryID: "GO-NOT"}, {AdvisoryID: "GO-NOLIST"}}}},
+		GoFunctions: GoFunctions{"go/example.com/m": {
+			"GO-LINKED": {{Package: "testing", Functions: []string{"T.Run"}}},
+			"GO-NOT":    {{Package: "example.com/m/parse", Functions: []string{"Parse"}}},
+		}},
+	}
+	inv.MarkReachability(&res)
+	rows := res.Items[0].AdvisoryRows
+	if rows[0].Reachability != "reachable" || rows[1].Reachability != "not_reachable" || rows[2].Reachability != "" {
+		t.Errorf("rows: %q %q %q", rows[0].Reachability, rows[1].Reachability, rows[2].Reachability)
+	}
+	if r := res.Items[0].Reachability; r == nil || fmt.Sprint(r.Reachable) != "[tool]" {
+		t.Errorf("item: %+v", r)
+	}
+	// without the linked row, an advisory with no list keeps the binary unknown, not "not reachable"
+	res.Items[0].AdvisoryRows, res.Items[0].Reachability = rows[1:], nil
+	inv.MarkReachability(&res)
+	if r := res.Items[0].Reachability; fmt.Sprint(r.Unknown) != "[tool]" || len(r.NotReachable) != 0 {
+		t.Errorf("item: %+v", r)
+	}
+}

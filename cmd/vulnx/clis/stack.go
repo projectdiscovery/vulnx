@@ -115,14 +115,15 @@ cat versions.txt | vulnx scan`,
 				}
 				gologger.Info().Msgf("Checking %s components of %s (%d requests; without an API key, 10 a minute)",
 					thousands(len(inv.Entries)), inv.OS, (len(inv.Entries)+vulnx.MaxCheckEntries-1)/vulnx.MaxCheckEntries)
-				res, err := vulnxClient.CheckManyProgress(ctx, inv.Entries, func(done, total int) {
+				res, err := vulnxClient.CheckManyWith(ctx, inv.Entries, vulnx.CheckOptions{Functions: true, Progress: func(done, total int) {
 					if done < total {
 						gologger.Info().Msgf("checked %s of %s", thousands(done), thousands(total))
 					}
-				})
+				}})
 				if err != nil {
 					fatalAPI("scan", err)
 				}
+				inv.MarkReachability(&res)
 				if scanFull || scanVEX != "" {
 					fillProductCVEs(&res)
 				}
@@ -552,8 +553,11 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	kev, poc := 0, 0
 	exploit := map[string]string{}
 	for _, it := range res.Items {
+		if unreachable(it) {
+			continue
+		}
 		for _, a := range it.AdvisoryRows {
-			if a.Exploit == nil {
+			if a.Exploit == nil || a.Reachability == "not_reachable" {
 				continue
 			}
 			if a.Exploit.KnownExploited {
@@ -586,12 +590,15 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	if len(sev) > 0 {
 		b.WriteString("  worst severity: " + strings.Join(sev, " · ") + "\n")
 	}
+	if line := reachabilityLine(res); line != "" {
+		b.WriteString("  " + line + "\n")
+	}
 
 	// one row per component (a module vendored at many versions by many binaries is one thing to fix)
 	type group struct {
 		kind, name, worst, mark, fix string
 		versions, in                 []string
-		cves                         int
+		cves, linked, carriers, open int
 	}
 	exploitRank := map[string]int{"KEV": 0, "POC": 1, "": 2}
 	groups := map[string]*group{}
@@ -604,43 +611,57 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	}
 	places := map[string]*place{}
 	var placeOrder []*place
+	notLinked := 0
 	for _, it := range res.Items {
 		if it.Status != "affected" {
 			continue
 		}
+		if unreachable(it) {
+			notLinked++
+			continue
+		}
+		worst, cves := liveSeverity(it)
 		kind, name, version := componentParts(it.Input)
 		key := kind + " " + name
 		g := groups[key]
 		if g == nil {
-			g = &group{kind: kind, name: name, worst: it.WorstSeverity}
+			g = &group{kind: kind, name: name, worst: worst}
 			groups[key] = g
 			order = append(order, g)
 			byKind[kind]++
 		}
 		g.versions = append(g.versions, version)
-		if severityRank[it.WorstSeverity] < severityRank[g.worst] {
-			g.worst = it.WorstSeverity
+		if r := it.Reachability; r != nil {
+			g.linked += len(r.Reachable)
+			g.open += len(r.Unknown)
+			g.carriers += len(r.Reachable) + len(r.NotReachable) + len(r.Unknown)
+		}
+		if severityRank[worst] < severityRank[g.worst] {
+			g.worst = worst
 		}
 		if m := exploit[it.Input]; exploitRank[m] < exploitRank[g.mark] {
 			g.mark = m
 		}
-		g.cves = max(g.cves, advisoryCount(it))
+		g.cves = max(g.cves, cves)
 		if g.fix == "" || versionLess(g.fix, it.FixedVersion) {
 			g.fix = it.FixedVersion
 		}
 		for _, in := range inv.FoundIn[it.Input] {
+			if it.Reachability != nil && slices.Contains(it.Reachability.NotReachable, in) {
+				continue // this binary links none of the affected functions
+			}
 			if !slices.Contains(g.in, in) {
 				g.in = append(g.in, in)
 			}
 			p := places[in]
 			if p == nil {
-				p = &place{name: in, worst: it.WorstSeverity, components: map[string]bool{}}
+				p = &place{name: in, worst: worst, components: map[string]bool{}}
 				places[in] = p
 				placeOrder = append(placeOrder, p)
 			}
 			p.components[name] = true
-			if severityRank[it.WorstSeverity] < severityRank[p.worst] {
-				p.worst = it.WorstSeverity
+			if severityRank[worst] < severityRank[p.worst] {
+				p.worst = worst
 			}
 			if m := exploit[it.Input]; exploitRank[m] < exploitRank[p.mark] {
 				p.mark = m
@@ -656,8 +677,12 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 		}
 		return n1 > n2
 	}
+	// at equal exploit and severity, a component a binary is known to link comes before one no binary is shown to
 	sort.SliceStable(order, func(i, j int) bool {
 		a, z := order[i], order[j]
+		if a.mark == z.mark && a.worst == z.worst && (a.linked > 0) != (z.linked > 0) && a.carriers > 0 && z.carriers > 0 {
+			return a.linked > 0
+		}
 		return urgent(a.mark, a.worst, a.cves, z.mark, z.worst, z.cves)
 	})
 	sort.SliceStable(placeOrder, func(i, j int) bool {
@@ -689,17 +714,24 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 			head += fmt.Sprintf(", top %d (--show-all lists every one)", len(shown))
 		}
 		title(head)
-		fmt.Fprintf(&b, "  %s %s %s %s %s %s %s %s\n", dim(fmt.Sprintf("%-8s", "SEVERITY")), dim("   "),
+		fmt.Fprintf(&b, "  %s %s %s %s %s %s %s %s %s\n", dim(fmt.Sprintf("%-8s", "SEVERITY")), dim("   "),
 			dim(fmt.Sprintf("%-7s", "TYPE")), dim(fmt.Sprintf("%-32s", "COMPONENT")), dim(fmt.Sprintf("%-18s", "VERSION")),
-			dim(fmt.Sprintf("%4s", "CVES")), dim(fmt.Sprintf("%-12s", "FIXED IN")), dim("FOUND IN"))
+			dim(fmt.Sprintf("%4s", "CVES")), dim(fmt.Sprintf("%-12s", "FIXED IN")), dim(fmt.Sprintf("%-7s", "LINKED")), dim("FOUND IN"))
 		for _, g := range shown {
 			version := g.versions[0]
 			if len(g.versions) > 1 {
 				version = fmt.Sprintf("%d versions", len(g.versions))
 			}
-			fmt.Fprintf(&b, "  %s %s %-7s %-32s %-18s %4d %-12s %s\n",
+			linked := "-"
+			if g.carriers > 0 {
+				linked = fmt.Sprintf("%d/%d", g.linked, g.carriers)
+				if g.open > 0 {
+					linked += "?"
+				}
+			}
+			fmt.Fprintf(&b, "  %s %s %-7s %-32s %-18s %4d %-12s %-7s %s\n",
 				c.ColorSeverity(fmt.Sprintf("%-8s", g.worst)), markCol(g.mark), g.kind, fit(g.name, 32), fit(version, 18),
-				g.cves, fit(g.fix, 12), dim(fit(list(g.in, 3), 48)))
+				g.cves, fit(g.fix, 12), linked, dim(fit(list(g.in, 3), 48)))
 		}
 		var kinds []string
 		for k := range byKind {
@@ -710,6 +742,11 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 			kinds[i] = fmt.Sprintf("%s %d", k, byKind[k])
 		}
 		b.WriteString(dim("  by type: "+strings.Join(kinds, " · ")) + "\n")
+		b.WriteString(dim("  LINKED: binaries that link a function the advisories name as affected, of those carrying it; ? some are "+
+			"unknown (no function list, or the package is linked but no listed function by name: it may be inlined)") + "\n")
+		if notLinked > 0 {
+			b.WriteString(dim(fmt.Sprintf("  left out: %s Go module versions whose binaries link none of the affected functions", thousands(notLinked))) + "\n")
+		}
 	}
 	if len(placeOrder) > 0 {
 		shown := placeOrder
@@ -804,4 +841,49 @@ func plural(n int, one, many string) string {
 		return "1 " + one
 	}
 	return thousands(n) + " " + many
+}
+
+// unreachable is a host scan's Go item that no binary carrying it can run: each one was checked and links none of
+// the functions its advisories name.
+func unreachable(it vulnx.StackItem) bool {
+	r := it.Reachability
+	return r != nil && len(r.NotReachable) > 0 && len(r.Reachable) == 0 && len(r.Unknown) == 0
+}
+
+// liveSeverity is an item's worst severity and advisory count over the rows a binary can run (rows not marked
+// not_reachable); without reachability marks, the API's own.
+func liveSeverity(it vulnx.StackItem) (string, int) {
+	worst, n, marked := "", 0, false
+	for _, a := range it.AdvisoryRows {
+		if a.Reachability == "not_reachable" {
+			marked = true
+			continue
+		}
+		n++
+		if worst == "" || severityRank[a.Severity] < severityRank[worst] {
+			worst = a.Severity
+		}
+	}
+	if !marked {
+		return it.WorstSeverity, advisoryCount(it)
+	}
+	return worst, n
+}
+
+// reachabilityLine counts Go module versions by binary: how many copies link an affected function.
+func reachabilityLine(res vulnx.StackResult) string {
+	if res.FunctionsUnavailable {
+		return "Go reachability: not checked (the API does not serve affected functions yet)"
+	}
+	reach, not, unknown := 0, 0, 0
+	for _, it := range res.Items {
+		if r := it.Reachability; r != nil {
+			reach, not, unknown = reach+len(r.Reachable), not+len(r.NotReachable), unknown+len(r.Unknown)
+		}
+	}
+	if reach+not+unknown == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Go reachability: of %s affected module copies in binaries, %s link an affected function, %s link none, %s unknown",
+		thousands(reach+not+unknown), thousands(reach), thousands(not), thousands(unknown))
 }

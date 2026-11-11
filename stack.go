@@ -41,29 +41,52 @@ type StackAdvisory struct {
 	Reason     string          `json:"reason,omitempty"`
 	Match      any             `json:"match,omitempty"`
 	Exploit    *scExploitation `json:"exploitation,omitempty"`
+	Aliases    []string        `json:"aliases,omitempty"`
+	// Reachability is set by vulnx on a host scan's Go rows: reachable (a binary links a function the advisory names
+	// as affected) or not_reachable (no binary carrying the module links any); empty when no function list is known.
+	Reachability string `json:"reachability,omitempty"`
+}
+
+// AffectedPackage is one package a Go advisory names as affected, with its affected functions (none listed: every
+// function of the package).
+type AffectedPackage struct {
+	Package   string   `json:"package"`
+	Functions []string `json:"functions"`
+}
+
+// GoFunctions maps a Go item's package and an advisory row's id to the packages and functions the advisory names.
+type GoFunctions map[string]map[string][]AffectedPackage
+
+// ItemReachability says, per binary carrying a Go module version, whether it links an affected function: the
+// binaries that do, those that link none, and those with an advisory no function list is known for.
+type ItemReachability struct {
+	Reachable    []string `json:"reachable,omitempty"`
+	NotReachable []string `json:"not_reachable,omitempty"`
+	Unknown      []string `json:"unknown,omitempty"`
 }
 
 // StackItem is one package (or product, or distro package) of a stack with SecurityContext's verdict.
 type StackItem struct {
-	Input             string          `json:"input,omitempty"`
-	Package           string          `json:"package,omitempty"`
-	Version           string          `json:"version,omitempty"`
-	Status            string          `json:"status,omitempty"` // affected | clean | undetermined | unseen
-	WorstSeverity     string          `json:"worst_severity,omitempty"`
-	Advisories        int             `json:"advisories,omitempty"`
-	AdvisoryRowsTotal int             `json:"advisory_rows_total,omitempty"`
-	FixedVersion      string          `json:"fixed_version,omitempty"`
-	KnownExploited    any             `json:"known_exploited,omitempty"`
-	Malicious         bool            `json:"malicious,omitempty"`
-	AdvisoryRows      []StackAdvisory `json:"advisory_rows,omitempty"`
-	Undetermined      []StackAdvisory `json:"undetermined,omitempty"`
-	UndeterminedTotal int             `json:"undetermined_total,omitempty"`
-	Reason            string          `json:"reason,omitempty"`
-	Distro            string          `json:"distro,omitempty"`
-	Release           string          `json:"release,omitempty"`
-	AdvisoriesURL     string          `json:"advisories_url,omitempty"`
-	URL               string          `json:"url,omitempty"`
-	IntroducedBy      any             `json:"introduced_by,omitempty"`
+	Input             string            `json:"input,omitempty"`
+	Package           string            `json:"package,omitempty"`
+	Version           string            `json:"version,omitempty"`
+	Status            string            `json:"status,omitempty"` // affected | clean | undetermined | unseen
+	WorstSeverity     string            `json:"worst_severity,omitempty"`
+	Advisories        int               `json:"advisories,omitempty"`
+	AdvisoryRowsTotal int               `json:"advisory_rows_total,omitempty"`
+	FixedVersion      string            `json:"fixed_version,omitempty"`
+	KnownExploited    any               `json:"known_exploited,omitempty"`
+	Malicious         bool              `json:"malicious,omitempty"`
+	AdvisoryRows      []StackAdvisory   `json:"advisory_rows,omitempty"`
+	Undetermined      []StackAdvisory   `json:"undetermined,omitempty"`
+	UndeterminedTotal int               `json:"undetermined_total,omitempty"`
+	Reason            string            `json:"reason,omitempty"`
+	Distro            string            `json:"distro,omitempty"`
+	Release           string            `json:"release,omitempty"`
+	AdvisoriesURL     string            `json:"advisories_url,omitempty"`
+	URL               string            `json:"url,omitempty"`
+	IntroducedBy      any               `json:"introduced_by,omitempty"`
+	Reachability      *ItemReachability `json:"reachability,omitempty"` // set by vulnx on a host scan's Go items
 }
 
 // StackSummary counts a stack's items.
@@ -99,10 +122,13 @@ type StackInfo struct {
 
 // StackResult is a checked list or a scanned file: the summary and every item.
 type StackResult struct {
-	Stack   *StackInfo   `json:"stack,omitempty"`
-	Summary StackSummary `json:"summary"`
-	Items   []StackItem  `json:"items"`
-	Total   int          `json:"total"`
+	Stack       *StackInfo   `json:"stack,omitempty"`
+	Summary     StackSummary `json:"summary"`
+	Items       []StackItem  `json:"items"`
+	Total       int          `json:"total"`
+	GoFunctions GoFunctions  `json:"go_functions,omitempty"`
+	// FunctionsUnavailable: function lists were asked for and the API does not serve them yet.
+	FunctionsUnavailable bool `json:"-"`
 }
 
 type stackPage struct {
@@ -114,6 +140,7 @@ type stackPage struct {
 	Items     []StackItem  `json:"items"`
 	Total     int          `json:"total"`
 	Cursor    string       `json:"cursor"`
+	Functions GoFunctions  `json:"go_functions"`
 }
 
 // MaxCheckEntries is how many entries one check sends (one request).
@@ -146,6 +173,10 @@ func isEcosystem(s string) bool {
 
 // CheckPackages answers a list of entries at once (POST /v1/stack {"packages"}).
 func (c *Client) CheckPackages(ctx context.Context, entries []string) (StackResult, error) {
+	return c.checkPackages(ctx, entries, false)
+}
+
+func (c *Client) checkPackages(ctx context.Context, entries []string, functions bool) (StackResult, error) {
 	var res StackResult
 	if len(entries) == 0 {
 		return res, errkit.Append(ErrBadRequest, fmt.Errorf("nothing to check"))
@@ -157,15 +188,19 @@ func (c *Client) CheckPackages(ctx context.Context, entries []string) (StackResu
 	for i, e := range entries {
 		norm[i] = NormalizeCheckEntry(e)
 	}
-	return c.checkChunk(ctx, norm)
+	return c.checkChunk(ctx, norm, functions)
 }
 
 // checkChunk posts a list and, when the answer is cut at the API's response size (truncated, no cursor), splits
 // the list in halves and asks again until every answer is whole. (save: true would page it, but a saved stack
 // loses an rpm's binary package name and with it advisories that name the binary, so lists are never saved.)
-func (c *Client) checkChunk(ctx context.Context, entries []string) (StackResult, error) {
+func (c *Client) checkChunk(ctx context.Context, entries []string, functions bool) (StackResult, error) {
 	var res StackResult
-	req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", nil, map[string]any{"packages": entries})
+	body := map[string]any{"packages": entries}
+	if functions {
+		body["functions"] = true
+	}
+	req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", nil, body)
 	if err != nil {
 		return res, errkit.Append(ErrRequestBuildFailure, err)
 	}
@@ -174,15 +209,15 @@ func (c *Client) checkChunk(ctx context.Context, entries []string) (StackResult,
 		return res, errkit.Append(ErrRequestFailed, err)
 	}
 	if !page.Truncated || len(page.Items) >= page.Total || len(entries) < 2 {
-		res.Summary, res.Items, res.Total = page.Summary, page.Items, page.Total
+		res.Summary, res.Items, res.Total, res.GoFunctions = page.Summary, page.Items, page.Total, page.Functions
 		return res, nil
 	}
 	half := len(entries) / 2
-	first, err := c.checkChunk(ctx, entries[:half])
+	first, err := c.checkChunk(ctx, entries[:half], functions)
 	if err != nil {
 		return res, err
 	}
-	second, err := c.checkChunk(ctx, entries[half:])
+	second, err := c.checkChunk(ctx, entries[half:], functions)
 	if err != nil {
 		return res, err
 	}
@@ -193,6 +228,17 @@ func (c *Client) checkChunk(ctx context.Context, entries []string) (StackResult,
 // mergeStack adds b's items and counts to a.
 func mergeStack(a *StackResult, b StackResult) {
 	a.Items = append(a.Items, b.Items...)
+	for pkg, rows := range b.GoFunctions {
+		if a.GoFunctions == nil {
+			a.GoFunctions = GoFunctions{}
+		}
+		if a.GoFunctions[pkg] == nil {
+			a.GoFunctions[pkg] = map[string][]AffectedPackage{}
+		}
+		for id, list := range rows {
+			a.GoFunctions[pkg][id] = list
+		}
+	}
 	a.Total += b.Total
 	s, r := &a.Summary, b.Summary
 	s.Packages += r.Packages
@@ -513,27 +559,45 @@ func withUpstream(purl string, props map[string]string) string {
 
 // CheckMany checks any number of entries, MaxCheckEntries a request, and merges the answers.
 func (c *Client) CheckMany(ctx context.Context, entries []string) (StackResult, error) {
-	return c.CheckManyProgress(ctx, entries, nil)
+	return c.CheckManyWith(ctx, entries, CheckOptions{})
 }
 
-// CheckManyProgress is CheckMany, calling progress (when set) after each request with the entries checked so far.
-func (c *Client) CheckManyProgress(ctx context.Context, entries []string, progress func(done, total int)) (StackResult, error) {
+// CheckOptions are CheckManyWith's options.
+type CheckOptions struct {
+	// Functions asks for each Go advisory's affected functions (StackResult.GoFunctions). An API that does not
+	// serve them yet answers without: StackResult.FunctionsUnavailable.
+	Functions bool
+	// Progress, when set, is called after each request with the entries checked so far.
+	Progress func(done, total int)
+}
+
+// CheckManyWith is CheckMany with options.
+func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts CheckOptions) (StackResult, error) {
 	var all StackResult
 	for start := 0; start < len(entries); start += MaxCheckEntries {
 		end := start + MaxCheckEntries
 		if end > len(entries) {
 			end = len(entries)
 		}
-		res, err := c.CheckPackages(ctx, entries[start:end])
+		res, err := c.checkPackages(ctx, entries[start:end], opts.Functions)
+		if err != nil && opts.Functions && functionsRejected(err) {
+			opts.Functions, all.FunctionsUnavailable = false, true
+			res, err = c.checkPackages(ctx, entries[start:end], false)
+		}
 		if err != nil {
 			return all, err
 		}
 		mergeStack(&all, res)
-		if progress != nil {
-			progress(end, len(entries))
+		if opts.Progress != nil {
+			opts.Progress(end, len(entries))
 		}
 	}
 	return all, nil
+}
+
+// functionsRejected is an API's 400 for a body field it does not know: one deployed before function lists.
+func functionsRejected(err error) bool {
+	return errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "functions")
 }
 
 // ScanImage queues a scan of a container image by registry reference (POST /v1/stack {"image", "platform"}):
