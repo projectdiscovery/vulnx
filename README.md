@@ -273,6 +273,11 @@ binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formu
 formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
 listed as not assessed, with a count per source. Only names and versions are sent.
 
+A formula is judged by product when its own source repository is the one the product lists. An application built
+on the Electron framework is judged by the framework's version and the npm packages in its bundle. A product the
+index turns out not to know is listed as not checked instead of clean, and a formula with nothing that runs
+(certificates, headers) is left out as data.
+
 For Go binaries it also checks reachability: SecurityContext returns the functions each Go advisory names as affected,
 and vulnx looks them up in each binary's own function table (present in stripped binaries too). A finding is
 reachable when the binary links a listed function, and not reachable when it links no function of any affected

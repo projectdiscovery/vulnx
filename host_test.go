@@ -5,10 +5,12 @@ import (
 	"compress/zlib"
 	"debug/elf"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -340,6 +342,7 @@ func TestHostHomebrew(t *testing.T) {
 	copyTestBinary(t, root, cellar+"gotool/1.0/bin/gotool")
 	copyTestBinary(t, root, cellar+"linked/2.0/bin/linked")
 	writeFile(t, root, cellar+"cairo/1.18.4/lib/libcairo.dylib", "")
+	writeFile(t, root, cellar+"ca-certificates/2026-10-20/share/ca-certificates/cacert.pem", "-----BEGIN")
 	h := newHostReader(root, "darwin")
 	// linked's executable is on PATH and read there first; the formula still counts as read
 	if err := os.MkdirAll(filepath.Join(root, "opt/homebrew/bin"), 0o755); err != nil {
@@ -364,10 +367,13 @@ func TestHostHomebrew(t *testing.T) {
 		"cpe:2.3:a:openssl:openssl:3.4.0:*:*:*:*:*:*:*",
 		"cpe:2.3:a:c-ares:c-ares:1.34.4:*:*:*:*:*:*:*", "cpe:2.3:a:c-ares_project:c-ares:1.34.4:*:*:*:*:*:*:*",
 		"pkg:pypi/botocore@1.31.0", "pkg:npm/prettier@3.0.0", goStdlib())
-	if fmt.Sprint(h.inv.NotAssessed) != "[{cairo 1.18.4 homebrew}]" {
+	if fmt.Sprint(h.inv.NotAssessed) != "[{cairo 1.18.4 homebrew }]" {
 		t.Errorf("not assessed: %v", h.inv.NotAssessed)
 	}
-	if n := h.note(); !strings.Contains(n, "7 formulae: 2 by product, 4 by their packages or binaries), 1 not assessed") {
+	if fmt.Sprint(h.inv.DataOnly) != "[{ca-certificates 2026-10-20 homebrew }]" {
+		t.Errorf("data only: %v", h.inv.DataOnly)
+	}
+	if n := h.note(); !strings.Contains(n, "8 formulae: 2 by product, 4 by their packages or binaries), 1 not assessed") {
 		t.Errorf("note: %s", n)
 	}
 }
@@ -391,7 +397,7 @@ func TestHostApplications(t *testing.T) {
 	if f := h.inv.Fixes["Google Chrome.app"]; f.Kind != "app" || f.Note != "update Google Chrome" {
 		t.Errorf("Chrome: %+v", f)
 	}
-	if fmt.Sprint(h.inv.NotAssessed) != "[{Broken  applications} {Editor 2.1 (300) applications}]" {
+	if fmt.Sprint(h.inv.NotAssessed) != "[{Broken  applications } {Editor 2.1 (300) applications }]" {
 		t.Errorf("not assessed: %v", h.inv.NotAssessed)
 	}
 	if n := h.note(); !strings.Contains(n, "applications 2 (4 bundles), 2 not assessed") {
@@ -514,5 +520,111 @@ func TestHostCycloneDX(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("missing %s", want)
 		}
+	}
+}
+
+// writeAsar writes an asar archive: its JSON index of files (offset and size) and the files' bytes after it.
+func writeAsar(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	type node map[string]any
+	root := node{"files": node{}}
+	var data bytes.Buffer
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		dir := root["files"].(node)
+		parts := strings.Split(name, "/")
+		for _, p := range parts[:len(parts)-1] {
+			if dir[p] == nil {
+				dir[p] = node{"files": node{}}
+			}
+			dir = dir[p].(node)["files"].(node)
+		}
+		dir[parts[len(parts)-1]] = node{"offset": fmt.Sprint(data.Len()), "size": len(files[name])}
+		data.WriteString(files[name])
+	}
+	index, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	padded := (len(index) + 3) / 4 * 4
+	for _, v := range []uint32{4, uint32(padded + 8), uint32(padded + 4), uint32(len(index))} {
+		if err := binary.Write(&out, binary.LittleEndian, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out.Write(index)
+	out.Write(make([]byte, padded-len(index)))
+	out.Write(data.Bytes())
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHostElectronApp reads an Electron application: the framework's version as the npm package electron, and the
+// npm packages in its archive and unpacked directory. An application with neither a product nor a framework is
+// still not assessed.
+func TestHostElectronApp(t *testing.T) {
+	root := t.TempDir()
+	app := "Applications/Chat.app/Contents/"
+	writeFile(t, root, app+"Info.plist", appPlist("com.example.chat", "1.2.0"))
+	writeFile(t, root, app+"Frameworks/Electron Framework.framework/Resources/Info.plist",
+		strings.Replace(appPlist("com.github.Electron.framework", "x"), "CFBundleShortVersionString", "CFBundleVersion", 1))
+	writeAsar(t, filepath.Join(root, app, "Resources/app.asar"), map[string]string{
+		"package.json":                                `{"name":"chat","version":"1.2.0"}`, // the app itself: no registry release
+		"node_modules/lodash/package.json":            `{"name":"lodash","version":"4.17.20"}`,
+		"node_modules/@scope/pkg/package.json":        `{"name":"@scope/pkg","version":"2.0.0"}`,
+		"node_modules/a/node_modules/ms/package.json": `{"name":"ms","version":"2.0.0"}`,
+		"node_modules/lodash/lodash.js":               "module.exports = {}",
+	})
+	writeFile(t, root, app+"Resources/app.asar.unpacked/node_modules/sharp/package.json", `{"name":"sharp","version":"0.32.0"}`)
+	writeFile(t, root, "Applications/Plain.app/Contents/Info.plist", appPlist("com.example.plain", "3.0"))
+	h := newHostReader(root, "darwin")
+	h.applications()
+	want := []string{"pkg:npm/electron@x", "pkg:npm/%40scope/pkg@2.0.0", "pkg:npm/lodash@4.17.20", "pkg:npm/ms@2.0.0", "pkg:npm/sharp@0.32.0"}
+	if strings.Join(h.inv.Entries, "\n") != strings.Join(want, "\n") {
+		t.Errorf("entries:\n%s", strings.Join(h.inv.Entries, "\n"))
+	}
+	if fmt.Sprint(h.inv.NotAssessed) != "[{Plain 3.0 applications }]" || h.inv.Fixes["Chat.app"].Note != "update Chat" ||
+		strings.Join(h.inv.FoundIn["pkg:npm/lodash@4.17.20"], ",") != "Chat.app" {
+		t.Errorf("not assessed %v, fix %+v", h.inv.NotAssessed, h.inv.Fixes["Chat.app"])
+	}
+}
+
+// TestDropUnknownProducts lists a product the index does not know as not checked instead of clean.
+func TestDropUnknownProducts(t *testing.T) {
+	unknown, known := "cpe:2.3:a:nosuch:thing:1.0:*:*:*:*:*:*:*", "cpe:2.3:a:haxx:curl:8.18.0:*:*:*:*:*:*:*"
+	inv := HostInventory{Entries: []string{unknown, known, "pkg:npm/never-heard-of@1.0.0"},
+		EntrySource: map[string]string{unknown: "homebrew", known: "homebrew"},
+		FoundIn:     map[string][]string{unknown: {"thing (formula)"}},
+		Sources:     []HostSource{{Name: "homebrew", Sent: 2}}}
+	res := StackResult{Total: 3, Summary: StackSummary{Packages: 3, Clean: 3}, Items: []StackItem{
+		{Input: unknown, Package: "cpe/nosuch:thing", Version: "1.0", Status: "clean", Seen: "none"},
+		{Input: known, Package: "cpe/haxx:curl", Version: "8.18.0", Status: "clean", Seen: "version"},
+		// a registry package the index has not seen is clean: no advisory names it
+		{Input: "pkg:npm/never-heard-of@1.0.0", Status: "clean", Seen: "none"}}}
+	inv.DropUnknownProducts(&res)
+	if len(res.Items) != 2 || res.Summary.Clean != 2 || res.Total != 2 || len(inv.Entries) != 2 {
+		t.Errorf("items %d clean %d entries %d", len(res.Items), res.Summary.Clean, len(inv.Entries))
+	}
+	want := "[{thing (formula) 1.0 homebrew its product (nosuch:thing) is not in the index}]"
+	if fmt.Sprint(inv.NotAssessed) != want || inv.Sources[0] != (HostSource{Name: "homebrew", Sent: 1, NotAssessed: 1}) {
+		t.Errorf("%v %+v", inv.NotAssessed, inv.Sources[0])
+	}
+}
+
+func TestHasExecutable(t *testing.T) {
+	data, code := t.TempDir(), t.TempDir()
+	writeFile(t, data, "share/ca-certificates/cacert.pem", "-----BEGIN")
+	writeFile(t, code, "lib/libfoo.dylib", "")
+	if hasExecutable(data) || !hasExecutable(code) {
+		t.Error("a keg of data has nothing to run; a library does")
 	}
 }

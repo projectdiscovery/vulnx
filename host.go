@@ -13,8 +13,10 @@ package vulnx
 //   binaries          Go executables on PATH, from their embedded module list; Rust executables that embed their
 //                     crate list. Each module or crate becomes a registry purl.
 //   macOS extras      Homebrew formulae and application bundles have no package ecosystem: they are sent only when
-//                     a table below names their NVD product, and listed as not assessed otherwise. A guessed CPE
-//                     that names no product reads clean, so a component is never mapped by its name alone.
+//                     a table below names their NVD product, and listed as not assessed otherwise. A component is
+//                     never mapped by its name alone: a wrong product that exists would be judged in its place. A
+//                     product the index does not know is listed as not checked (DropUnknownProducts). Applications
+//                     built on the Electron framework are read too: the framework and their bundled npm packages.
 //
 // Nothing is uploaded but these names and versions.
 
@@ -26,6 +28,7 @@ import (
 	"debug/elf"
 	"debug/gosym"
 	"debug/macho"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -38,6 +41,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,6 +59,7 @@ type HostInventory struct {
 	GoBinaries  map[string][]HostBinary `json:"-"`                   // Go entry -> the binaries linking it, for MarkReachability
 	Fixes       map[string]HostFix      `json:"fixes"`               // FoundIn label -> how to update what is there
 	EntrySource map[string]string       `json:"-"`                   // entry -> the source (HostSource.Name) that counted it
+	DataOnly    []HostComponent         `json:"data_only"`           // installed, but nothing in them runs: nothing to check
 	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
 }
 
@@ -74,6 +80,7 @@ type HostComponent struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 	Source  string `json:"source"`
+	Reason  string `json:"reason,omitempty"` // why, when it is not the usual "no exact identifier"
 }
 
 // HostSource is one reader's count: Sent components went into Entries, NotAssessed were read but not sent.
@@ -678,11 +685,7 @@ func nodePackages(dir string, depth int) []string {
 			}
 			var pj struct{ Name, Version string }
 			if json.Unmarshal(raw, &pj) == nil && pj.Name != "" && pj.Version != "" {
-				name := pj.Name
-				if strings.HasPrefix(name, "@") {
-					name = "%40" + strings.TrimPrefix(name, "@")
-				}
-				out = append(out, fmt.Sprintf("pkg:npm/%s@%s", name, url.PathEscape(pj.Version)))
+				out = append(out, npmPurl(pj.Name, pj.Version))
 			}
 			out = append(out, nodePackages(filepath.Join(p, "node_modules"), depth+1)...)
 		}
@@ -960,6 +963,44 @@ var brewProducts = map[string][]string{
 	"openssh":     {"openbsd:openssh"},
 	"unixodbc":    {"unixodbc:unixodbc"},
 	"tmux":        {"tmux_project:tmux"},
+	// each product below lists the formula's own source repository (the top-level url, homepage or head of its
+	// formula file) in SecurityContext's index: a join on the repository, not on the name
+	"abseil":     {"abseil:common_libraries"},
+	"brotli":     {"google:brotli"},
+	"fmt":        {"fmt:fmt"},
+	"fribidi":    {"gnu:fribidi"},
+	"gd":         {"libgd:libgd"},
+	"ghidra":     {"nsa:ghidra"},
+	"graphite2":  {"sil:graphite2"},
+	"harfbuzz":   {"harfbuzz_project:harfbuzz"},
+	"icu4c":      {"icu-project:international_components_for_unicode", "unicode:international_components_for_unicode"},
+	"jasper":     {"jasper_project:jasper"},
+	"jbig2dec":   {"artifex:jbig2dec"},
+	"jpeg-turbo": {"d.r.commander:libjpeg-turbo", "libjpeg-turbo:libjpeg-turbo"},
+	"jpeg-xl":    {"libjxl_project:libjxl"},
+	"leptonica":  {"leptonica:leptonica"},
+	"libavif":    {"aomedia:libavif"},
+	"libnghttp2": {"nghttp2:nghttp2"},
+	"libngtcp2":  {"tatsuhiro-t:ngtcp2"},
+	"libusb":     {"libusb:libusb"},
+	"libvpx":     {"webmproject:libvpx"},
+	"llama.cpp":  {"ggml:llama.cpp"},
+	"lz4":        {"lz4_project:lz4"},
+	"net-snmp":   {"net-snmp:net-snmp"},
+	"nvm":        {"openjsf:node_version_manager"},
+	"oniguruma":  {"oniguruma_project:oniguruma"},
+	"openexr":    {"openexr:openexr"},
+	"openjpeg":   {"uclouvain:openjpeg"},
+	"p11-kit":    {"p11-kit_project:p11-kit"},
+	"pnpm":       {"pnpm:pnpm"},
+	"pyenv":      {"pyenv:pyenv"},
+	"sdl2":       {"libsdl:simple_directmedia_layer"},
+	"squashfs":   {"squashfs-tools_project:squashfs-tools", "squashfs_project:squashfs"},
+	"tesseract":  {"tesseract-ocr:tesseract_ocr"},
+	"tidy-html5": {"htacg:tidy"},
+	"uv":         {"astral:uv"},
+	"z3":         {"microsoft:z3"},
+	"zstd":       {"facebook:zstandard"},
 }
 
 // homebrew reads the installed formulae (Cellar/<formula>/<version>). A formula is judged by its NVD product when
@@ -997,6 +1038,10 @@ func (h *hostReader) homebrew() {
 					byContents++
 					continue
 				}
+				if !hasExecutable(keg) {
+					h.inv.DataOnly = append(h.inv.DataOnly, HostComponent{Name: n.Name(), Version: v.Name(), Source: "homebrew"})
+					continue
+				}
 				notAssessed = append(notAssessed, HostComponent{Name: n.Name(), Version: v.Name()})
 			}
 		}
@@ -1021,6 +1066,25 @@ func (h *hostReader) kegContents(keg string) (out []found, read bool) {
 	out = append(out, b.goEntries...)
 	out = append(out, b.rustEntries...)
 	return out, len(out) > 0 || b.judged > 0
+}
+
+// hasExecutable is whether anything under dir can run: a regular file with an execute bit, or a library.
+// A keg without one (certificates, schemas, headers) is data: there is nothing in it to check.
+func hasExecutable(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error { // an unreadable entry is skipped
+		if err != nil || found {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			ext := filepath.Ext(path)
+			if st, err := d.Info(); err == nil && (st.Mode()&0o111 != 0 || ext == ".dylib" || ext == ".so" || ext == ".a") {
+				found = true
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 var brewRevision = regexp.MustCompile(`_\d+$`)
@@ -1074,6 +1138,11 @@ func (h *hostReader) applications() {
 			ver = info["CFBundleVersion"]
 		}
 		name := strings.TrimSuffix(filepath.Base(b), ".app")
+		bundled := electronContents(b)
+		if len(bundled) > 0 {
+			h.fix(name+".app", HostFix{Kind: "app", Target: name, Note: "update " + name})
+			entries = append(entries, foundIn(name+".app", bundled)...)
+		}
 		if p, ok := appProducts[id]; ok && ver != "" {
 			if id == "com.apple.Safari" {
 				h.fix(name+".app", HostFix{Kind: "macos", Note: "Software Update (softwareupdate --install --all)"})
@@ -1081,6 +1150,9 @@ func (h *hostReader) applications() {
 				h.fix(name+".app", HostFix{Kind: "app", Target: name, Note: "update " + name})
 			}
 			entries = append(entries, found{productCPE(p, ver), name + ".app"})
+			continue
+		}
+		if len(bundled) > 0 {
 			continue
 		}
 		notAssessed = append(notAssessed, HostComponent{Name: name, Version: ver})
@@ -1361,4 +1433,137 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 		},
 		"components": components,
 	}, "", "  ")
+}
+
+// electronContents is what an application built on the Electron framework carries with an exact identifier: the
+// framework itself, as the npm package electron at the framework's version, and the npm packages in its bundle
+// (the app.asar archive, its unpacked directory, or a plain app directory). nil for any other application. The
+// browser engine inside the framework is not sent: the framework backports fixes, so its engine version says
+// nothing exact.
+func electronContents(bundle string) []string {
+	info := appInfo(filepath.Join(bundle, "Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"))
+	version := info["CFBundleVersion"]
+	if version == "" {
+		return nil
+	}
+	out := []string{"pkg:npm/electron@" + url.PathEscape(version)}
+	res := filepath.Join(bundle, "Contents/Resources")
+	out = append(out, asarPackages(filepath.Join(res, "app.asar"))...)
+	out = append(out, nodePackages(filepath.Join(res, "app.asar.unpacked/node_modules"), 0)...)
+	return append(out, nodePackages(filepath.Join(res, "app/node_modules"), 0)...)
+}
+
+// asarPackages reads the npm packages inside an asar archive without unpacking it: the archive starts with a JSON
+// index of its files (offset and size each), and every package.json under a node_modules directory names one.
+func asarPackages(path string) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	var head [16]byte
+	if _, err := io.ReadFull(f, head[:]); err != nil {
+		return nil
+	}
+	headerSize, jsonSize := binary.LittleEndian.Uint32(head[4:8]), binary.LittleEndian.Uint32(head[12:16])
+	if jsonSize == 0 || jsonSize > 64<<20 || jsonSize > headerSize {
+		return nil
+	}
+	raw := make([]byte, jsonSize)
+	if _, err := io.ReadFull(f, raw); err != nil {
+		return nil
+	}
+	type node struct {
+		Files  map[string]*node `json:"files"`
+		Offset string           `json:"offset"`
+		Size   int64            `json:"size"`
+	}
+	var root node
+	if json.Unmarshal(raw, &root) != nil {
+		return nil
+	}
+	base := int64(8) + int64(headerSize)
+	var out []string
+	var walk func(n *node, inModules bool, depth int)
+	walk = func(n *node, inModules bool, depth int) {
+		if n == nil || depth > 64 {
+			return
+		}
+		for name, child := range n.Files {
+			if child == nil {
+				continue
+			}
+			if child.Files != nil {
+				walk(child, inModules || name == "node_modules", depth+1)
+				continue
+			}
+			// a file packed in the archive (one kept beside it has no offset and is read from the unpacked directory)
+			if !inModules || name != "package.json" || child.Offset == "" || child.Size <= 0 || child.Size > 1<<20 {
+				continue
+			}
+			offset, err := strconv.ParseInt(child.Offset, 10, 64)
+			if err != nil {
+				continue
+			}
+			body := make([]byte, child.Size)
+			if _, err := f.ReadAt(body, base+offset); err != nil {
+				continue
+			}
+			var pj struct{ Name, Version string }
+			if json.Unmarshal(body, &pj) == nil && pj.Name != "" && pj.Version != "" {
+				out = append(out, npmPurl(pj.Name, pj.Version))
+			}
+		}
+	}
+	walk(&root, false, 0)
+	sort.Strings(out)
+	return out
+}
+
+func npmPurl(name, version string) string {
+	if strings.HasPrefix(name, "@") {
+		name = "%40" + strings.TrimPrefix(name, "@")
+	}
+	return fmt.Sprintf("pkg:npm/%s@%s", name, url.PathEscape(version))
+}
+
+// DropUnknownProducts takes out of a checked result the products SecurityContext does not know (an item it marks
+// seen: none). Such a product reads clean only because no rule names it: it was not checked, and is listed so.
+func (inv *HostInventory) DropUnknownProducts(res *StackResult) {
+	unknown := map[string]bool{}
+	kept := res.Items[:0]
+	for _, it := range res.Items {
+		if it.Seen != "none" || it.Status != "clean" || !strings.HasPrefix(it.Input, "cpe:") {
+			kept = append(kept, it)
+			continue
+		}
+		unknown[it.Input] = true
+		src := inv.EntrySource[it.Input]
+		name := strings.TrimPrefix(it.Package, "cpe/")
+		if in := inv.FoundIn[it.Input]; len(in) > 0 {
+			name = in[0]
+		}
+		inv.NotAssessed = append(inv.NotAssessed, HostComponent{Name: name, Version: it.Version, Source: src,
+			Reason: "its product (" + strings.TrimPrefix(it.Package, "cpe/") + ") is not in the index"})
+		for i := range inv.Sources {
+			if inv.Sources[i].Name == src {
+				inv.Sources[i].Sent--
+				inv.Sources[i].NotAssessed++
+			}
+		}
+		res.Summary.Clean--
+		res.Summary.Packages--
+		res.Total--
+	}
+	res.Items = kept
+	if len(unknown) == 0 {
+		return
+	}
+	entries := inv.Entries[:0]
+	for _, e := range inv.Entries {
+		if !unknown[e] {
+			entries = append(entries, e)
+		}
+	}
+	inv.Entries = entries
 }

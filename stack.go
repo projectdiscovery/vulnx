@@ -75,6 +75,7 @@ type StackItem struct {
 	Package           string            `json:"package,omitempty"`
 	Version           string            `json:"version,omitempty"`
 	Status            string            `json:"status,omitempty"` // affected | clean | undetermined | unseen
+	Seen              string            `json:"seen,omitempty"`   // version | package | none: how well the index knows it
 	WorstSeverity     string            `json:"worst_severity,omitempty"`
 	Advisories        int               `json:"advisories,omitempty"`
 	AdvisoryRowsTotal int               `json:"advisory_rows_total,omitempty"`

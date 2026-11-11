@@ -145,6 +145,7 @@ cat versions.txt | vulnx scan`,
 					hostProgress("")
 					fatalAPI("scan", err)
 				}
+				inv.DropUnknownProducts(&res)
 				hostProgress("Checking which Go programs reach affected code ...")
 				inv.MarkReachability(&res)
 				hostProgress("")
