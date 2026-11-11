@@ -261,9 +261,9 @@ func TestRenderHostGrid(t *testing.T) {
 		"macOS 26.4: 9 components scanned in 7s\n",
 		"  7 affected   6 reachable   3 known exploited   1 public exploit\n",
 		"  SOURCE        CRITICAL     HIGH         MEDIUM       LOW          EXPLOITED   CHECKED\n",
-		"  macOS            1 ██████     -            -            -                 1         1\n",
-		"  python           -            1 ██████     1 ██████     -                 -         2\n",
-		"  go binaries      1 ██████     -            -            -                 1         2\n",
+		"  macOS            1 ▆▆▆▆▆▆     -            -            -                 1         1\n",
+		"  python           -            1 ▆▆▆▆▆▆     1 ▆▆▆▆▆▆     -                 -         2\n",
+		"  go binaries      1 ▆▆▆▆▆▆     -            -            -                 1         2\n",
 		"  total            3            2            1            0                 3         9\n",
 		"Not checked: 1 with no exact identifier (1 homebrew)",
 		"Not counted: 1 Go module versions no program can reach",
@@ -313,5 +313,16 @@ func TestHostReportHTML(t *testing.T) {
 	}
 	if !filepath.IsAbs(path) || strings.Contains(html, "<b>\"") {
 		t.Errorf("path %s", path)
+	}
+}
+
+// TestRenderHostGridColors colors each bar by its column's severity.
+func TestRenderHostGridColors(t *testing.T) {
+	inv, res := hostFixture()
+	out := renderHost("grid", inv, res, 0, false, renderer.DefaultColorConfig())
+	for sev, color := range gridColors {
+		if sev != "low" && !strings.Contains(out, color+gridBar) { // the fixture has no low finding
+			t.Errorf("no %s bar in its color", sev)
+		}
 	}
 }

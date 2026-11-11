@@ -527,6 +527,12 @@ type gridRow struct {
 
 var gridSeverities = []string{"critical", "high", "medium", "low"}
 
+// gridBar draws a grid bar: a block a little short of the line's height, so bars in adjacent rows stay apart.
+const gridBar = "▆"
+
+// gridColors are the bars' colors: red, orange, yellow, green, as the report's.
+var gridColors = map[string]string{"critical": "\033[38;5;203m", "high": "\033[38;5;208m", "medium": "\033[38;5;178m", "low": "\033[38;5;71m"}
+
 // hostCounts are a host scan's headline numbers.
 type hostCounts struct {
 	Checked, Affected, Reachable, Exploited, PublicExploit, NotLinked int
@@ -608,7 +614,7 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 			return dim(fmt.Sprintf("%4s ", "-")) + strings.Repeat(" ", bar)
 		}
 		blocks := max(1, (v*bar+peak-1)/peak)
-		return fmt.Sprintf("%4d ", v) + c.ColorSeverity(strings.Repeat("█", blocks)) + strings.Repeat(" ", bar-blocks)
+		return fmt.Sprintf("%4d ", v) + c.Colorize(strings.Repeat(gridBar, blocks), gridColors[sev]) + strings.Repeat(" ", bar-blocks)
 	}
 	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %-11s  %-11s  %-11s  %-11s  %9s  %8s", width, "SOURCE", "CRITICAL", "HIGH", "MEDIUM", "LOW",
 		"EXPLOITED", "CHECKED")) + "\n")
