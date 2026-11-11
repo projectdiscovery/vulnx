@@ -1,7 +1,7 @@
 package clis
 
 // vulnx scan --host's report: what to update first (the default), or the same findings briefly, per component,
-// per program or as Markdown (--report). Every view leaves out what no binary can reach (Go reachability).
+// per program or as Markdown (--view). Every view leaves out what no binary can reach (Go reachability).
 
 import (
 	"bytes"
@@ -995,7 +995,7 @@ func renderHostActions(inv vulnx.HostInventory, res vulnx.StackResult, all bool,
 		b.WriteString(dim(fmt.Sprintf("  Skipped: %s Go module versions no binary can reach (it links none of the affected code)", thousands(notLinked))) + "\n")
 	}
 	b.WriteString(dim("  "+notCheckedLine(inv)) + "\n")
-	b.WriteString(dim("  More: --report programs | details | brief | markdown · --json for everything") + "\n")
+	b.WriteString(dim("  More: --view programs | details | brief | markdown · --json for everything") + "\n")
 	return b.String()
 }
 
@@ -1010,7 +1010,7 @@ func notCheckedLine(inv vulnx.HostInventory) string {
 			parts = append(parts, fmt.Sprintf("%d %s", s.NotAssessed, s.Name))
 		}
 	}
-	return fmt.Sprintf("Not checked: %s without an exact identifier (%s; --report details names them)",
+	return fmt.Sprintf("Not checked: %s without an exact identifier (%s; --view details names them)",
 		thousands(len(inv.NotAssessed)), strings.Join(parts, ", "))
 }
 

@@ -30,11 +30,11 @@ var (
 	scanAuthor  string
 	scanWait    time.Duration
 	scanShowAll bool
-	scanReport  string
+	scanHTML    string
 	scanView    string
 	scanOpen    bool
 	scanSBOM    string
-	scanShare   bool
+	scanReport  bool
 	scanFailOn  string
 	scanImage   string
 	scanPlat    string
@@ -66,7 +66,8 @@ Or an operating system:
                                   applications with a known product. Anything read but not judged is listed.
                                   --root reads a mounted Linux filesystem instead. The terminal shows one
                                   screen: findings per source and severity (--view for other views). --report
-                                  writes the full report as a local HTML file (--open opens it);
+                                  gives a temporary report link valid for 24 hours; --html writes the report as
+                                  a local file (--open opens it);
                                   --fail-on kev|critical|high exits 2 on a reachable finding.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
@@ -122,11 +123,11 @@ cat versions.txt | vulnx scan`,
 				if scanFailOn != "" && !slices.Contains(failOnLevels, scanFailOn) {
 					gologger.Fatal().Msgf("--fail-on takes %s (got %s)", strings.Join(failOnLevels, ", "), scanFailOn)
 				}
-				if scanShare { // before the scan: a report that could not expire is never uploaded
+				if scanReport { // before the scan: a report that could not expire is never uploaded
 					if err := vulnxClient.StackExpirySupported(ctx); errkit.Is(err, vulnx.ErrExpiryUnsupported) {
-						gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a report's link yet, so nothing was scanned or uploaded")
+						gologger.Fatal().Msg("--report: this SecurityContext API cannot expire a report's link yet, so nothing was scanned or uploaded")
 					} else if err != nil {
-						fatalAPI("share", err)
+						fatalAPI("report", err)
 					}
 				}
 				start := time.Now()
@@ -159,25 +160,25 @@ cat versions.txt | vulnx scan`,
 				}
 				fmt.Print(renderHost(scanView, inv, res, elapsed, scanShowAll, colorConfig()))
 				switch {
-				case scanReport != "" || scanOpen:
-					path, err := writeHostReport(scanReport, inv, res, elapsed)
+				case scanHTML != "" || scanOpen:
+					path, err := writeHostReport(scanHTML, inv, res, elapsed)
 					if err != nil {
 						gologger.Fatal().Msgf("Failed to write the report: %s", err)
 					}
-					fmt.Printf("  Report: file://%s\n", path)
+					fmt.Printf("  Local report: file://%s\n", path)
 					if scanOpen {
 						openFile(path)
 					}
-				case scanView == "grid" && !scanShare:
-					fmt.Println("  Full report: vulnx scan --host --report")
+				case scanView == "grid" && !scanReport:
+					fmt.Println("  Full report: --html writes a local file, --report gives a link valid for 24 hours")
 				}
-				if scanSBOM != "" || scanShare {
+				if scanSBOM != "" || scanReport {
 					path, err := writeHostSBOM(scanSBOM, inv)
 					if err != nil {
 						gologger.Fatal().Msgf("Failed to write the SBOM: %s", err)
 					}
 					fmt.Printf("  SBOM: %s\n", path)
-					if scanShare {
+					if scanReport {
 						hostProgress("Uploading the SBOM to SecurityContext ...")
 						id, expiresAt, err := vulnxClient.ShareFile(ctx, path, shareExpiry)
 						if err == nil {
@@ -186,13 +187,13 @@ cat versions.txt | vulnx scan`,
 						}
 						hostProgress("")
 						if errkit.Is(err, vulnx.ErrExpiryUnsupported) {
-							gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a report's link yet, so nothing was uploaded")
+							gologger.Fatal().Msg("--report: this SecurityContext API cannot expire a report's link yet, so nothing was uploaded")
 						}
 						if err != nil {
-							fatalAPI("share", err)
+							fatalAPI("report", err)
 						}
-						fmt.Printf("  Unlisted report: %s\n", vulnxClient.StackPage(id))
-						fmt.Printf("  Anyone with the link can read it until %s; then the link stops working\n", localTime(expiresAt))
+						fmt.Printf("  Temporary report: %s\n", vulnxClient.StackPage(id))
+						fmt.Printf("  Valid for 24 hours, until %s; anyone with the link can read it until then\n", localTime(expiresAt))
 						fmt.Println("  SecurityContext keeps the component names and versions for analysis, not tied to you")
 					}
 				}
@@ -503,12 +504,12 @@ func init() {
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
 	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, and on macOS Homebrew and applications")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
-	scanCmd.Flags().StringVar(&scanReport, "report", "", "with --host: also write the full report as one HTML file and print its link (--report=path.html to name it)")
-	scanCmd.Flags().Lookup("report").NoOptDefVal = "auto"
+	scanCmd.Flags().StringVar(&scanHTML, "html", "", "with --host: also write the full report as one local HTML file and print its link (--html=path.html to name it)")
+	scanCmd.Flags().Lookup("html").NoOptDefVal = "auto"
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
-	scanCmd.Flags().BoolVar(&scanShare, "share", false, "with --host: write the SBOM, upload it to SecurityContext and print its unlisted report link; the link works for a day (until then anyone with it can read the machine's component list), and SecurityContext keeps the list for analysis")
-	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the report and open it in the browser")
+	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: a temporary report on SecurityContext, valid for 24 hours: uploads the machine's component list (also written as an SBOM) and prints an unlisted link anyone holding it can read until it expires; SecurityContext keeps the list for analysis")
+	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the local HTML report and open it in the browser")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
 	rootCmd.AddCommand(scanCmd)
