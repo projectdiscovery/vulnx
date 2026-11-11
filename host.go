@@ -51,7 +51,17 @@ type HostInventory struct {
 	NotAssessed []HostComponent         `json:"not_assessed"`        // read, but with no identifier SecurityContext judges exactly
 	NotRead     []string                `json:"not_read"`            // what no reader covers
 	GoBinaries  map[string][]HostBinary `json:"-"`                   // Go entry -> the binaries linking it, for MarkReachability
+	Fixes       map[string]HostFix      `json:"fixes"`               // FoundIn label -> how to update what is there
 	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
+}
+
+// HostFix is how to update what was found in one place (a FoundIn label): a command the components or Target are
+// appended to, or, with no command, Note says what to do.
+type HostFix struct {
+	Kind    string `json:"kind"`              // macos, app, brew, go-install, cargo, binary, pip, npm, gem, apt, dnf, apk, system
+	Command string `json:"command,omitempty"` // "brew upgrade", "/opt/homebrew/bin/python3.12 -m pip install -U", ...
+	Target  string `json:"target,omitempty"`  // what the command names for this place (a formula, a Go package); empty: the components
+	Note    string `json:"note,omitempty"`    // what to do when there is no command ("update Wireshark")
 }
 
 // HostBinary is an executable vulnx read: its real path and the name it was found under (a PATH link's).
@@ -108,7 +118,7 @@ func HostEntries(root string) (HostInventory, error) {
 
 func newHostReader(root, goos string) *hostReader {
 	return &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
-		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}}}
+		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}, Fixes: map[string]HostFix{}}}
 }
 
 type hostReader struct {
@@ -186,6 +196,42 @@ func (h *hostReader) label(dir string) string {
 	return p
 }
 
+// fix records how to update a place, the first reader's word standing.
+func (h *hostReader) fix(label string, f HostFix) {
+	if _, ok := h.inv.Fixes[label]; !ok {
+		h.inv.Fixes[label] = f
+	}
+}
+
+var pythonLib = regexp.MustCompile(`/lib/(python3\.\d+)/(site|dist)-packages$`)
+
+// pythonPlace labels a site-packages directory with its interpreter and says how its packages are updated: that
+// interpreter's pip (a user site with --user); the Command Line Tools' Python comes with them.
+func (h *hostReader) pythonPlace(dir string) (string, HostFix) {
+	label := h.label(dir)
+	path := filepath.ToSlash(dir)
+	switch {
+	case strings.Contains(path, "/Library/Developer/CommandLineTools/"):
+		return label, HostFix{Kind: "system", Note: "comes with the Command Line Tools: Software Update updates it"}
+	case strings.Contains(path, "/Library/Python/"): // ~/Library/Python/3.9/lib/python/site-packages
+		v := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(dir))))
+		return label + " (python" + v + ")", HostFix{Kind: "pip", Command: "python" + v + " -m pip install --user -U"}
+	}
+	m := pythonLib.FindStringSubmatch(path)
+	if m == nil {
+		return label, HostFix{Kind: "pip", Command: "python3 -m pip install -U"}
+	}
+	label += " (" + m[1] + ")"
+	if strings.Contains(path, "/.local/lib/") {
+		return label, HostFix{Kind: "pip", Command: m[1] + " -m pip install --user -U"}
+	}
+	prefix := strings.TrimSuffix(path, m[0])
+	if h.root != "/" {
+		prefix = "/" + strings.TrimPrefix(strings.TrimPrefix(prefix, filepath.ToSlash(h.root)), "/")
+	}
+	return label, HostFix{Kind: "pip", Command: prefix + "/bin/" + m[1] + " -m pip install -U"}
+}
+
 // found is an entry and where it was found.
 type found struct{ entry, in string }
 
@@ -244,6 +290,7 @@ func (h *hostReader) macOS() error {
 	}
 	ver := strings.TrimSpace(string(out))
 	h.inv.OS = "macOS " + ver
+	h.fix("macOS", HostFix{Kind: "macos", Note: "Software Update (softwareupdate --install --all)"})
 	h.add("macOS", "sw_vers", foundIn("macOS", []string{fmt.Sprintf("cpe:2.3:o:apple:macos:%s:*:*:*:*:*:*:*", ver)}), nil)
 	return nil
 }
@@ -320,6 +367,11 @@ func (h *hostReader) linuxOS() error {
 		return nil
 	}
 	h.inv.Source = source
+	h.fix(source, map[string]HostFix{
+		"dpkg": {Kind: "apt", Command: "sudo apt-get install --only-upgrade"},
+		"rpm":  {Kind: "dnf", Command: "sudo dnf upgrade"},
+		"apk":  {Kind: "apk", Command: "sudo apk upgrade"},
+	}[source])
 	h.add(source, "", foundIn(source, entries), nil)
 	return nil
 }
@@ -499,13 +551,17 @@ func (h *hostReader) languagePackages() {
 	dirs := h.glob(pyDirs...)
 	var py []found
 	for _, d := range dirs {
-		py = append(py, foundIn(h.label(d), pythonPackages(d))...)
+		label, f := h.pythonPlace(d)
+		h.fix(label, f)
+		py = append(py, foundIn(label, pythonPackages(d))...)
 	}
 	h.add("python", count(len(dirs), "site-packages dir", "site-packages dirs"), py, nil)
 
 	dirs = h.glob(nodeDirs...)
 	var node []found
 	for _, d := range dirs {
+		// a vulnerable dependency of a global tool is updated with the tool
+		h.fix(h.label(d), HostFix{Kind: "npm", Command: "npm update -g"})
 		node = append(node, foundIn(h.label(d), nodePackages(d, 0))...)
 	}
 	h.add("npm", count(len(dirs), "global node_modules", "global node_modules"), node, nil)
@@ -513,6 +569,11 @@ func (h *hostReader) languagePackages() {
 	dirs = h.glob(gemDirs...)
 	var gems []found
 	for _, d := range dirs {
+		if strings.Contains(filepath.ToSlash(d), "/System/Library/") {
+			h.fix(h.label(d), HostFix{Kind: "system", Note: "comes with macOS: updated with it"})
+		} else {
+			h.fix(h.label(d), HostFix{Kind: "gem", Command: "gem update"})
+		}
 		gems = append(gems, foundIn(h.label(d), rubyGems(d))...)
 		gems = append(gems, foundIn(h.label(d), rubyGems(filepath.Join(d, "default")))...)
 	}
@@ -707,7 +768,8 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 			if err != nil || !st.Mode().IsRegular() || st.Mode()&0o111 == 0 {
 				continue
 			}
-			if mods, renamed, ok := goModules(real); ok {
+			if mods, renamed, main, ok := goModules(real); ok {
+				h.fix(e.Name(), binaryFix(e.Name(), real, main))
 				b.goBins++
 				b.goEntries = append(b.goEntries, foundIn(e.Name(), mods)...)
 				for _, m := range mods {
@@ -716,6 +778,7 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 					}
 				}
 			} else if crates, ok := rustCrates(real); ok {
+				h.fix(e.Name(), binaryFix(e.Name(), real, ""))
 				b.rustBins++
 				b.rustEntries = append(b.rustEntries, foundIn(e.Name(), crates)...)
 			} else {
@@ -732,10 +795,11 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 // (a replaced module as its replacement; one replaced by a local directory has no version and is left out).
 // renamed holds the entries of modules replaced by another module path: their code is compiled under the original
 // import paths, so an advisory's function names for the replacement cannot be looked up in the binary.
-func goModules(path string) (out []string, renamed map[string]bool, ok bool) {
+// main is the binary's main package path, what `go install` names.
+func goModules(path string) (out []string, renamed map[string]bool, main string, ok bool) {
 	bi, err := buildinfo.ReadFile(path)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, "", false
 	}
 	renamed = map[string]bool{}
 	if v := strings.TrimPrefix(bi.GoVersion, "go"); v != "" {
@@ -757,7 +821,25 @@ func goModules(path string) (out []string, renamed map[string]bool, ok bool) {
 			renamed[entry] = true
 		}
 	}
-	return out, renamed, true
+	return out, renamed, bi.Path, true
+}
+
+var cellarFormula = regexp.MustCompile(`/Cellar/([^/]+)/`)
+
+// binaryFix says how a Go or Rust executable is updated: by its Homebrew formula when it lives in a Cellar,
+// `go install <main package>@latest` from a Go bin directory, `cargo install` from Cargo's, else by hand.
+func binaryFix(name, real, main string) HostFix {
+	path := filepath.ToSlash(real)
+	switch {
+	case cellarFormula.MatchString(path):
+		return HostFix{Kind: "brew", Command: "brew upgrade", Target: cellarFormula.FindStringSubmatch(path)[1]}
+	case strings.Contains(path, "/go/bin/") && strings.Contains(strings.SplitN(main, "/", 2)[0], "."):
+		// a main package with a module path (not command-line-arguments: a binary built from loose files)
+		return HostFix{Kind: "go-install", Command: "go install", Target: main + "@latest"}
+	case strings.Contains(path, "/.cargo/bin/"):
+		return HostFix{Kind: "cargo", Command: "cargo install", Target: name}
+	}
+	return HostFix{Kind: "binary", Target: name, Note: "update " + name + " (" + real + ")"}
 }
 
 // rustCrates reads the crate list a Rust executable embeds when built for auditing: a zlib-compressed JSON
@@ -897,6 +979,7 @@ func (h *hostReader) homebrew() {
 				contents, read := h.kegContents(keg)
 				entries = append(entries, contents...)
 				in := n.Name() + " (formula)"
+				h.fix(in, HostFix{Kind: "brew", Command: "brew upgrade", Target: n.Name()})
 				base, _, _ := strings.Cut(n.Name(), "@")
 				if products, ok := brewProducts[base]; ok {
 					ver := brewRevision.ReplaceAllString(v.Name(), "")
@@ -922,6 +1005,7 @@ func (h *hostReader) homebrew() {
 // nothing (its executables already read from PATH count).
 func (h *hostReader) kegContents(keg string) (out []found, read bool) {
 	in := filepath.Base(filepath.Dir(keg)) + " (formula)"
+	h.fix(in, HostFix{Kind: "brew", Command: "brew upgrade", Target: filepath.Base(filepath.Dir(keg))})
 	for _, d := range globAll(filepath.Join(keg, "lib/python3*/site-packages"), filepath.Join(keg, "libexec/lib/python3*/site-packages"),
 		filepath.Join(keg, "libexec/venv/lib/python3*/site-packages"), filepath.Join(keg, "Frameworks/Python.framework/Versions/*/lib/python3*/site-packages")) {
 		out = append(out, foundIn(in, pythonPackages(d))...)
@@ -987,6 +1071,11 @@ func (h *hostReader) applications() {
 		}
 		name := strings.TrimSuffix(filepath.Base(b), ".app")
 		if p, ok := appProducts[id]; ok && ver != "" {
+			if id == "com.apple.Safari" {
+				h.fix(name+".app", HostFix{Kind: "macos", Note: "Software Update (softwareupdate --install --all)"})
+			} else {
+				h.fix(name+".app", HostFix{Kind: "app", Target: name, Note: "update " + name})
+			}
 			entries = append(entries, found{productCPE(p, ver), name + ".app"})
 			continue
 		}

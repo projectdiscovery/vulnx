@@ -1,6 +1,8 @@
 package clis
 
 import (
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -128,5 +130,116 @@ func TestRenderHostTextColorAligns(t *testing.T) {
 	plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(out, "")
 	if !strings.Contains(plain, "  SOURCE          CHECKED  NOT ASSESSED  READ FROM\n") {
 		t.Errorf("header misaligned:\n%s", plain)
+	}
+}
+
+// hostFixture is a small host scan: macOS with a known exploited CVE, Chrome, two formulae (one reached through its
+// Go binary), a Go tool from ~/go/bin, a pip site with two packages, and a module version no binary reaches.
+func hostFixture() (vulnx.HostInventory, vulnx.StackResult) {
+	exploited := func(sev string, known, poc bool) []vulnx.StackAdvisory {
+		var rows []vulnx.StackAdvisory
+		raw := fmt.Sprintf(`[{"advisory_id": "A", "severity": %q, "exploitation": {"known_exploited": %v, "public_exploit": %v}}]`, sev, known, poc)
+		if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+			panic(err)
+		}
+		return rows
+	}
+	inv := vulnx.HostInventory{
+		OS:      "macOS 26.4",
+		Entries: make([]string, 9),
+		FoundIn: map[string][]string{
+			"cpe:macos":                          {"macOS"},
+			"cpe:2.3:a:google:chrome:1.0:*":      {"Google Chrome.app"},
+			"cpe:2.3:a:php:php:8.5.2:*":          {"php (formula)"},
+			"pkg:golang/golang.org/x/net@v0.7.0": {"caddy", "air"},
+			"pkg:pypi/lxml@4.9.3":                {"/opt/homebrew (python3.12)"},
+			"pkg:pypi/wheel@0.41.2":              {"/opt/homebrew (python3.12)"},
+			"pkg:golang/github.com/a/b@v1.0.0":   {"caddy"},
+		},
+		Fixes: map[string]vulnx.HostFix{
+			"macOS":                      {Kind: "macos", Note: "Software Update (softwareupdate --install --all)"},
+			"Google Chrome.app":          {Kind: "app", Target: "Google Chrome", Note: "update Google Chrome"},
+			"php (formula)":              {Kind: "brew", Command: "brew upgrade", Target: "php"},
+			"caddy":                      {Kind: "brew", Command: "brew upgrade", Target: "caddy"},
+			"air":                        {Kind: "go-install", Command: "go install", Target: "github.com/air-verse/air@latest"},
+			"/opt/homebrew (python3.12)": {Kind: "pip", Command: "/opt/homebrew/bin/python3.12 -m pip install -U"},
+		},
+		Sources:     []vulnx.HostSource{{Name: "homebrew", NotAssessed: 1}},
+		NotAssessed: []vulnx.HostComponent{{Name: "cairo", Version: "1.18.4", Source: "homebrew"}},
+	}
+	res := vulnx.StackResult{Summary: vulnx.StackSummary{Affected: 7}, Items: []vulnx.StackItem{
+		{Input: "cpe:2.3:o:apple:macos:26.4", Status: "affected", WorstSeverity: "critical", FixedVersion: "26.7.3", AdvisoryRows: exploited("critical", true, true)},
+		{Input: "cpe:2.3:a:google:chrome:1.0:*", Status: "affected", WorstSeverity: "high", FixedVersion: "1.1", AdvisoryRows: exploited("high", true, false)},
+		{Input: "cpe:2.3:a:php:php:8.5.2:*", Status: "affected", WorstSeverity: "critical", FixedVersion: "8.5.12", AdvisoryRows: exploited("critical", false, true)},
+		{Input: "pkg:golang/golang.org/x/net@v0.7.0", Package: "go/golang.org/x/net", Status: "affected", WorstSeverity: "critical",
+			AdvisoryRows: exploited("critical", true, false), Reachability: &vulnx.ItemReachability{Reachable: []string{"caddy", "air"}}},
+		{Input: "pkg:pypi/lxml@4.9.3", Status: "affected", WorstSeverity: "high", FixedVersion: "6.1.0", AdvisoryRows: exploited("high", false, false)},
+		{Input: "pkg:pypi/wheel@0.41.2", Status: "affected", WorstSeverity: "medium", FixedVersion: "0.46.2", AdvisoryRows: exploited("medium", false, false)},
+		{Input: "pkg:golang/github.com/a/b@v1.0.0", Package: "go/github.com/a/b", Status: "affected", WorstSeverity: "critical",
+			AdvisoryRows: []vulnx.StackAdvisory{{AdvisoryID: "B", Severity: "critical", Reachability: "not_reachable"}},
+			Reachability: &vulnx.ItemReachability{NotReachable: []string{"caddy"}}},
+	}}
+	inv.FoundIn["cpe:2.3:o:apple:macos:26.4"] = inv.FoundIn["cpe:macos"]
+	return inv, res
+}
+
+func TestHostActions(t *testing.T) {
+	inv, res := hostFixture()
+	var got []string
+	for _, a := range hostActions(inv, findings(inv, res)) {
+		got = append(got, fmt.Sprintf("%d %s", a.tier, a.line()))
+	}
+	want := []string{
+		"0 Software Update (softwareupdate --install --all)",
+		"0 update Google Chrome",
+		"0 brew upgrade caddy",                         // x/net, known exploited, reached in caddy
+		"0 go install github.com/air-verse/air@latest", // and in air
+		"1 brew upgrade php",                           // critical with a public exploit
+		"2 /opt/homebrew/bin/python3.12 -m pip install -U lxml",
+		"3 /opt/homebrew/bin/python3.12 -m pip install -U wheel",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("actions:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestHostReports(t *testing.T) {
+	inv, res := hostFixture()
+	c := renderer.NoColorConfig()
+	for view, wants := range map[string][]string{
+		"actions": {"macOS 26.4 · 9 components · 7 affected (6 a program can reach) · 3 known exploited",
+			"Update now · known exploited\n  Software Update (softwareupdate --install --all)\n      macOS 26.4 → 26.7.3\n",
+			"  go install github.com/air-verse/air@latest\n      air: x/net\n",
+			"Later: 1 more update for medium and low findings", "Skipped: 1 Go module versions no binary can reach",
+			"Not checked: 1 without an exact identifier (1 homebrew"},
+		"brief": {"Update now: Software Update, Google Chrome, 1 Homebrew formula, 1 Go tool",
+			"Next:       1 Homebrew formula", "Then:       1 Python package"},
+		"programs": {"critical caddy KEV  brew upgrade caddy\n    critical x/net v0.7.0\n",
+			"high     /opt/homebrew (python3.12)  /opt/homebrew/bin/python3.12 -m pip install -U"},
+		"markdown": {"### Update now · known exploited", "- [ ] `brew upgrade caddy`\n  - caddy: x/net\n",
+			"- [ ] `/opt/homebrew/bin/python3.12 -m pip install -U lxml`: lxml 4.9.3 → 6.1.0"},
+	} {
+		out := renderHost(view, inv, res, false, c)
+		for _, w := range wants {
+			if !strings.Contains(out, w) {
+				t.Errorf("%s: missing %q in\n%s", view, w, out)
+			}
+		}
+		if strings.Contains(out, "a/b") {
+			t.Errorf("%s: lists a module version no binary reaches:\n%s", view, out)
+		}
+	}
+}
+
+func TestFailsOn(t *testing.T) {
+	inv, res := hostFixture()
+	for level, want := range map[string]bool{"kev": true, "critical": true, "high": true, "": false} {
+		if failsOn(level, inv, res) != want {
+			t.Errorf("%q: want %v", level, want)
+		}
+	}
+	res.Items = res.Items[4:5] // lxml only: high, no exploit
+	if failsOn("kev", inv, res) || failsOn("critical", inv, res) || !failsOn("high", inv, res) {
+		t.Error("a high finding fails only --fail-on high")
 	}
 }

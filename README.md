@@ -278,7 +278,20 @@ and vulnx looks them up in each binary's own function table (present in stripped
 reachable when the binary links a listed function, and not reachable when it links no function of any affected
 package; it stays unknown when the package is linked but no listed function is, since the compiler may have inlined
 it. "Fix first" leaves out module versions no binary can reach and shows, per component, how many of the binaries
-carrying it link an affected function (LINKED). OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+carrying it link an affected function (LINKED).
+
+The report leads with what to update, most urgent first (known exploited, then critical or high with a public
+exploit, then critical or high, then the rest), as the command that updates each place where one exists:
+Software Update, `brew upgrade <formulae>`, the right interpreter's `pip install -U`, `go install <tool>@latest`,
+`npm update -g`, or the app or program to update by hand. `--report` picks another view:
+```bash
+vulnx scan --host                       # actions: what to update, most urgent first
+vulnx scan --host --report brief        # a few lines: per tier, what kind of updates it takes
+vulnx scan --host --report programs     # per program or directory: its affected components
+vulnx scan --host --report details      # per component, with CVE counts, fixes and where it was found
+vulnx scan --host --report markdown     # the actions as a Markdown checklist
+vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited (or critical, high)
+``` OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

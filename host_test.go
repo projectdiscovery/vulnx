@@ -253,8 +253,8 @@ func TestHostLinuxSources(t *testing.T) {
 		goStdlib(), "pkg:cargo/hyper@0.14.10")
 	hasNone(t, inv.Entries, "distro-owned", "not-a-header", "forked", "rusttool")
 	for entry, want := range map[string]string{
-		"pkg:pypi/requests@2.19.0": "/usr/local",
-		"pkg:pypi/legacy@0.3":      "~/.local",
+		"pkg:pypi/requests@2.19.0": "/usr/local (python3.10)",
+		"pkg:pypi/legacy@0.3":      "~/.local (python3.10)",
 		"pkg:npm/corepack@0.18.0":  "~/.nvm/versions/node/v20.1.0",
 		"pkg:gem/json@2.6.1":       "/var/lib/gems/3.0.0",
 		"pkg:cargo/hyper@0.14.10":  "rusttool",
@@ -264,6 +264,23 @@ func TestHostLinuxSources(t *testing.T) {
 		if got := strings.Join(inv.FoundIn[entry], ","); got != want {
 			t.Errorf("%s found in %q, want %q", entry, got, want)
 		}
+	}
+	// how each place is updated: the interpreter's pip (--user for a user site), npm, gem, the OS package manager,
+	// go install for a Go bin directory, cargo for Cargo's
+	for label, want := range map[string]HostFix{
+		"/usr/local (python3.10)": {Kind: "pip", Command: "/usr/local/bin/python3.10 -m pip install -U"},
+		"~/.local (python3.10)":   {Kind: "pip", Command: "python3.10 -m pip install --user -U"},
+		"/usr/local":              {Kind: "npm", Command: "npm update -g"},
+		"/var/lib/gems/3.0.0":     {Kind: "gem", Command: "gem update"},
+		"dpkg":                    {Kind: "apt", Command: "sudo apt-get install --only-upgrade"},
+		"rusttool":                {Kind: "cargo", Command: "cargo install", Target: "rusttool"},
+	} {
+		if got := inv.Fixes[label]; got != want {
+			t.Errorf("fix for %q: %+v, want %+v", label, got, want)
+		}
+	}
+	if f := inv.Fixes["gotool"]; f.Kind != "binary" || f.Target != "gotool" {
+		t.Errorf("gotool outside a Go bin directory: %+v", f)
 	}
 	if inv.Source != "dpkg" || len(inv.NotAssessed) != 0 {
 		t.Errorf("source %q, not assessed %v", inv.Source, inv.NotAssessed)
@@ -335,6 +352,13 @@ func TestHostHomebrew(t *testing.T) {
 	if got := strings.Join(h.inv.FoundIn["pkg:pypi/botocore@1.31.0"], ","); got != "awscli (formula)" {
 		t.Errorf("botocore found in %q", got)
 	}
+	// a formula is upgraded by name; a Go binary linked from the Cellar is upgraded with its formula
+	if f := h.inv.Fixes["awscli (formula)"]; f != (HostFix{Kind: "brew", Command: "brew upgrade", Target: "awscli"}) {
+		t.Errorf("awscli: %+v", f)
+	}
+	if f := h.inv.Fixes["linked"]; f.Kind != "brew" || f.Target != "linked" {
+		t.Errorf("linked: %+v", f)
+	}
 	hasAll(t, h.inv.Entries,
 		"cpe:2.3:a:openssl:openssl:3.4.0:*:*:*:*:*:*:*",
 		"cpe:2.3:a:c-ares:c-ares:1.34.4:*:*:*:*:*:*:*", "cpe:2.3:a:c-ares_project:c-ares:1.34.4:*:*:*:*:*:*:*",
@@ -362,6 +386,9 @@ func TestHostApplications(t *testing.T) {
 	}
 	if got := h.inv.FoundIn[want[0]]; len(got) != 1 || got[0] != "Google Chrome.app" {
 		t.Errorf("found in %v", got)
+	}
+	if f := h.inv.Fixes["Google Chrome.app"]; f.Kind != "app" || f.Note != "update Google Chrome" {
+		t.Errorf("Chrome: %+v", f)
 	}
 	if fmt.Sprint(h.inv.NotAssessed) != "[{Broken  applications} {Editor 2.1 (300) applications}]" {
 		t.Errorf("not assessed: %v", h.inv.NotAssessed)
@@ -444,5 +471,25 @@ func TestMarkReachability(t *testing.T) {
 	inv.MarkReachability(&res)
 	if r := res.Items[0].Reachability; fmt.Sprint(r.Unknown) != "[tool]" || len(r.NotReachable) != 0 {
 		t.Errorf("item: %+v", r)
+	}
+}
+
+func TestBinaryFix(t *testing.T) {
+	for _, c := range []struct {
+		real, main string
+		want       HostFix
+	}{
+		{"/opt/homebrew/Cellar/nuclei/3.11.1/bin/nuclei", "github.com/projectdiscovery/nuclei/v3/cmd/nuclei",
+			HostFix{Kind: "brew", Command: "brew upgrade", Target: "nuclei"}},
+		{"/Users/a/go/bin/air", "github.com/air-verse/air", HostFix{Kind: "go-install", Command: "go install", Target: "github.com/air-verse/air@latest"}},
+		// built from loose files: no module to install from
+		{"/Users/a/go/bin/tool", "command-line-arguments", HostFix{Kind: "binary", Target: "tool", Note: "update tool (/Users/a/go/bin/tool)"}},
+		{"/Users/a/.cargo/bin/rg", "", HostFix{Kind: "cargo", Command: "cargo install", Target: "rg"}},
+		{"/usr/local/bin/terraform", "github.com/hashicorp/terraform", HostFix{Kind: "binary", Target: "terraform", Note: "update terraform (/usr/local/bin/terraform)"}},
+	} {
+		name := filepath.Base(c.real)
+		if got := binaryFix(name, c.real, c.main); got != c.want {
+			t.Errorf("%s: %+v, want %+v", c.real, got, c.want)
+		}
 	}
 }
