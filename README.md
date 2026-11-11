@@ -267,8 +267,11 @@ vulnx scan --host --root /mnt/rootfs                    # a mounted Linux filesy
 ```
 `--host` reads Linux packages from dpkg, apk or rpm with the release from `/etc/os-release` (Debian, Ubuntu,
 Alpine, RHEL, Rocky Linux, AlmaLinux), judged by the distribution's own advisories, so backported fixes count;
-on macOS it checks the macOS and Safari versions against Apple's per-release fixes. Only package names and
-versions are sent. OS packages in SBOMs from syft or Trivy are judged the same way.
+on macOS it checks the macOS version against Apple's per-release fixes. It also reads what is installed beside the
+OS packages: Python, npm and Ruby packages outside the distribution's own directories, the modules linked into Go
+binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formulae and applications. Homebrew
+formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
+listed as not assessed, with a count per source. Only names and versions are sent. OS packages in SBOMs from syft or Trivy are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

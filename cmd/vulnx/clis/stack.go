@@ -52,8 +52,11 @@ Or an operating system:
   --image ghcr.io/owner/name:tag  a public container image: SecurityContext pulls it and reads its OS packages,
                                   language manifests and bundled libraries (--platform linux/arm64)
   --host                          this machine: Linux packages from dpkg, apk or rpm with the release from
-                                  /etc/os-release, judged by the distribution's own advisories; on macOS, the
-                                  macOS and Safari versions. --root reads a mounted Linux filesystem instead.
+                                  /etc/os-release, judged by the distribution's own advisories (macOS: its
+                                  version); Python, npm and Ruby packages installed outside the distribution;
+                                  the modules of Go and Rust binaries on PATH; on macOS, Homebrew formulae and
+                                  applications with a known product. Anything read but not judged is listed.
+                                  --root reads a mounted Linux filesystem instead.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
 "affected" / "exploitable" with the fixed version when known, undetermined rows "under_investigation" / "in_triage".`,
@@ -106,9 +109,12 @@ cat versions.txt | vulnx scan`,
 				if err != nil {
 					gologger.Fatal().Msgf("Failed to read the host: %s", err)
 				}
-				gologger.Info().Msgf("Checking %d packages of %s (from %s)", len(inv.Entries), inv.OS, inv.Source)
-				if inv.Note != "" {
-					gologger.Info().Msg(inv.Note)
+				gologger.Info().Msgf("Checking %d components of %s", len(inv.Entries), inv.OS)
+				for _, line := range strings.Split(inv.Note, "\n") {
+					gologger.Info().Msg(line)
+				}
+				if len(inv.NotAssessed) > 0 {
+					gologger.Info().Msgf("not assessed (no exact identifier, so not judged): %s", strings.Join(inv.NotAssessed, ", "))
 				}
 				res, err := vulnxClient.CheckMany(ctx, inv.Entries)
 				if err != nil {
@@ -420,7 +426,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output")
 	scanCmd.Flags().StringVar(&scanImage, "image", "", "scan a public container image by reference (e.g. debian:12-slim, ghcr.io/owner/name:tag)")
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
-	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan this machine's OS packages (Linux: dpkg, apk, rpm; macOS: macOS and Safari)")
+	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, and on macOS Homebrew and applications")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
 	rootCmd.AddCommand(scanCmd)
 }
