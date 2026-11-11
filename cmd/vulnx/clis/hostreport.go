@@ -4,12 +4,18 @@ package clis
 // per program or as Markdown (--report). Every view leaves out what no binary can reach (Go reachability).
 
 import (
+	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/url"
 	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -19,6 +25,7 @@ import (
 	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
+	"golang.org/x/term"
 )
 
 // writeHostJSON writes a host scan as the stack result with the inventory beside it, or as VEX.
@@ -470,11 +477,11 @@ func reachabilityLine(res vulnx.StackResult) string {
 		thousands(reach+not+unknown), thousands(reach), thousands(not), thousands(unknown))
 }
 
-// hostReports are the --report views of a host scan.
-var hostReports = []string{"actions", "brief", "programs", "details", "markdown"}
+// hostViews are the --view terminal views of a host scan.
+var hostViews = []string{"grid", "actions", "brief", "programs", "details", "markdown"}
 
 // renderHost renders a host scan in one of hostReports.
-func renderHost(view string, inv vulnx.HostInventory, res vulnx.StackResult, all bool, c *renderer.ColorConfig) string {
+func renderHost(view string, inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, all bool, c *renderer.ColorConfig) string {
 	switch view {
 	case "brief":
 		return renderHostBrief(inv, res, c)
@@ -484,8 +491,165 @@ func renderHost(view string, inv vulnx.HostInventory, res vulnx.StackResult, all
 		return renderHostText(inv, res, all, c)
 	case "markdown":
 		return renderHostMarkdown(inv, res)
+	case "actions":
+		return renderHostActions(inv, res, all, c)
 	}
-	return renderHostActions(inv, res, all, c)
+	return renderHostGrid(inv, res, elapsed, c)
+}
+
+// hostProgress shows what a host scan is doing on one line of the terminal, replaced by the next message and
+// cleared by an empty one; nothing when stderr is not a terminal.
+func hostProgress(msg string) {
+	if silent || !term.IsTerminal(int(os.Stderr.Fd())) {
+		return
+	}
+	fmt.Fprint(os.Stderr, "\r\033[K"+msg)
+}
+
+// openFile opens a file with the desktop's default application.
+func openFile(path string) {
+	opener := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		opener = "open"
+	}
+	if err := exec.Command(opener, path).Start(); err != nil {
+		gologger.Warning().Msgf("could not open %s: %s", path, err)
+	}
+}
+
+// gridRow is one source of a host scan: what it checked and its reachable findings by worst severity.
+type gridRow struct {
+	Name      string
+	Checked   int
+	Severity  [4]int // critical, high, medium, low
+	Exploited int    // with a known exploited CVE
+}
+
+var gridSeverities = []string{"critical", "high", "medium", "low"}
+
+// hostCounts are a host scan's headline numbers.
+type hostCounts struct {
+	Checked, Affected, Reachable, Exploited, PublicExploit, NotLinked int
+}
+
+// hostGrid counts a host scan per source (in the order they were read; a source that checked nothing is left
+// out), with the totals and headline numbers.
+func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, total gridRow, counts hostCounts) {
+	byName := map[string]*gridRow{}
+	for _, s := range inv.Sources {
+		if s.Sent == 0 {
+			continue
+		}
+		rows = append(rows, gridRow{Name: s.Name, Checked: s.Sent})
+	}
+	for i := range rows {
+		byName[rows[i].Name] = &rows[i]
+	}
+	fs := findings(inv, res)
+	for _, f := range fs {
+		sev := slices.Index(gridSeverities, f.worst)
+		row := byName[inv.EntrySource[f.item.Input]]
+		if f.tier == tierKEV {
+			counts.Exploited++
+		} else if f.mark == "POC" {
+			counts.PublicExploit++
+		}
+		if row == nil || sev < 0 {
+			continue
+		}
+		row.Severity[sev]++
+		if f.tier == tierKEV {
+			row.Exploited++
+		}
+	}
+	total.Name = "total"
+	for _, r := range rows {
+		total.Checked += r.Checked
+		total.Exploited += r.Exploited
+		for i, n := range r.Severity {
+			total.Severity[i] += n
+		}
+	}
+	for _, it := range res.Items {
+		if it.Status == "affected" && unreachable(it) {
+			counts.NotLinked++
+		}
+	}
+	counts.Checked, counts.Affected, counts.Reachable = len(inv.Entries), res.Summary.Affected, len(fs)
+	return rows, total, counts
+}
+
+// renderHostGrid is the default view, one screen: the headline numbers and, per source, its findings by severity.
+func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, c *renderer.ColorConfig) string {
+	var b strings.Builder
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	rows, total, n := hostGrid(inv, res)
+	head := fmt.Sprintf("%s: %s components scanned", inv.OS, thousands(n.Checked))
+	if elapsed > 0 {
+		head += " in " + elapsed.Round(time.Second).String()
+	}
+	b.WriteString("\n" + c.Colorize(head, renderer.Bold+renderer.BrightWhite) + "\n\n")
+	fmt.Fprintf(&b, "  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
+		c.Colorize(thousands(n.Affected), renderer.Bold), c.Colorize(thousands(n.Reachable), renderer.Bold),
+		c.Colorize(thousands(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(thousands(n.PublicExploit), renderer.Bold))
+
+	width := len("SOURCE")
+	peak := 1
+	for _, r := range rows {
+		width = max(width, len(r.Name))
+		for _, v := range r.Severity {
+			peak = max(peak, v)
+		}
+	}
+	const bar = 6
+	cell := func(v int, sev string) string {
+		if v == 0 {
+			return strings.Repeat(" ", bar) + dim(fmt.Sprintf(" %4s", "-"))
+		}
+		blocks := max(1, (v*bar+peak-1)/peak)
+		return strings.Repeat(" ", bar-blocks) + c.ColorSeverity(strings.Repeat("█", blocks)) + fmt.Sprintf(" %4d", v)
+	}
+	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %11s  %11s  %11s  %11s  %9s  %8s", width, "SOURCE", "CRITICAL", "HIGH", "MEDIUM", "LOW",
+		"EXPLOITED", "CHECKED")) + "\n")
+	line := func(r gridRow, bars bool) {
+		fmt.Fprintf(&b, "  %-*s", width, r.Name)
+		for i, v := range r.Severity {
+			if bars {
+				b.WriteString("  " + cell(v, gridSeverities[i]))
+			} else {
+				fmt.Fprintf(&b, "  %11s", thousands(v))
+			}
+		}
+		exploited := fmt.Sprintf("%9s", "-")
+		if r.Exploited > 0 {
+			exploited = c.Colorize(fmt.Sprintf("%9d", r.Exploited), renderer.Bold+renderer.BrightRed)
+		} else {
+			exploited = dim(exploited)
+		}
+		fmt.Fprintf(&b, "  %s  %8s\n", exploited, thousands(r.Checked))
+	}
+	for _, r := range rows {
+		line(r, true)
+	}
+	b.WriteString("  " + dim(strings.Repeat("─", width+2+4*13+9+2+8-2)) + "\n")
+	line(total, false)
+	b.WriteString("\n")
+	if len(inv.NotAssessed) > 0 {
+		var parts []string
+		for _, s := range inv.Sources {
+			if s.NotAssessed > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", s.NotAssessed, s.Name))
+			}
+		}
+		b.WriteString(dim(fmt.Sprintf("  Not checked: %s with no exact identifier (%s)", thousands(len(inv.NotAssessed)), strings.Join(parts, ", "))) + "\n")
+	}
+	if n.NotLinked > 0 {
+		b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", thousands(n.NotLinked))) + "\n")
+	}
+	if res.FunctionsUnavailable {
+		b.WriteString(dim("  Go reachability was not checked (the API does not serve affected functions yet)") + "\n")
+	}
+	return b.String()
 }
 
 // Tiers of what to update, most urgent first.
@@ -1021,4 +1185,179 @@ func failsOn(level string, inv vulnx.HostInventory, res vulnx.StackResult) bool 
 // since is a step's duration as the progress lines print it.
 func since(t time.Time) string {
 	return time.Since(t).Round(100 * time.Millisecond).String()
+}
+
+//go:embed hostreport.html.tmpl
+var hostReportHTML string
+
+var hostReportTemplate = template.Must(template.New("host").Funcs(template.FuncMap{"thousands": thousands}).Parse(hostReportHTML))
+
+// advisoryPage is where a CVE's page is.
+const advisoryPage = "https://securitycontext.com/cve/"
+
+type reportCell struct {
+	Severity string
+	N, Width int
+}
+
+type reportGridRow struct {
+	Name               string
+	Cells              []reportCell
+	Exploited, Checked int
+}
+
+type reportAction struct {
+	Line, Why string
+	Command   bool
+}
+
+type reportTier struct {
+	Title   string
+	Actions []reportAction
+}
+
+type reportAdvisory struct {
+	ID, URL, Name, Severity, Score, Mark string
+	NotReachable                         bool
+}
+
+type reportComponent struct {
+	Severity, Mark, Kind, Name, Version, Fixed, Found, Linked, Search string
+	CVEs, More                                                        int
+	Advisories                                                        []reportAdvisory
+}
+
+type reportUnmatched struct{ Name, Version, Why string }
+
+type hostReport struct {
+	OS, Generated, Elapsed, NotRead string
+	Counts                          hostCounts
+	Undetermined, Clean             int
+	Grid                            []reportGridRow
+	Total                           reportGridRow
+	Tiers                           []reportTier
+	Components                      []reportComponent
+	NotLinked                       []string
+	CouldNotMatch                   []reportUnmatched
+	NotChecked                      []vulnx.HostComponent
+}
+
+// hostReportData is a host scan as the HTML report shows it: the production stack report's sections (the verdict,
+// where to fix, affected versions, couldn't match) and what only the machine knows (per source, where each
+// component was found, reachability, what was not checked).
+func hostReportData(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, now time.Time) hostReport {
+	rows, total, counts := hostGrid(inv, res)
+	d := hostReport{OS: inv.OS, Generated: now.Format("2006-01-02 15:04"), Counts: counts, Undetermined: res.Summary.Undetermined,
+		Clean: res.Summary.Clean, NotChecked: inv.NotAssessed, NotRead: strings.Join(inv.NotRead, "; ")}
+	if elapsed > 0 {
+		d.Elapsed = elapsed.Round(time.Second).String()
+	}
+	peak := 1
+	for _, r := range rows {
+		for _, v := range r.Severity {
+			peak = max(peak, v)
+		}
+	}
+	gridRow := func(r gridRow) reportGridRow {
+		out := reportGridRow{Name: r.Name, Exploited: r.Exploited, Checked: r.Checked}
+		for i, v := range r.Severity {
+			out.Cells = append(out.Cells, reportCell{Severity: gridSeverities[i], N: v, Width: max(3, v*72/peak)})
+		}
+		return out
+	}
+	for _, r := range rows {
+		d.Grid = append(d.Grid, gridRow(r))
+	}
+	d.Total = gridRow(total)
+
+	fs := findings(inv, res)
+	actions := hostActions(inv, fs)
+	for tier := tierKEV; tier <= tierRest; tier++ {
+		t := reportTier{Title: strings.ReplaceAll(tierTitles[tier], " · ", ": ")}
+		for _, a := range actions {
+			if a.tier != tier {
+				continue
+			}
+			var why []string
+			for _, target := range a.targets {
+				reasons := a.why[target]
+				if len(reasons) > 6 {
+					reasons = append(reasons[:6:6], fmt.Sprintf("+%d more", len(a.why[target])-6))
+				}
+				r := strings.Join(reasons, ", ")
+				if p := a.program(target); p != "" {
+					r = p + ": " + r
+				}
+				why = append(why, r)
+			}
+			t.Actions = append(t.Actions, reportAction{Line: a.line(), Command: a.fix.Command != "", Why: strings.Join(why, "; ")})
+		}
+		if len(t.Actions) > 0 {
+			d.Tiers = append(d.Tiers, t)
+		}
+	}
+	for _, f := range fs {
+		c := reportComponent{Severity: f.worst, Mark: f.mark, Kind: f.kind, Name: f.label(), Version: f.version,
+			Fixed: f.item.FixedVersion, Found: strings.Join(f.places, ", "), CVEs: advisoryCount(f.item)}
+		if r := f.item.Reachability; r != nil {
+			c.Linked = fmt.Sprintf("%d of %d programs reach it", len(r.Reachable), len(r.Reachable)+len(r.NotReachable)+len(r.Unknown))
+		}
+		search := []string{f.name, f.version, c.Found}
+		for _, a := range f.item.AdvisoryRows {
+			id := a.CVE
+			if id == "" {
+				id = a.AdvisoryID
+			}
+			adv := reportAdvisory{ID: id, Name: a.Name, Severity: a.Severity, NotReachable: a.Reachability == "not_reachable"}
+			if a.CVE != "" {
+				adv.URL = advisoryPage + a.CVE
+			}
+			if a.CvssScore > 0 {
+				adv.Score = fmt.Sprintf("%.1f", a.CvssScore)
+			}
+			if a.Exploit != nil && a.Exploit.KnownExploited {
+				adv.Mark = "KEV"
+			} else if a.Exploit != nil && a.Exploit.PublicExploit {
+				adv.Mark = "POC"
+			}
+			c.Advisories = append(c.Advisories, adv)
+			search = append(search, id, a.Name)
+		}
+		c.More = max(0, c.CVEs-len(c.Advisories))
+		c.Search = strings.ToLower(strings.Join(search, " "))
+		d.Components = append(d.Components, c)
+	}
+	for _, it := range res.Items {
+		switch {
+		case it.Status == "affected" && unreachable(it):
+			_, name, version := componentParts(it.Input)
+			d.NotLinked = append(d.NotLinked, name+" "+version)
+		case it.Status == "undetermined":
+			_, name, version := componentParts(it.Input)
+			why := it.Reason
+			if why == "" && len(it.Undetermined) > 0 {
+				why = it.Undetermined[0].Reason
+			}
+			d.CouldNotMatch = append(d.CouldNotMatch, reportUnmatched{name, version, strings.ReplaceAll(why, "_", " ")})
+		}
+	}
+	return d
+}
+
+// writeHostReport writes the report as one self-contained HTML file and returns its absolute path. path "auto"
+// (or empty) names it vulnx-host-<date>.html in the working directory, replacing the same day's.
+func writeHostReport(path string, inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration) (string, error) {
+	now := time.Now()
+	if path == "" || path == "auto" {
+		path = "vulnx-host-" + now.Format("2006-01-02") + ".html"
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := hostReportTemplate.Execute(&buf, hostReportData(inv, res, elapsed, now)); err != nil {
+		return "", err
+	}
+	return abs, os.WriteFile(abs, buf.Bytes(), 0o644)
 }

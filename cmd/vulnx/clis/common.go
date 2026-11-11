@@ -86,7 +86,9 @@ var (
 				return nil
 			}
 
-			if !silent {
+			// A host scan prints one screen: no banner or version line above it (--verbose brings them back).
+			quietHost := cmd.Name() == "scan" && (scanHost || scanRoot != "") && !verbose
+			if !silent && !quietHost {
 				showBanner()
 				// Don't show version info for the version command itself
 				if cmd.Name() != "version" {

@@ -3,9 +3,12 @@ package clis
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
@@ -164,7 +167,13 @@ func hostFixture() (vulnx.HostInventory, vulnx.StackResult) {
 			"air":                        {Kind: "go-install", Command: "go install", Target: "github.com/air-verse/air@latest"},
 			"/opt/homebrew (python3.12)": {Kind: "pip", Command: "/opt/homebrew/bin/python3.12 -m pip install -U"},
 		},
-		Sources:     []vulnx.HostSource{{Name: "homebrew", NotAssessed: 1}},
+		Sources: []vulnx.HostSource{{Name: "macOS", Sent: 1}, {Name: "python", Sent: 2}, {Name: "go binaries", Sent: 2},
+			{Name: "rust binaries"}, {Name: "homebrew", Sent: 1, NotAssessed: 1}, {Name: "applications", Sent: 3}},
+		EntrySource: map[string]string{
+			"cpe:2.3:o:apple:macos:26.4": "macOS", "cpe:2.3:a:google:chrome:1.0:*": "applications", "cpe:2.3:a:php:php:8.5.2:*": "homebrew",
+			"pkg:golang/golang.org/x/net@v0.7.0": "go binaries", "pkg:golang/github.com/a/b@v1.0.0": "go binaries",
+			"pkg:pypi/lxml@4.9.3": "python", "pkg:pypi/wheel@0.41.2": "python",
+		},
 		NotAssessed: []vulnx.HostComponent{{Name: "cairo", Version: "1.18.4", Source: "homebrew"}},
 	}
 	res := vulnx.StackResult{Summary: vulnx.StackSummary{Affected: 7}, Items: []vulnx.StackItem{
@@ -219,7 +228,7 @@ func TestHostReports(t *testing.T) {
 		"markdown": {"### Update now · known exploited", "- [ ] `brew upgrade caddy`\n  - caddy: x/net\n",
 			"- [ ] `/opt/homebrew/bin/python3.12 -m pip install -U lxml`: lxml 4.9.3 → 6.1.0"},
 	} {
-		out := renderHost(view, inv, res, false, c)
+		out := renderHost(view, inv, res, 0, false, c)
 		for _, w := range wants {
 			if !strings.Contains(out, w) {
 				t.Errorf("%s: missing %q in\n%s", view, w, out)
@@ -241,5 +250,57 @@ func TestFailsOn(t *testing.T) {
 	res.Items = res.Items[4:5] // lxml only: high, no exploit
 	if failsOn("kev", inv, res) || failsOn("critical", inv, res) || !failsOn("high", inv, res) {
 		t.Error("a high finding fails only --fail-on high")
+	}
+}
+
+// TestRenderHostGrid is the default view: the headline, one row per source that checked something, and totals.
+func TestRenderHostGrid(t *testing.T) {
+	inv, res := hostFixture()
+	out := renderHost("grid", inv, res, 7*time.Second, false, renderer.NoColorConfig())
+	for _, want := range []string{
+		"macOS 26.4: 9 components scanned in 7s\n",
+		"  7 affected   6 reachable   3 known exploited   1 public exploit\n",
+		"  SOURCE           CRITICAL         HIGH       MEDIUM          LOW  EXPLOITED   CHECKED\n",
+		"  macOS         ██████    1            -            -            -          1         1\n",
+		"  python                  -  ██████    1  ██████    1            -          -         2\n",
+		"  go binaries   ██████    1            -            -            -          1         2\n",
+		"  total                   3            2            1            0          3         9\n",
+		"Not checked: 1 with no exact identifier (1 homebrew)",
+		"Not counted: 1 Go module versions no program can reach",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "rust binaries") || strings.Contains(out, "·") {
+		t.Errorf("an empty source or a dot separator:\n%s", out)
+	}
+}
+
+// TestHostReportHTML writes the report as one HTML file with every section and escaped content.
+func TestHostReportHTML(t *testing.T) {
+	inv, res := hostFixture()
+	inv.NotAssessed[0].Name = "cairo <b>"
+	path, err := writeHostReport(filepath.Join(t.TempDir(), "r.html"), inv, res, 7*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(raw)
+	for _, want := range []string{
+		"<h1>macOS 26.4</h1>", "9 components scanned in 7s", "<h2>By source</h2>", "<h2>Where to fix</h2>",
+		"<h3>Update now: known exploited</h3>", `data-copy="brew upgrade caddy"`, "<h2>Affected versions</h2>",
+		`<span class="nm"><span class="kind">go</span>x/net</span>`, "2 of 2 programs reach it",
+		"<h2>Not reachable</h2>", "github.com/a/b v1.0.0", "<h2>Not checked</h2>", "cairo &lt;b&gt;",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if !filepath.IsAbs(path) || strings.Contains(html, "<b>\"") {
+		t.Errorf("path %s", path)
 	}
 }

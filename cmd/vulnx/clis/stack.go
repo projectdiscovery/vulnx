@@ -30,6 +30,8 @@ var (
 	scanWait    time.Duration
 	scanShowAll bool
 	scanReport  string
+	scanView    string
+	scanOpen    bool
 	scanFailOn  string
 	scanImage   string
 	scanPlat    string
@@ -59,9 +61,10 @@ Or an operating system:
                                   version); Python, npm and Ruby packages installed outside the distribution;
                                   the modules of Go and Rust binaries on PATH; on macOS, Homebrew formulae and
                                   applications with a known product. Anything read but not judged is listed.
-                                  --root reads a mounted Linux filesystem instead. The report says what to
-                                  update, most urgent first (--report brief, programs, details or markdown for
-                                  other views); --fail-on kev|critical|high exits 2 on a reachable finding.
+                                  --root reads a mounted Linux filesystem instead. The terminal shows one
+                                  screen: findings per source and severity (--view for other views). --report
+                                  writes the full report as a local HTML file (--open opens it);
+                                  --fail-on kev|critical|high exits 2 on a reachable finding.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
 "affected" / "exploitable" with the fixed version when known, undetermined rows "under_investigation" / "in_triage".`,
@@ -110,31 +113,33 @@ cat versions.txt | vulnx scan`,
 			}
 			// this machine (or a mounted root filesystem): what is installed on it, checked as a list
 			if scanHost || scanRoot != "" {
-				if !slices.Contains(hostReports, scanReport) {
-					gologger.Fatal().Msgf("--report takes %s (got %s)", strings.Join(hostReports, ", "), scanReport)
+				if !slices.Contains(hostViews, scanView) {
+					gologger.Fatal().Msgf("--view takes %s (got %s)", strings.Join(hostViews, ", "), scanView)
 				}
 				if scanFailOn != "" && !slices.Contains(failOnLevels, scanFailOn) {
 					gologger.Fatal().Msgf("--fail-on takes %s (got %s)", strings.Join(failOnLevels, ", "), scanFailOn)
 				}
-				step := time.Now()
+				start := time.Now()
+				hostProgress("Reading what is installed ...")
 				inv, err := vulnx.HostEntries(scanRoot)
 				if err != nil {
+					hostProgress("")
 					gologger.Fatal().Msgf("Failed to read the host: %s", err)
 				}
-				gologger.Info().Msgf("Read %s components of %s (%s)", thousands(len(inv.Entries)), inv.OS, since(step))
-				step = time.Now()
+				hostProgress(fmt.Sprintf("Checking %s components ...", thousands(len(inv.Entries))))
 				res, err := vulnxClient.CheckManyWith(ctx, inv.Entries, vulnx.CheckOptions{Functions: true, Compact: true, Progress: func(done, total int) {
 					if done < total {
-						gologger.Info().Msgf("checked %s of %s", thousands(done), thousands(total))
+						hostProgress(fmt.Sprintf("Checking %s components: %s done ...", thousands(total), thousands(done)))
 					}
 				}})
 				if err != nil {
+					hostProgress("")
 					fatalAPI("scan", err)
 				}
-				gologger.Info().Msgf("Checked them with SecurityContext (%s)", since(step))
-				step = time.Now()
+				hostProgress("Checking which Go programs reach affected code ...")
 				inv.MarkReachability(&res)
-				gologger.Info().Msgf("Checked Go binaries for reachability (%s)", since(step))
+				hostProgress("")
+				elapsed := time.Since(start)
 				if scanFull || scanVEX != "" {
 					fillProductCVEs(&res)
 				}
@@ -142,7 +147,20 @@ cat versions.txt | vulnx scan`,
 					writeHostJSON(inv, res, scanVEX)
 					return
 				}
-				fmt.Print(renderHost(scanReport, inv, res, scanShowAll, colorConfig()))
+				fmt.Print(renderHost(scanView, inv, res, elapsed, scanShowAll, colorConfig()))
+				switch {
+				case scanReport != "" || scanOpen:
+					path, err := writeHostReport(scanReport, inv, res, elapsed)
+					if err != nil {
+						gologger.Fatal().Msgf("Failed to write the report: %s", err)
+					}
+					fmt.Printf("  Report: file://%s\n", path)
+					if scanOpen {
+						openFile(path)
+					}
+				case scanView == "grid":
+					fmt.Println("  Full report: vulnx scan --host --report")
+				}
 				if failsOn(scanFailOn, inv, res) {
 					os.Exit(2)
 				}
@@ -449,7 +467,10 @@ func init() {
 	scanCmd.Flags().StringVar(&scanImage, "image", "", "scan a public container image by reference (e.g. debian:12-slim, ghcr.io/owner/name:tag)")
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
 	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, and on macOS Homebrew and applications")
-	scanCmd.Flags().StringVar(&scanReport, "report", "actions", "with --host: actions (what to update, most urgent first), brief, programs, details (every component) or markdown")
+	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
+	scanCmd.Flags().StringVar(&scanReport, "report", "", "with --host: also write the full report as one HTML file and print its link (--report=path.html to name it)")
+	scanCmd.Flags().Lookup("report").NoOptDefVal = "auto"
+	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the report and open it in the browser")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
 	rootCmd.AddCommand(scanCmd)

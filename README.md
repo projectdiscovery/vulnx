@@ -280,18 +280,21 @@ package; it stays unknown when the package is linked but no listed function is, 
 it. "Fix first" leaves out module versions no binary can reach and shows, per component, how many of the binaries
 carrying it link an affected function (LINKED).
 
-The report leads with what to update, most urgent first (known exploited, then critical or high with a public
-exploit, then critical or high, then the rest), as the command that updates each place where one exists:
-Software Update, `brew upgrade <formulae>`, the right interpreter's `pip install -U`, `go install <tool>@latest`,
-`npm update -g`, or the app or program to update by hand. `--report` picks another view:
+The terminal shows one screen: the headline counts and, per source, the reachable findings by severity. The full
+report is a local HTML file, written only when asked for; nothing more is uploaded for it.
 ```bash
-vulnx scan --host                       # actions: what to update, most urgent first
-vulnx scan --host --report brief        # a few lines: per tier, what kind of updates it takes
-vulnx scan --host --report programs     # per program or directory: its affected components
-vulnx scan --host --report details      # per component, with CVE counts, fixes and where it was found
-vulnx scan --host --report markdown     # the actions as a Markdown checklist
+vulnx scan --host                       # one screen: findings per source and severity
+vulnx scan --host --report              # also write vulnx-host-<date>.html and print its file:// link
+vulnx scan --host --open                # write the report and open it in the browser
+vulnx scan --host --report=out.html     # name the file
+vulnx scan --host --view actions        # in the terminal: what to update, most urgent first
+vulnx scan --host --view details        # per component (also: brief, programs, markdown)
 vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited (or critical, high)
-``` OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+```
+The HTML report has the counts per source, where to fix (one update per place, as the command that makes it where
+one exists: Software Update, `brew upgrade`, the right interpreter's `pip install -U`, `go install <tool>@latest`),
+every affected version with its advisories, the Go module versions no program can reach, what could not be
+matched, and what was not checked. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

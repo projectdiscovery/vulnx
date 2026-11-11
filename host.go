@@ -52,6 +52,7 @@ type HostInventory struct {
 	NotRead     []string                `json:"not_read"`            // what no reader covers
 	GoBinaries  map[string][]HostBinary `json:"-"`                   // Go entry -> the binaries linking it, for MarkReachability
 	Fixes       map[string]HostFix      `json:"fixes"`               // FoundIn label -> how to update what is there
+	EntrySource map[string]string       `json:"-"`                   // entry -> the source (HostSource.Name) that counted it
 	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
 }
 
@@ -118,7 +119,8 @@ func HostEntries(root string) (HostInventory, error) {
 
 func newHostReader(root, goos string) *hostReader {
 	return &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
-		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}, Fixes: map[string]HostFix{}}}
+		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}, Fixes: map[string]HostFix{},
+			EntrySource: map[string]string{}}}
 }
 
 type hostReader struct {
@@ -250,6 +252,7 @@ func (h *hostReader) add(name, detail string, entries []found, notAssessed []Hos
 		if !h.seen[f.entry] {
 			h.seen[f.entry] = true
 			h.inv.Entries = append(h.inv.Entries, f.entry)
+			h.inv.EntrySource[f.entry] = name
 			src.Sent++
 		}
 		if f.in != "" && !slices.Contains(h.inv.FoundIn[f.entry], f.in) {

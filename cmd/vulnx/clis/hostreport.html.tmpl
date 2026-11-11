@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Host scan: {{.OS}}</title>
+<style>
+:root{--paper:#F6F6F3;--surface:#FFF;--surface-2:#F1F1EC;--ink:#17191C;--ink-2:#3B3E42;--muted:#65685F;--faint:#9B9E97;--line:#E4E5DF;--line-2:#D3D4CD;--blue:#1B4FD1;--crit:#B3261E;--high:#C2410C;--med:#8A5F00;--low:#2E7D4F;--hover:#F3F3EE;--poc-bg:#FCEEE3;
+--serif:Georgia,'Times New Roman',serif;--sans:-apple-system,'Helvetica Neue',Arial,sans-serif;--mono:ui-monospace,Menlo,Consolas,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--paper:#121314;--surface:#1A1B1D;--surface-2:#232426;--ink:#ECECE8;--ink-2:#C9CAC4;--muted:#8E918B;--faint:#6C6F69;--line:#2A2B2E;--line-2:#3A3B3F;--blue:#7A9BFF;--crit:#F0706A;--high:#F09A5A;--med:#D9B44A;--low:#6CCB8A;--hover:#1F2022;--poc-bg:#3A2A1E;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--sans)}
+main{max-width:1120px;margin:0 auto;padding:40px 24px 80px}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+code,.mono{font-family:var(--mono);font-size:13px}
+.kicker{display:flex;gap:14px;color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.06em}
+h1{font:500 40px/1.15 var(--serif);margin:10px 0 6px}
+.lede{color:var(--ink-2);margin:0 0 24px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.fact{background:var(--surface);padding:14px 16px}
+.fact b{display:block;font:500 26px/1.2 var(--serif)}
+.fact span{color:var(--muted);font-size:13px}
+.fact.crit b{color:var(--crit)}
+nav{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px;font-size:14px}
+section{margin-top:44px}
+h2{font:500 24px/1.2 var(--serif);margin:0 0 4px}
+.note{color:var(--muted);font-size:14px;margin:0 0 14px}
+.surface{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+table{width:100%;border-collapse:collapse}
+th{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);text-align:left;padding:10px 14px;border-bottom:1px solid var(--line)}
+td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+tfoot td{font-weight:600;background:var(--surface-2)}
+.bar{display:inline-block;height:9px;border-radius:2px;margin-right:8px;vertical-align:middle}
+.critical{color:var(--crit)}.high{color:var(--high)}.medium{color:var(--med)}.low{color:var(--low)}
+.bar.critical{background:var(--crit)}.bar.high{background:var(--high)}.bar.medium{background:var(--med)}.bar.low{background:var(--low)}
+.sev{font-weight:600;font-size:13px;text-transform:capitalize}
+.badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:4px;margin-left:6px}
+.badge.kev{background:var(--crit);color:#fff}.badge.poc{background:var(--poc-bg);color:var(--high)}
+.badge.no{background:var(--surface-2);color:var(--muted);font-weight:500}
+.dim{color:var(--muted)}
+h3{font:600 14px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:22px 0 8px}
+.action{padding:12px 16px;border-bottom:1px solid var(--line)}
+.action:last-child{border-bottom:0}
+.cmd{display:flex;gap:10px;align-items:flex-start}
+.cmd code{flex:1;white-space:pre-wrap;word-break:break-word;color:var(--ink)}
+.cmd button,.tools button{font:12px var(--sans);border:1px solid var(--line-2);background:var(--surface);color:var(--ink-2);border-radius:999px;padding:3px 10px;cursor:pointer}
+.cmd button:hover,.tools button:hover{background:var(--hover)}
+.why{color:var(--muted);font-size:13px;margin-top:4px}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.tools input{flex:1;min-width:220px;font:14px var(--sans);padding:8px 12px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink)}
+.tools button.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+details.row{border-bottom:1px solid var(--line)}
+details.row:last-child{border-bottom:0}
+details.row>summary{display:grid;grid-template-columns:120px minmax(180px,2fr) minmax(110px,1fr) minmax(110px,1fr) 60px minmax(160px,2fr);gap:12px;padding:10px 14px;cursor:pointer;list-style:none;align-items:baseline}
+details.row>summary::-webkit-details-marker{display:none}
+details.row>summary:hover{background:var(--hover)}
+.head{display:grid;grid-template-columns:120px minmax(180px,2fr) minmax(110px,1fr) minmax(110px,1fr) 60px minmax(160px,2fr);gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.nm{font-weight:600;word-break:break-word}.kind{color:var(--muted);font-size:12px;margin-right:6px}
+.fix{color:var(--low)}
+.advs{padding:4px 14px 14px 146px;background:var(--surface-2)}
+.advs table td{padding:5px 10px 5px 0;border:0;font-size:13.5px}
+ul.cols{columns:3;margin:0;padding:14px 16px 14px 34px;font-size:14px}
+@media (max-width:760px){details.row>summary,.head{grid-template-columns:90px 1fr 1fr}.head span:nth-child(n+4),details.row>summary>span:nth-child(n+4){display:none}.advs{padding-left:14px}ul.cols{columns:1}}
+footer{margin-top:48px;color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<div class="kicker"><span>Host scan</span><span>local file, not uploaded</span><span>{{.Generated}}</span></div>
+<h1>{{.OS}}</h1>
+<p class="lede">{{thousands .Counts.Checked}} components scanned{{if .Elapsed}} in {{.Elapsed}}{{end}}. {{thousands .Counts.Affected}} are affected by a known advisory; a program can reach {{thousands .Counts.Reachable}} of them.</p>
+<div class="facts">
+<div class="fact"><b>{{thousands .Counts.Affected}}</b><span>Affected</span></div>
+<div class="fact"><b>{{thousands .Counts.Reachable}}</b><span>Reachable</span></div>
+<div class="fact crit"><b>{{thousands .Counts.Exploited}}</b><span>Known exploited</span></div>
+<div class="fact"><b>{{thousands .Counts.PublicExploit}}</b><span>Public exploit</span></div>
+<div class="fact"><b>{{thousands .Undetermined}}</b><span>Couldn't match</span></div>
+<div class="fact"><b>{{thousands .Clean}}</b><span>No known advisory</span></div>
+<div class="fact"><b>{{thousands (len .NotChecked)}}</b><span>Not checked</span></div>
+</div>
+<nav><a href="#sources">By source</a>{{if .Tiers}}<a href="#update">Where to fix</a>{{end}}<a href="#affected">Affected versions</a>{{if .NotLinked}}<a href="#unreachable">Not reachable</a>{{end}}{{if .CouldNotMatch}}<a href="#undetermined">Couldn't match</a>{{end}}{{if .NotChecked}}<a href="#notchecked">Not checked</a>{{end}}</nav>
+
+<section id="sources">
+<h2>By source</h2>
+<p class="note">Reachable findings per source, by their worst severity.</p>
+<div class="surface"><table>
+<thead><tr><th>Source</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th class="num">Known exploited</th><th class="num">Checked</th></tr></thead>
+<tbody>{{range .Grid}}<tr><td>{{.Name}}</td>{{range .Cells}}<td>{{if .N}}<span class="bar {{.Severity}}" style="width:{{.Width}}px"></span>{{thousands .N}}{{else}}<span class="dim">-</span>{{end}}</td>{{end}}<td class="num">{{if .Exploited}}<b class="critical">{{.Exploited}}</b>{{else}}<span class="dim">-</span>{{end}}</td><td class="num">{{thousands .Checked}}</td></tr>{{end}}</tbody>
+<tfoot><tr><td>Total</td>{{range .Total.Cells}}<td>{{thousands .N}}</td>{{end}}<td class="num">{{.Total.Exploited}}</td><td class="num">{{thousands .Total.Checked}}</td></tr></tfoot>
+</table></div>
+</section>
+
+{{if .Tiers}}<section id="update">
+<h2>Where to fix</h2>
+<p class="note">One update per place, most urgent first, as the command that makes it where one exists.</p>
+{{range .Tiers}}<h3>{{.Title}}</h3>
+<div class="surface">{{range .Actions}}<div class="action">
+{{if .Command}}<div class="cmd"><code>{{.Line}}</code><button type="button" data-copy="{{.Line}}">Copy</button></div>{{else}}<div>{{.Line}}</div>{{end}}
+<div class="why">{{.Why}}</div>
+</div>{{end}}</div>{{end}}
+</section>{{end}}
+
+<section id="affected">
+<h2>Affected versions</h2>
+<p class="note">Every affected component a program can reach. Open a row for its advisories.</p>
+<div class="tools"><input id="q" type="search" placeholder="Filter by name, CVE, or where it was found" aria-label="Filter">
+<button type="button" data-sev="">All</button><button type="button" data-sev="kev">Known exploited</button><button type="button" data-sev="critical">Critical</button><button type="button" data-sev="high">High</button><button type="button" data-sev="medium">Medium</button><button type="button" data-sev="low">Low</button>
+<span class="dim" id="shown"></span></div>
+<div class="surface">
+<div class="head"><span>Severity</span><span>Component</span><span>Version</span><span>Fixed in</span><span class="num">CVEs</span><span>Found in</span></div>
+{{range .Components}}<details class="row" data-sev="{{.Severity}}" data-kev="{{if eq .Mark "KEV"}}1{{end}}" data-text="{{.Search}}">
+<summary><span><span class="sev {{.Severity}}">{{.Severity}}</span>{{if eq .Mark "KEV"}}<span class="badge kev">KEV</span>{{else if eq .Mark "POC"}}<span class="badge poc">POC</span>{{end}}</span>
+<span class="nm"><span class="kind">{{.Kind}}</span>{{.Name}}</span><span class="mono">{{.Version}}</span><span class="mono fix">{{.Fixed}}</span><span class="num">{{.CVEs}}</span><span class="dim">{{.Found}}{{if .Linked}} ({{.Linked}}){{end}}</span></summary>
+<div class="advs"><table>{{range .Advisories}}<tr><td class="mono">{{if .URL}}<a href="{{.URL}}">{{.ID}}</a>{{else}}{{.ID}}{{end}}</td><td><span class="sev {{.Severity}}">{{.Severity}}</span>{{if .Score}} <span class="dim">{{.Score}}</span>{{end}}</td><td>{{.Name}}{{if eq .Mark "KEV"}}<span class="badge kev">KEV</span>{{else if eq .Mark "POC"}}<span class="badge poc">POC</span>{{end}}{{if .NotReachable}}<span class="badge no">not reachable</span>{{end}}</td></tr>{{end}}</table>{{if .More}}<p class="dim">+{{.More}} more advisories (vulnx scan --host --json has every one)</p>{{end}}</div>
+</details>{{end}}
+</div>
+</section>
+
+{{if .NotLinked}}<section id="unreachable">
+<h2>Not reachable</h2>
+<p class="note">Affected Go module versions that no program on this machine can run: each program carrying one links none of the affected code.</p>
+<div class="surface"><ul class="cols">{{range .NotLinked}}<li><span class="mono">{{.}}</span></li>{{end}}</ul></div>
+</section>{{end}}
+
+{{if .CouldNotMatch}}<section id="undetermined">
+<h2>Couldn't match</h2>
+<p class="note">An advisory may apply, but its range could not be compared with this version. Never guessed.</p>
+<div class="surface"><table><thead><tr><th>Component</th><th>Version</th><th>Why</th></tr></thead>
+<tbody>{{range .CouldNotMatch}}<tr><td class="nm">{{.Name}}</td><td class="mono">{{.Version}}</td><td class="dim">{{.Why}}</td></tr>{{end}}</tbody></table></div>
+</section>{{end}}
+
+{{if .NotChecked}}<section id="notchecked">
+<h2>Not checked</h2>
+<p class="note">Read from this machine, but with no exact identifier to check, so not judged either way.</p>
+<div class="surface"><ul class="cols">{{range .NotChecked}}<li>{{.Name}} <span class="dim mono">{{.Version}}</span> <span class="dim">({{.Source}})</span></li>{{end}}</ul></div>
+{{if .NotRead}}<p class="note" style="margin-top:12px">Not read at all: {{.NotRead}}.</p>{{end}}
+</section>{{end}}
+
+<footer>Written by vulnx scan --host. Verdicts from SecurityContext; only component names and versions were sent.</footer>
+</main>
+<script>
+(function(){
+var rows=[].slice.call(document.querySelectorAll('details.row')),q=document.getElementById('q'),shown=document.getElementById('shown'),sev='';
+function apply(){var t=q.value.toLowerCase(),n=0;rows.forEach(function(r){var ok=(!t||r.dataset.text.indexOf(t)>=0)&&(!sev||(sev==='kev'?r.dataset.kev==='1':r.dataset.sev===sev));r.style.display=ok?'':'none';if(ok)n++});shown.textContent=n+' of '+rows.length;
+[].forEach.call(document.querySelectorAll('.tools button'),function(b){b.classList.toggle('on',b.dataset.sev===sev)})}
+q.addEventListener('input',apply);
+[].forEach.call(document.querySelectorAll('.tools button'),function(b){b.addEventListener('click',function(){sev=b.dataset.sev;apply()})});
+[].forEach.call(document.querySelectorAll('[data-copy]'),function(b){b.addEventListener('click',function(){navigator.clipboard.writeText(b.dataset.copy).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1200)})})});
+apply();
+})();
+</script>
+</body>
+</html>
