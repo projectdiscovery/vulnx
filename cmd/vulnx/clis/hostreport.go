@@ -585,17 +585,21 @@ func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, t
 	return rows, total, counts
 }
 
+// hostFooter is the last line of the grid view, after any report links: what was scanned and how long it took.
+func hostFooter(inv vulnx.HostInventory, elapsed time.Duration, c *renderer.ColorConfig) string {
+	line := fmt.Sprintf("%s: %s components scanned", inv.OS, thousands(len(inv.Entries)))
+	if elapsed > 0 {
+		line += " in " + elapsed.Round(time.Second).String()
+	}
+	return "\n  " + c.Colorize(line, renderer.Gray) + "\n"
+}
+
 // renderHostGrid is the default view, one screen: the headline numbers and, per source, its findings by severity.
 func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, c *renderer.ColorConfig) string {
 	var b strings.Builder
 	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
 	rows, total, n := hostGrid(inv, res)
-	head := fmt.Sprintf("%s: %s components scanned", inv.OS, thousands(n.Checked))
-	if elapsed > 0 {
-		head += " in " + elapsed.Round(time.Second).String()
-	}
-	b.WriteString("\n" + c.Colorize(head, renderer.Bold+renderer.BrightWhite) + "\n\n")
-	fmt.Fprintf(&b, "  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
+	fmt.Fprintf(&b, "\n  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
 		c.Colorize(thousands(n.Affected), renderer.Bold), c.Colorize(thousands(n.Reachable), renderer.Bold),
 		c.Colorize(thousands(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(thousands(n.PublicExploit), renderer.Bold))
 

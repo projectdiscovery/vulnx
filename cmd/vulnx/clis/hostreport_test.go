@@ -258,7 +258,6 @@ func TestRenderHostGrid(t *testing.T) {
 	inv, res := hostFixture()
 	out := renderHost("grid", inv, res, 7*time.Second, false, renderer.NoColorConfig())
 	for _, want := range []string{
-		"macOS 26.4: 9 components scanned in 7s\n",
 		"  7 affected   6 reachable   3 known exploited   1 public exploit\n",
 		"  SOURCE        CRITICAL     HIGH         MEDIUM       LOW          EXPLOITED   CHECKED\n",
 		"  macOS            1 ▆▆▆▆▆▆     -            -            -                 1         1\n",
@@ -313,6 +312,13 @@ func TestHostReportHTML(t *testing.T) {
 	}
 	if !filepath.IsAbs(path) || strings.Contains(html, "<b>\"") {
 		t.Errorf("path %s", path)
+	}
+}
+
+func TestHostFooter(t *testing.T) {
+	inv, _ := hostFixture()
+	if got := hostFooter(inv, 7*time.Second, renderer.NoColorConfig()); got != "\n  macOS 26.4: 9 components scanned in 7s\n" {
+		t.Errorf("%q", got)
 	}
 }
 

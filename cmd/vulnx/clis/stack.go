@@ -195,6 +195,9 @@ cat versions.txt | vulnx scan`,
 						fmt.Printf("  Report: %s (expires in 24 hours)\n", vulnxClient.StackPage(id))
 					}
 				}
+				if scanView == "grid" {
+					fmt.Print(hostFooter(inv, elapsed, colorConfig()))
+				}
 				if failsOn(scanFailOn, inv, res) {
 					os.Exit(2)
 				}
