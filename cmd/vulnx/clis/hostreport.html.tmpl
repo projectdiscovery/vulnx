@@ -37,10 +37,10 @@ tfoot td{font-weight:600;background:var(--surface-2)}
 #sources table{table-layout:fixed}.sevh{padding-left:calc(14px + 2.6em - 1.2em)}
 .critical{color:var(--crit)}.high{color:var(--high)}.medium{color:var(--med)}.low{color:var(--low)}
 .bar.critical{background:var(--crit)}.bar.high{background:var(--high)}.bar.medium{background:var(--med)}.bar.low{background:var(--low)}
-.sev{font-weight:600;font-size:13px;text-transform:capitalize}
-.badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 6px;border-radius:4px;margin-left:6px}
-.badge.kev{background:var(--crit);color:#fff}.badge.poc{background:var(--poc-bg);color:var(--high)}
-.badge.no{background:var(--surface-2);color:var(--muted);font-weight:500}
+.sev{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;text-transform:capitalize}
+.sev::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.badge{display:inline-block;font:11px var(--mono);padding:3px 7px;border-radius:999px;margin-left:6px;white-space:nowrap;color:var(--muted);background:var(--surface-2)}
+.badge.kev{color:var(--crit);background:var(--poc-bg)}.badge.poc{color:var(--high);background:var(--poc-bg)}
 .dim{color:var(--muted)}
 h3{font:600 14px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:22px 0 8px}
 .action{padding:12px 16px;border-bottom:1px solid var(--line)}
@@ -51,7 +51,7 @@ h3{font:600 14px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.05em;c
 .cmd button:hover,.tools button:hover{background:var(--hover)}
 .why{color:var(--muted);font-size:13px;margin-top:4px}
 .tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-.tools input{flex:1;min-width:220px;font:14px var(--sans);padding:8px 12px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink)}
+.tools>input{flex:1;min-width:220px;font:14px var(--sans);padding:8px 12px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink)}
 .tools button.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 details.row{border-bottom:1px solid var(--line)}
 details.row:last-child{border-bottom:0}
@@ -62,14 +62,27 @@ details.row>summary:hover{background:var(--hover)}
 .nm{font-weight:600;word-break:break-word}.kind{color:var(--faint);font-size:12px;font-weight:400;margin-left:8px}
 .cut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 details.grp{border-bottom:1px solid var(--line)}details.grp:last-child{border-bottom:0}
-details.grp>summary{display:grid;grid-template-columns:190px 44px 1fr auto;gap:14px;padding:14px 16px;cursor:pointer;list-style:none;align-items:baseline}
+details.grp>summary{display:grid;grid-template-columns:190px 48px 1fr auto;gap:14px;padding:14px 16px;cursor:pointer;list-style:none;align-items:baseline}
 details.grp>summary::-webkit-details-marker{display:none}
 details.grp>summary:hover{background:var(--hover)}
 .gt{font-weight:600}.gt::before{content:"▸";color:var(--faint);margin-right:8px;display:inline-block}
 details[open]>summary .gt::before{content:"▾"}
 .gc{font:500 17px var(--serif);text-align:right}
 .gu{display:flex;gap:6px;flex-wrap:wrap}.gu .badge,.chips .badge{margin-left:0}
-.badge.sevhigh{background:var(--surface-2);color:var(--high)}
+.gu{align-items:center}
+.sel{position:relative}
+.sel>button{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 12px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);font:13px var(--sans);color:var(--ink-2);cursor:pointer;white-space:nowrap}
+.sel>button b{font-weight:500;color:var(--ink)}.sel>button:hover,.sel.set>button{border-color:var(--ink)}
+.sel>button::after{content:"▾";color:var(--faint)}
+.panel{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:30;min-width:100%;width:max-content;max-width:320px;max-height:320px;overflow-y:auto;padding:6px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);box-shadow:0 12px 32px rgba(0,0,0,.35)}
+.sel.open .panel{display:block}
+.panel label{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:13px}
+.panel label:hover{background:var(--line)}.panel input{margin:0;accent-color:var(--ink)}
+.panel label span{flex:1}.sel:nth-last-child(-n+2) .panel{left:auto;right:0}.panel label i{font:12px var(--mono);font-style:normal;color:var(--faint)}
+.panel .clear{display:block;width:100%;margin-top:4px;padding:7px 8px;border:0;border-top:1px solid var(--line);background:none;color:var(--ink-2);font:13px var(--sans);text-align:left;cursor:pointer;border-radius:0}
+.plain{color:var(--muted)}
+.mods{margin:0;padding:8px 0;list-style:none}.mods li{padding:6px 0;border-bottom:1px solid var(--line)}.mods li:last-child{border-bottom:0}
+.items table td{padding:6px 12px 6px 0;font-size:13.5px}.items table th{padding:6px 12px 6px 0}
 .items{background:var(--surface-2);padding:6px 16px 10px 38px}
 .item{display:grid;grid-template-columns:220px 1fr;gap:4px 16px;padding:9px 0;border-bottom:1px solid var(--line);align-items:baseline}.item:last-child{border-bottom:0}
 .item .cmd{grid-column:1/-1}
@@ -102,7 +115,7 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 <div class="fact"><b>{{thousands .Clean}}</b><span>No known advisory</span></div>
 <div class="fact"><b>{{thousands (len .NotChecked)}}</b><span>Not checked</span></div>
 </div>
-<nav><a href="#sources">By source</a>{{if .Groups}}<a href="#update">Where to fix</a>{{end}}<a href="#affected">Affected versions</a>{{if .NotLinked}}<a href="#unreachable">Not reachable</a>{{end}}{{if .CouldNotMatch}}<a href="#undetermined">Couldn't match</a>{{end}}{{if .NotChecked}}<a href="#notchecked">Not checked</a>{{end}}</nav>
+<nav><a href="#sources">By source</a>{{if .Groups}}<a href="#update">Where to fix</a>{{end}}<a href="#affected">Affected versions</a><a href="#leftout">Left out</a></nav>
 
 <section id="sources">
 <h2>By source</h2>
@@ -129,10 +142,10 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 <h2>Affected versions</h2>
 <p class="note">One row per affected component a program can reach, most urgent first. Open a row for its advisories.</p>
 <div class="tools"><input id="q" type="search" placeholder="Filter by name, CVE, or where it was found" aria-label="Filter">
-<button type="button" data-sev="">All</button><button type="button" data-sev="kev">Known exploited</button><button type="button" data-sev="critical">Critical</button><button type="button" data-sev="high">High</button><button type="button" data-sev="medium">Medium</button><button type="button" data-sev="low">Low</button></div>
+<span id="facets" style="display:contents"></span></div>
 <div class="surface">
 <div class="head"><span>Severity</span><span>Component</span><span>Version</span><span>Fixed in</span><span>Found in</span></div>
-{{range .Components}}<details class="row" data-sev="{{.Severity}}" data-kev="{{if eq .Mark "KEV"}}1{{end}}" data-text="{{.Search}}">
+{{range .Components}}<details class="row" data-severity="{{.Severity}}" data-exploit="{{if eq .Mark "KEV"}}known exploited{{else if eq .Mark "POC"}}public exploit{{else}}none known{{end}}" data-source="{{.Sources}}" data-type="{{.Kind}}" data-text="{{.Search}}">
 <summary><span><span class="sev {{.Severity}}">{{.Severity}}</span>{{if eq .Mark "KEV"}}<span class="badge kev">KEV</span>{{else if eq .Mark "POC"}}<span class="badge poc">POC</span>{{end}}</span>
 <span class="nm">{{.Name}}<span class="kind">{{.Kind}}</span></span><span class="mono cut">{{.Version}}</span><span class="mono fix cut">{{.Fixed}}</span><span class="dim cut">{{.Found}}{{if .FoundMore}} +{{.FoundMore}}{{end}}</span></summary>
 <div class="advs">{{if .Linked}}<p class="dim">{{.Linked}}.</p>{{end}}
@@ -144,36 +157,49 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 <p class="tools" style="margin-top:12px"><span class="dim" id="shown"></span><button type="button" id="all">Show all</button></p>
 </section>
 
-{{if .NotLinked}}<section id="unreachable">
-<h2>Not reachable</h2>
-<p class="note">Affected Go module versions that no program on this machine can run: each program carrying one links none of the affected code.</p>
-<div class="surface"><ul class="cols">{{range .NotLinked}}<li><span class="mono">{{.}}</span></li>{{end}}</ul></div>
-</section>{{end}}
-
-{{if .CouldNotMatch}}<section id="undetermined">
-<h2>Couldn't match</h2>
-<p class="note">An advisory may apply, but its range could not be compared with this version. Never guessed.</p>
-<div class="surface"><table><thead><tr><th>Component</th><th>Version</th><th>Why</th></tr></thead>
-<tbody>{{range .CouldNotMatch}}<tr><td class="nm">{{.Name}}</td><td class="mono">{{.Version}}</td><td class="dim">{{.Why}}</td></tr>{{end}}</tbody></table></div>
-</section>{{end}}
-
-{{if .NotChecked}}<section id="notchecked">
-<h2>Not checked</h2>
-<p class="note">Read from this machine, but with no exact identifier to check, so not judged either way.</p>
-<div class="surface"><ul class="cols">{{range .NotChecked}}<li>{{.Name}} <span class="dim mono">{{.Version}}</span> <span class="dim">({{.Source}})</span></li>{{end}}</ul></div>
-{{if .NotRead}}<p class="note" style="margin-top:12px">Not read at all: {{.NotRead}}.</p>{{end}}
-</section>{{end}}
+<section id="leftout">
+<h2>Left out of the findings</h2>
+<p class="note">Not counted above. Open a line for the list; Copy puts its identifiers (purls and CPEs) on the clipboard.</p>
+<div class="surface">
+{{if .NotLinked}}<details class="grp">
+<summary><span class="gt">Not reachable</span><span class="gc">{{.NotLinkedTotal}}</span><span class="plain">Go module versions no program on this machine can run</span><button type="button" data-copy="{{.NotLinkedCopy}}">Copy list</button></summary>
+<div class="items"><ul class="mods">{{range .NotLinked}}<li><span class="iname mono">{{.Name}}</span> <span class="badge">{{.N}}</span> <span class="dim mono">{{.Versions}}</span></li>{{end}}</ul></div>
+</details>{{end}}
+{{if .CouldNotMatch}}<details class="grp">
+<summary><span class="gt">Couldn't match</span><span class="gc">{{len .CouldNotMatch}}</span><span class="plain">an advisory may apply, but its range could not be compared with the version</span><button type="button" data-copy="{{.CouldNotMatchCopy}}">Copy list</button></summary>
+<div class="items"><table><tr><th>Component</th><th>Version</th><th>Why</th></tr>{{range .CouldNotMatch}}<tr><td class="nm">{{.Name}}</td><td class="mono">{{.Version}}</td><td class="dim">{{.Why}}</td></tr>{{end}}</table></div>
+</details>{{end}}
+{{if .NotChecked}}<details class="grp">
+<summary><span class="gt">Not checked</span><span class="gc">{{len .NotChecked}}</span><span class="plain">no exact identifier to check ({{.NotCheckedBy}})</span><button type="button" data-copy="{{.NotCheckedCopy}}">Copy list</button></summary>
+<div class="items"><ul class="cols" style="padding-left:18px">{{range .NotChecked}}<li>{{.Name}} <span class="dim mono">{{.Version}}</span> <span class="dim">({{.Source}})</span></li>{{end}}</ul>
+{{if .NotRead}}<p class="dim">Not read at all: {{.NotRead}}.</p>{{end}}</div>
+</details>{{end}}
+</div>
+</section>
 
 <footer>Written by vulnx scan --host. Verdicts from SecurityContext; only component names and versions were sent.</footer>
 </main>
 <script>
 (function(){
-var rows=[].slice.call(document.querySelectorAll('details.row')),q=document.getElementById('q'),shown=document.getElementById('shown'),more=document.getElementById('all'),sev='',all=false,first=30;
-function apply(){var t=q.value.toLowerCase(),match=0,vis=0;rows.forEach(function(r){var ok=(!t||r.dataset.text.indexOf(t)>=0)&&(!sev||(sev==='kev'?r.dataset.kev==='1':r.dataset.sev===sev));if(ok)match++;var show=ok&&(all||match<=first);r.style.display=show?'':'none';if(show)vis++});
-shown.textContent='Showing '+vis+' of '+match+(match<rows.length?' matching ('+rows.length+' in all)':'');more.style.display=vis<match?'':'none';
-[].forEach.call(document.querySelectorAll('.tools button[data-sev]'),function(b){b.classList.toggle('on',b.dataset.sev===sev)})}
+var rows=[].slice.call(document.querySelectorAll('details.row')),q=document.getElementById('q'),shown=document.getElementById('shown'),more=document.getElementById('all'),all=false,first=30;
+var facets=[['severity','Severity',['critical','high','medium','low']],['exploit','Exploit',['known exploited','public exploit','none known']],['source','Source'],['type','Type']],picked={};
+function vals(r,k){return (r.dataset[k]||'').split('|').filter(Boolean)}
+function apply(){var t=q.value.toLowerCase(),match=0,vis=0;rows.forEach(function(r){var ok=!t||r.dataset.text.indexOf(t)>=0;
+facets.forEach(function(f){var p=picked[f[0]];if(ok&&p&&p.length)ok=vals(r,f[0]).some(function(v){return p.indexOf(v)>=0})});
+if(ok)match++;var show=ok&&(all||match<=first);r.style.display=show?'':'none';if(show)vis++});
+shown.textContent='Showing '+vis+' of '+match+(match<rows.length?' matching ('+rows.length+' in all)':'');more.style.display=vis<match?'':'none'}
+var host=document.getElementById('facets');
+facets.forEach(function(f){var key=f[0],counts={};rows.forEach(function(r){vals(r,key).forEach(function(v){counts[v]=(counts[v]||0)+1})});
+var names=(f[2]||Object.keys(counts).sort(function(a,b){return counts[b]-counts[a]})).filter(function(v){return counts[v]});if(names.length<2)return;
+var sel=document.createElement('div');sel.className='sel';var btn=document.createElement('button');btn.type='button';var panel=document.createElement('div');panel.className='panel';
+function label(){var p=picked[key]||[];btn.textContent=f[1]+': ';var b=document.createElement('b');b.textContent=p.length?(p.length===1?p[0]:p.length+' selected'):'All';btn.appendChild(b);sel.classList.toggle('set',p.length>0)}
+names.forEach(function(v){var l=document.createElement('label'),c=document.createElement('input'),s=document.createElement('span'),i=document.createElement('i');c.type='checkbox';s.textContent=v;i.textContent=counts[v];
+c.addEventListener('change',function(){var p=picked[key]||(picked[key]=[]);if(c.checked)p.push(v);else p.splice(p.indexOf(v),1);label();apply()});l.appendChild(c);l.appendChild(s);l.appendChild(i);panel.appendChild(l)});
+var clear=document.createElement('button');clear.type='button';clear.className='clear';clear.textContent='Clear';clear.addEventListener('click',function(){picked[key]=[];[].forEach.call(panel.querySelectorAll('input'),function(c){c.checked=false});label();apply()});panel.appendChild(clear);
+btn.addEventListener('click',function(e){e.stopPropagation();var open=sel.classList.contains('open');[].forEach.call(document.querySelectorAll('.sel.open'),function(o){o.classList.remove('open')});if(!open)sel.classList.add('open')});
+panel.addEventListener('click',function(e){e.stopPropagation()});label();sel.appendChild(btn);sel.appendChild(panel);host.appendChild(sel)});
+document.addEventListener('click',function(){[].forEach.call(document.querySelectorAll('.sel.open'),function(o){o.classList.remove('open')})});
 q.addEventListener('input',apply);more.addEventListener('click',function(){all=true;apply()});
-[].forEach.call(document.querySelectorAll('.tools button[data-sev]'),function(b){b.addEventListener('click',function(){sev=b.dataset.sev;apply()})});
 [].forEach.call(document.querySelectorAll('[data-copy]'),function(b){b.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var label=b.textContent;navigator.clipboard.writeText(b.dataset.copy).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent=label},1200)})})});
 apply();
 })();

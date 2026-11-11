@@ -300,7 +300,12 @@ func TestHostReportHTML(t *testing.T) {
 		`<span class="gt">Python packages</span><span class="gc">2</span>`, `<span class="dim mono"> in /opt/homebrew</span>`,
 		`data-copy="/opt/homebrew/bin/python3.12 -m pip install -U lxml wheel"`,
 		"2 of 2 programs reach it",
-		"<h2>Not reachable</h2>", "github.com/a/b v1.0.0", "<h2>Not checked</h2>", "cairo &lt;b&gt;",
+		// left out: collapsed lines with their lists and a Copy of the identifiers
+		`<span class="gt">Not reachable</span><span class="gc">1</span>`, `data-copy="pkg:golang/github.com/a/b@v1.0.0"`,
+		`<span class="iname mono">github.com/a/b</span> <span class="badge">1</span> <span class="dim mono">v1.0.0</span>`,
+		`<span class="gt">Not checked</span><span class="gc">1</span><span class="plain">no exact identifier to check (1 homebrew)</span>`, "cairo &lt;b&gt;",
+		// the filters read these
+		`data-severity="critical" data-exploit="known exploited" data-source="go binaries" data-type="go"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %q", want)

@@ -670,6 +670,7 @@ type finding struct {
 	kind, name, version string
 	worst, mark         string
 	tier                int
+	source              string   // the source that counted it (HostSource.Name)
 	places              []string // where it was found, less the binaries that link none of its affected code
 }
 
@@ -680,7 +681,7 @@ func findings(inv vulnx.HostInventory, res vulnx.StackResult) []finding {
 		if it.Status != "affected" || unreachable(it) {
 			continue
 		}
-		f := finding{item: it}
+		f := finding{item: it, source: inv.EntrySource[it.Input]}
 		f.kind, f.name, f.version = componentParts(it.Input)
 		f.worst, _ = liveSeverity(it)
 		for _, a := range it.AdvisoryRows {
@@ -1236,6 +1237,7 @@ type reportAdvisory struct {
 // reportComponent is one affected component, every version of it found on the machine together.
 type reportComponent struct {
 	Severity, Mark, Kind, Name, Version, Fixed, Found, Linked, Search string
+	Sources                                                           string // the sources that counted it, "|"-separated
 	FoundMore, More                                                   int
 	Advisories                                                        []reportAdvisory
 	Versions                                                          []reportVersion
@@ -1389,6 +1391,9 @@ func reportComponents(fs []finding) []reportComponent {
 			c.Fixed = f.item.FixedVersion
 		}
 		c.Versions = append(c.Versions, reportVersion{f.version, f.item.FixedVersion, strings.Join(f.places, ", ")})
+		if src := f.source; src != "" && !slices.Contains(strings.Split(c.Sources, "|"), src) {
+			c.Sources = strings.TrimPrefix(c.Sources+"|"+src, "|")
+		}
 		for _, p := range f.places {
 			if !slices.Contains(places[key], p) {
 				places[key] = append(places[key], p)
@@ -1452,19 +1457,27 @@ func reportComponents(fs []finding) []reportComponent {
 	return out
 }
 
-type reportUnmatched struct{ Name, Version, Why string }
+type reportUnmatched struct{ Name, Version, Why, ID string }
+
+// reportModule is a Go module with the versions of it no program reaches.
+type reportModule struct {
+	Name, Versions string
+	N              int
+}
 
 type hostReport struct {
-	OS, Generated, Elapsed, NotRead string
-	Counts                          hostCounts
-	Undetermined, Clean             int
-	Grid                            []reportGridRow
-	Total                           reportGridRow
-	Groups                          []reportGroup
-	Components                      []reportComponent
-	NotLinked                       []string
-	CouldNotMatch                   []reportUnmatched
-	NotChecked                      []vulnx.HostComponent
+	OS, Generated, Elapsed, NotRead                                string
+	Counts                                                         hostCounts
+	Undetermined, Clean                                            int
+	Grid                                                           []reportGridRow
+	Total                                                          reportGridRow
+	Groups                                                         []reportGroup
+	Components                                                     []reportComponent
+	NotLinked                                                      []reportModule
+	NotLinkedTotal                                                 int
+	NotLinkedCopy, CouldNotMatchCopy, NotCheckedCopy, NotCheckedBy string
+	CouldNotMatch                                                  []reportUnmatched
+	NotChecked                                                     []vulnx.HostComponent
 }
 
 // hostReportData is a host scan as the HTML report shows it: the production stack report's sections (the verdict,
@@ -1499,20 +1512,44 @@ func hostReportData(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 	actions := hostActions(inv, fs)
 	d.Groups = reportGroups(actions)
 	d.Components = reportComponents(fs)
+	var linked, unmatched, unchecked []string
+	modules := map[string]int{} // module -> its index in d.NotLinked
 	for _, it := range res.Items {
 		switch {
 		case it.Status == "affected" && unreachable(it):
 			_, name, version := componentParts(it.Input)
-			d.NotLinked = append(d.NotLinked, name+" "+version)
+			i, ok := modules[name]
+			if !ok {
+				i = len(d.NotLinked)
+				modules[name] = i
+				d.NotLinked = append(d.NotLinked, reportModule{Name: name})
+			}
+			d.NotLinked[i].N++
+			d.NotLinked[i].Versions = strings.TrimPrefix(d.NotLinked[i].Versions+", "+version, ", ")
+			d.NotLinkedTotal++
+			linked = append(linked, it.Input)
 		case it.Status == "undetermined":
 			_, name, version := componentParts(it.Input)
 			why := it.Reason
 			if why == "" && len(it.Undetermined) > 0 {
 				why = it.Undetermined[0].Reason
 			}
-			d.CouldNotMatch = append(d.CouldNotMatch, reportUnmatched{name, version, strings.ReplaceAll(why, "_", " ")})
+			d.CouldNotMatch = append(d.CouldNotMatch, reportUnmatched{name, version, strings.ReplaceAll(why, "_", " "), it.Input})
+			unmatched = append(unmatched, it.Input)
 		}
 	}
+	sort.SliceStable(d.NotLinked, func(i, j int) bool { return d.NotLinked[i].N > d.NotLinked[j].N })
+	for _, c := range inv.NotAssessed {
+		unchecked = append(unchecked, strings.TrimSpace(c.Name+" "+c.Version))
+	}
+	var by []string
+	for _, src := range inv.Sources {
+		if src.NotAssessed > 0 {
+			by = append(by, fmt.Sprintf("%d %s", src.NotAssessed, src.Name))
+		}
+	}
+	d.NotLinkedCopy, d.CouldNotMatchCopy, d.NotCheckedCopy = strings.Join(linked, "\n"), strings.Join(unmatched, "\n"), strings.Join(unchecked, "\n")
+	d.NotCheckedBy = strings.Join(by, ", ")
 	return d
 }
 
