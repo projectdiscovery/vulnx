@@ -1597,12 +1597,3 @@ func writeHostSBOM(path string, inv vulnx.HostInventory) (string, error) {
 
 // shareExpiry is how long a shared host report's link works.
 const shareExpiry = 24 * time.Hour
-
-// localTime is an API timestamp in the machine's time zone ("12 Nov 15:04 CET"); as given when it is not RFC 3339.
-func localTime(stamp string) string {
-	t, err := time.Parse(time.RFC3339, stamp)
-	if err != nil {
-		return stamp
-	}
-	return t.Local().Format("2 Jan 15:04 MST")
-}

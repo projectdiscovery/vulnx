@@ -285,7 +285,7 @@ report is either a local HTML file (`--html`, nothing more is uploaded for it) o
 (`--report`, valid for 24 hours); both only when asked for.
 ```bash
 vulnx scan --host                       # one screen: findings per source and severity
-vulnx scan --host --report              # a temporary report link, valid for 24 hours (uploads the component list)
+vulnx scan --host --report              # a report URL that auto-expires in 24 hours
 vulnx scan --host --html                # also write vulnx-host-<date>.html and print its file:// link
 vulnx scan --host --open                # write the report and open it in the browser
 vulnx scan --host --html=out.html       # name the file

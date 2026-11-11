@@ -66,8 +66,8 @@ Or an operating system:
                                   applications with a known product. Anything read but not judged is listed.
                                   --root reads a mounted Linux filesystem instead. The terminal shows one
                                   screen: findings per source and severity (--view for other views). --report
-                                  gives a temporary report link valid for 24 hours; --html writes the report as
-                                  a local file (--open opens it);
+                                  prints a report URL that auto-expires in 24 hours; --html writes the report
+                                  as a local file (--open opens it);
                                   --fail-on kev|critical|high exits 2 on a reachable finding.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
@@ -170,7 +170,7 @@ cat versions.txt | vulnx scan`,
 						openFile(path)
 					}
 				case scanView == "grid" && !scanReport:
-					fmt.Println("  Full report: --html writes a local file, --report gives a link valid for 24 hours")
+					fmt.Println("  Full report: --report (URL, expires in 24 hours) or --html (local file)")
 				}
 				if scanSBOM != "" || scanReport {
 					path, err := writeHostSBOM(scanSBOM, inv)
@@ -180,7 +180,7 @@ cat versions.txt | vulnx scan`,
 					fmt.Printf("  SBOM: %s\n", path)
 					if scanReport {
 						hostProgress("Uploading the SBOM to SecurityContext ...")
-						id, expiresAt, err := vulnxClient.ShareFile(ctx, path, shareExpiry)
+						id, _, err := vulnxClient.ShareFile(ctx, path, shareExpiry)
 						if err == nil {
 							hostProgress("Waiting for SecurityContext to read it ...")
 							_, err = vulnxClient.WaitStackReady(ctx, id)
@@ -192,9 +192,7 @@ cat versions.txt | vulnx scan`,
 						if err != nil {
 							fatalAPI("report", err)
 						}
-						fmt.Printf("  Temporary report: %s\n", vulnxClient.StackPage(id))
-						fmt.Printf("  Valid for 24 hours, until %s; anyone with the link can read it until then\n", localTime(expiresAt))
-						fmt.Println("  SecurityContext keeps the component names and versions for analysis, not tied to you")
+						fmt.Printf("  Report: %s (expires in 24 hours)\n", vulnxClient.StackPage(id))
 					}
 				}
 				if failsOn(scanFailOn, inv, res) {
@@ -508,7 +506,7 @@ func init() {
 	scanCmd.Flags().Lookup("html").NoOptDefVal = "auto"
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
-	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: a temporary report on SecurityContext, valid for 24 hours: uploads the machine's component list (also written as an SBOM) and prints an unlisted link anyone holding it can read until it expires; SecurityContext keeps the list for analysis")
+	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: print a report URL that auto-expires in 24 hours")
 	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the local HTML report and open it in the browser")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
