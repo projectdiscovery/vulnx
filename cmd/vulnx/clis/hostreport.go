@@ -4,18 +4,13 @@ package clis
 // per program or as Markdown (--view). Every view leaves out what no binary can reach (Go reachability).
 
 import (
-	"bytes"
-	_ "embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -34,10 +29,7 @@ func writeHostJSON(inv vulnx.HostInventory, res vulnx.StackResult, vex string) {
 		writeStackOutput(res, vex, 0)
 		return
 	}
-	data, err := json.MarshalIndent(struct {
-		Host vulnx.HostInventory `json:"host"`
-		vulnx.StackResult
-	}{inv, res}, "", "  ")
+	data, err := hostJSON(inv, res)
 	if err != nil {
 		gologger.Fatal().Msgf("Failed to render output: %s", err)
 	}
@@ -504,17 +496,6 @@ func hostProgress(msg string) {
 		return
 	}
 	fmt.Fprint(os.Stderr, "\r\033[K"+msg)
-}
-
-// openFile opens a file with the desktop's default application.
-func openFile(path string) {
-	opener := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		opener = "open"
-	}
-	if err := exec.Command(opener, path).Start(); err != nil {
-		gologger.Warning().Msgf("could not open %s: %s", path, err)
-	}
 }
 
 // gridRow is one source of a host scan: what it checked and its reachable findings by worst severity.
@@ -1199,386 +1180,27 @@ func since(t time.Time) string {
 	return time.Since(t).Round(100 * time.Millisecond).String()
 }
 
-//go:embed hostreport.html.tmpl
-var hostReportHTML string
-
-var hostReportTemplate = template.Must(template.New("host").Funcs(template.FuncMap{"thousands": thousands}).Parse(hostReportHTML))
-
-// advisoryPage is where a CVE's page is.
-const advisoryPage = "https://securitycontext.com/cve/"
-
-type reportCell struct {
-	Severity string
-	N, Width int
+// hostJSON is a host scan's full result: the stack result with the inventory beside it (sources, where each
+// component was found, how each place is updated, what was not assessed or read).
+func hostJSON(inv vulnx.HostInventory, res vulnx.StackResult) ([]byte, error) {
+	return json.MarshalIndent(struct {
+		Host vulnx.HostInventory `json:"host"`
+		vulnx.StackResult
+	}{inv, res}, "", "  ")
 }
 
-type reportGridRow struct {
-	Name               string
-	Cells              []reportCell
-	Exploited, Checked int
-}
-
-// reportGroup is one kind of update ("Homebrew formulae", 102): a line to read, opened for its rows.
-type reportGroup struct {
-	Title, Command string
-	Count          int
-	Urgency        []reportUrgency // how many of Count at each urgency, most urgent first
-	Rows           []reportGroupRow
-}
-
-// reportUrgency is a count at one urgency tier.
-type reportUrgency struct {
-	Label, Class string
-	N            int
-}
-
-// reportGroupRow is one thing to update: a formula, a tool, an interpreter's packages.
-type reportGroupRow struct {
-	Name, Detail, Command, Urgency, Class string
-	Why                                   []string
-	More                                  int
-}
-
-type reportAdvisory struct {
-	ID, URL, Name, Severity, Score, Mark string
-	NotReachable                         bool
-}
-
-// reportComponent is one affected component, every version of it found on the machine together.
-type reportComponent struct {
-	Severity, Mark, Kind, Name, Version, Fixed, Found, Linked, Search string
-	Sources                                                           string // the sources that counted it, "|"-separated
-	FoundMore, More                                                   int
-	Advisories                                                        []reportAdvisory
-	Versions                                                          []reportVersion
-}
-
-type reportVersion struct{ Version, Fixed, Found string }
-
-// groupTitles name a tier's kinds of update, by HostFix kind.
-var groupTitles = map[string]string{"macos": "System", "system": "System", "app": "Apps", "brew": "Homebrew formulae",
-	"pip": "Python packages", "npm": "npm global packages", "gem": "Ruby gems", "go-install": "Go tools", "cargo": "Rust tools",
-	"binary": "Other programs", "apt": "OS packages", "dnf": "OS packages", "apk": "OS packages", "other": "Other places"}
-
-// urgencyLabels name the tiers on a report line, with their style class.
-var urgencyLabels = [][2]string{{"known exploited", "kev"}, {"public exploit", "poc"}, {"critical or high", "sevhigh"}, {"medium or low", "no"}}
-
-// reportGroups turns the actions (most urgent first) into one list of kinds of update. A place updated at several
-// urgencies (an interpreter with an exploited package and a low one) is one row at its most urgent, its command
-// naming everything.
-func reportGroups(actions []hostAction) []reportGroup {
-	type row struct {
-		name, detail string
-		fix          vulnx.HostFix
-		tier         int
-		targets, why []string
-	}
-	type group struct {
-		title   string
-		rows    []*row
-		byName  map[string]*row
-		units   [4]int
-		targets []string // a one-command kind's names, most urgent first
-		fix     vulnx.HostFix
-	}
-	var order []*group
-	byTitle := map[string]*group{}
-	for _, a := range actions {
-		title := groupTitles[a.fix.Kind]
-		g := byTitle[title]
-		if g == nil {
-			g = &group{title: title, byName: map[string]*row{}, fix: a.fix}
-			byTitle[title] = g
-			order = append(order, g)
-		}
-		add := func(name, detail string, targets, why []string) {
-			r := g.byName[name+"|"+detail]
-			if r == nil {
-				r = &row{name: name, detail: detail, fix: a.fix, tier: a.tier}
-				g.byName[name+"|"+detail] = r
-				g.rows = append(g.rows, r)
-			}
-			r.targets = append(r.targets, targets...)
-			r.why = append(r.why, why...)
-		}
-		var all []string
-		for _, t := range a.targets {
-			all = append(all, a.why[t]...)
-		}
-		units := 1
-		switch a.fix.Kind {
-		case "brew", "apt", "dnf", "apk", "cargo": // one command, a row per name it takes
-			for _, t := range a.targets {
-				add(t, "", nil, a.why[t])
-			}
-			g.targets = append(g.targets, a.targets...)
-			units = len(a.targets)
-		case "pip", "gem": // a row per interpreter, its packages the reasons
-			name, detail := "gems", ""
-			if a.fix.Kind == "pip" { // "/opt/homebrew/bin/python3.12" -> python3.12, in /opt/homebrew
-				interpreter := strings.Fields(a.fix.Command)[0]
-				name = path.Base(interpreter)
-				if dir := strings.TrimSuffix(path.Dir(interpreter), "/bin"); dir != "." {
-					detail = "in " + dir
-				}
-			}
-			add(name, detail, a.targets, all)
-			units = len(a.targets)
-		case "go-install":
-			add(a.program(a.targets[0]), "", a.targets, all)
-		case "binary":
-			add(a.fix.Target, strings.TrimSuffix(strings.TrimPrefix(a.fix.Note, "update "+a.fix.Target+" ("), ")"), nil, all)
-		case "app":
-			add(a.fix.Target, "", nil, all)
-		case "npm":
-			add("global packages", "", nil, all)
-			units = len(a.targets)
-		default: // Software Update and what ships with the system
-			name, detail := strings.SplitN(a.fix.Note, " (", 2)[0], ""
-			if rest, ok := strings.CutPrefix(a.fix.Note, "comes with "); ok { // "comes with macOS: updated with it"
-				what, how, _ := strings.Cut(strings.TrimPrefix(rest, "the "), ": ")
-				name, detail = "Shipped with "+what, how
-			}
-			add(name, detail, nil, all)
-			units = len(all)
-		}
-		g.units[a.tier] += units
-	}
-	var out []reportGroup
-	for _, g := range order {
-		rg := reportGroup{Title: g.title}
-		if len(g.targets) > 0 {
-			rg.Command = g.fix.Command + " " + strings.Join(g.targets, " ")
-		}
-		for tier, n := range g.units {
-			rg.Count += n
-			if n > 0 {
-				rg.Urgency = append(rg.Urgency, reportUrgency{urgencyLabels[tier][0], urgencyLabels[tier][1], n})
-			}
-		}
-		for _, r := range g.rows {
-			row := reportGroupRow{Name: r.name, Detail: r.detail, Urgency: urgencyLabels[r.tier][0], Class: urgencyLabels[r.tier][1], Why: r.why}
-			if len(r.why) > 3 {
-				row.Why, row.More = r.why[:3], len(r.why)-3
-			}
-			switch r.fix.Kind {
-			case "pip", "gem", "go-install":
-				row.Command = r.fix.Command + " " + strings.Join(r.targets, " ")
-			case "npm":
-				row.Command = r.fix.Command
-			}
-			rg.Rows = append(rg.Rows, row)
-		}
-		out = append(out, rg)
-	}
-	return out
-}
-
-// reportComponents groups findings (most urgent first) by component: its versions, where they are, its advisories.
-func reportComponents(fs []finding) []reportComponent {
-	var out []reportComponent
-	index := map[string]int{}
-	seenAdv := map[string]map[string]bool{}
-	places := map[string][]string{}
-	reach := map[string][2]int{}
-	for _, f := range fs {
-		key := f.kind + " " + f.name
-		i, ok := index[key]
-		if !ok {
-			i = len(out)
-			index[key] = i
-			out = append(out, reportComponent{Severity: f.worst, Mark: f.mark, Kind: f.kind, Name: f.label()})
-			seenAdv[key] = map[string]bool{}
-		}
-		c := &out[i]
-		if severityRank[f.worst] < severityRank[c.Severity] {
-			c.Severity = f.worst
-		}
-		if c.Mark != "KEV" && f.mark != "" && (f.mark == "KEV" || c.Mark == "") {
-			c.Mark = f.mark
-		}
-		if c.Fixed == "" || versionLess(c.Fixed, f.item.FixedVersion) {
-			c.Fixed = f.item.FixedVersion
-		}
-		c.Versions = append(c.Versions, reportVersion{f.version, f.item.FixedVersion, strings.Join(f.places, ", ")})
-		if src := f.source; src != "" && !slices.Contains(strings.Split(c.Sources, "|"), src) {
-			c.Sources = strings.TrimPrefix(c.Sources+"|"+src, "|")
-		}
-		for _, p := range f.places {
-			if !slices.Contains(places[key], p) {
-				places[key] = append(places[key], p)
-			}
-		}
-		if r := f.item.Reachability; r != nil {
-			n := reach[key]
-			reach[key] = [2]int{n[0] + len(r.Reachable), n[1] + len(r.Reachable) + len(r.NotReachable) + len(r.Unknown)}
-		}
-		for _, a := range f.item.AdvisoryRows {
-			id := a.CVE
-			if id == "" {
-				id = a.AdvisoryID
-			}
-			if seenAdv[key][id] {
-				continue
-			}
-			seenAdv[key][id] = true
-			if len(c.Advisories) >= 12 {
-				c.More++
-				continue
-			}
-			adv := reportAdvisory{ID: id, Name: a.Name, Severity: a.Severity, NotReachable: a.Reachability == "not_reachable"}
-			if a.CVE != "" {
-				adv.URL = advisoryPage + a.CVE
-			}
-			if a.CvssScore > 0 {
-				adv.Score = fmt.Sprintf("%.1f", a.CvssScore)
-			}
-			if a.Exploit != nil && a.Exploit.KnownExploited {
-				adv.Mark = "KEV"
-			} else if a.Exploit != nil && a.Exploit.PublicExploit {
-				adv.Mark = "POC"
-			}
-			c.Advisories = append(c.Advisories, adv)
-		}
-		c.More += max(0, advisoryCount(f.item)-len(f.item.AdvisoryRows))
-	}
-	for key, i := range index {
-		c := &out[i]
-		c.Version = c.Versions[0].Version
-		if len(c.Versions) > 1 {
-			c.Version = fmt.Sprintf("%d versions", len(c.Versions))
-		} else {
-			c.Versions = nil
-		}
-		ps := places[key]
-		search := append([]string{c.Name, key}, ps...)
-		if len(ps) > 2 {
-			c.FoundMore, ps = len(ps)-2, ps[:2]
-		}
-		c.Found = strings.Join(ps, ", ")
-		if n := reach[key]; n[1] > 0 {
-			c.Linked = fmt.Sprintf("%d of %d programs reach it", n[0], n[1])
-		}
-		for _, a := range c.Advisories {
-			search = append(search, a.ID, a.Name)
-		}
-		c.Search = strings.ToLower(strings.Join(search, " "))
-	}
-	return out
-}
-
-type reportUnmatched struct{ Name, Version, Why, ID string }
-
-// reportModule is a Go module with the versions of it no program reaches.
-type reportModule struct {
-	Name, Versions string
-	N              int
-}
-
-type hostReport struct {
-	OS, Generated, Elapsed, NotRead                                string
-	Counts                                                         hostCounts
-	Undetermined, Clean                                            int
-	Grid                                                           []reportGridRow
-	Total                                                          reportGridRow
-	Groups                                                         []reportGroup
-	Components                                                     []reportComponent
-	NotLinked                                                      []reportModule
-	NotLinkedTotal                                                 int
-	NotLinkedCopy, CouldNotMatchCopy, NotCheckedCopy, NotCheckedBy string
-	CouldNotMatch                                                  []reportUnmatched
-	NotChecked                                                     []vulnx.HostComponent
-}
-
-// hostReportData is a host scan as the HTML report shows it: the production stack report's sections (the verdict,
-// where to fix, affected versions, couldn't match) and what only the machine knows (per source, where each
-// component was found, reachability, what was not checked).
-func hostReportData(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, now time.Time) hostReport {
-	rows, total, counts := hostGrid(inv, res)
-	d := hostReport{OS: inv.OS, Generated: now.Format("2006-01-02 15:04"), Counts: counts, Undetermined: res.Summary.Undetermined,
-		Clean: res.Summary.Clean, NotChecked: inv.NotAssessed, NotRead: strings.Join(inv.NotRead, "; ")}
-	if elapsed > 0 {
-		d.Elapsed = elapsed.Round(time.Second).String()
-	}
-	peak := 1
-	for _, r := range rows {
-		for _, v := range r.Severity {
-			peak = max(peak, v)
-		}
-	}
-	gridRow := func(r gridRow) reportGridRow {
-		out := reportGridRow{Name: r.Name, Exploited: r.Exploited, Checked: r.Checked}
-		for i, v := range r.Severity {
-			out.Cells = append(out.Cells, reportCell{Severity: gridSeverities[i], N: v, Width: max(3, v*72/peak)})
-		}
-		return out
-	}
-	for _, r := range rows {
-		d.Grid = append(d.Grid, gridRow(r))
-	}
-	d.Total = gridRow(total)
-
-	fs := findings(inv, res)
-	actions := hostActions(inv, fs)
-	d.Groups = reportGroups(actions)
-	d.Components = reportComponents(fs)
-	var linked, unmatched, unchecked []string
-	modules := map[string]int{} // module -> its index in d.NotLinked
-	for _, it := range res.Items {
-		switch {
-		case it.Status == "affected" && unreachable(it):
-			_, name, version := componentParts(it.Input)
-			i, ok := modules[name]
-			if !ok {
-				i = len(d.NotLinked)
-				modules[name] = i
-				d.NotLinked = append(d.NotLinked, reportModule{Name: name})
-			}
-			d.NotLinked[i].N++
-			d.NotLinked[i].Versions = strings.TrimPrefix(d.NotLinked[i].Versions+", "+version, ", ")
-			d.NotLinkedTotal++
-			linked = append(linked, it.Input)
-		case it.Status == "undetermined":
-			_, name, version := componentParts(it.Input)
-			why := it.Reason
-			if why == "" && len(it.Undetermined) > 0 {
-				why = it.Undetermined[0].Reason
-			}
-			d.CouldNotMatch = append(d.CouldNotMatch, reportUnmatched{name, version, strings.ReplaceAll(why, "_", " "), it.Input})
-			unmatched = append(unmatched, it.Input)
-		}
-	}
-	sort.SliceStable(d.NotLinked, func(i, j int) bool { return d.NotLinked[i].N > d.NotLinked[j].N })
-	for _, c := range inv.NotAssessed {
-		unchecked = append(unchecked, strings.TrimSpace(c.Name+" "+c.Version))
-	}
-	var by []string
-	for _, src := range inv.Sources {
-		if src.NotAssessed > 0 {
-			by = append(by, fmt.Sprintf("%d %s", src.NotAssessed, src.Name))
-		}
-	}
-	d.NotLinkedCopy, d.CouldNotMatchCopy, d.NotCheckedCopy = strings.Join(linked, "\n"), strings.Join(unmatched, "\n"), strings.Join(unchecked, "\n")
-	d.NotCheckedBy = strings.Join(by, ", ")
-	return d
-}
-
-// writeHostReport writes the report as one self-contained HTML file and returns its absolute path. path "auto"
-// (or empty) names it vulnx-host-<date>.html in the working directory, replacing the same day's.
-func writeHostReport(path string, inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration) (string, error) {
-	now := time.Now()
-	if path == "" || path == "auto" {
-		path = "vulnx-host-" + now.Format("2006-01-02") + ".html"
-	}
-	abs, err := filepath.Abs(path)
+// writeHostReportJSON writes the full result as vulnx-host-<date>.json in the working directory, replacing the
+// same day's, and returns its absolute path. Every host scan writes it: the terminal shows one screen of it.
+func writeHostReportJSON(inv vulnx.HostInventory, res vulnx.StackResult) (string, error) {
+	abs, err := filepath.Abs("vulnx-host-" + time.Now().Format("2006-01-02") + ".json")
 	if err != nil {
 		return "", err
 	}
-	var buf bytes.Buffer
-	if err := hostReportTemplate.Execute(&buf, hostReportData(inv, res, elapsed, now)); err != nil {
+	data, err := hostJSON(inv, res)
+	if err != nil {
 		return "", err
 	}
-	return abs, os.WriteFile(abs, buf.Bytes(), 0o644)
+	return abs, os.WriteFile(abs, data, 0o644)
 }
 
 // writeHostSBOM writes the inventory as a CycloneDX SBOM and returns its absolute path. path "auto" (or empty)

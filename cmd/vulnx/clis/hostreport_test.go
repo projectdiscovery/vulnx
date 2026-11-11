@@ -276,11 +276,11 @@ func TestRenderHostGrid(t *testing.T) {
 	}
 }
 
-// TestHostReportHTML writes the report as one HTML file with every section and escaped content.
-func TestHostReportHTML(t *testing.T) {
+// TestWriteHostReportJSON writes the full result, inventory included, as the day's JSON file.
+func TestWriteHostReportJSON(t *testing.T) {
+	t.Chdir(t.TempDir())
 	inv, res := hostFixture()
-	inv.NotAssessed[0].Name = "cairo <b>"
-	path, err := writeHostReport(filepath.Join(t.TempDir(), "r.html"), inv, res, 7*time.Second)
+	path, err := writeHostReportJSON(inv, res)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,30 +288,20 @@ func TestHostReportHTML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := string(raw)
-	for _, want := range []string{
-		"<h1>macOS 26.4</h1>", "9 components scanned in 7s", "<h2>By source</h2>", "<h2>Where to fix</h2>",
-		`data-copy="brew upgrade caddy php"`, "<h2>Affected versions</h2>",
-		`<span class="nm">x/net<span class="kind">go</span></span>`,
-		// one block: a kind of update with its count and how urgent its items are
-		`<span class="gt">Homebrew formulae</span><span class="gc">2</span><span class="gu"><span class="badge kev">1 known exploited</span><span class="badge poc">1 public exploit</span></span>`,
-		// an interpreter updated at two urgencies is one row, its command naming both packages
-		`<span class="gt">Python packages</span><span class="gc">2</span>`, `<span class="dim mono"> in /opt/homebrew</span>`,
-		`data-copy="/opt/homebrew/bin/python3.12 -m pip install -U lxml wheel"`,
-		"2 of 2 programs reach it",
-		// left out: collapsed lines with their lists and a Copy of the identifiers
-		`<span class="gt">Not reachable</span><span class="gc">1</span>`, `data-copy="pkg:golang/github.com/a/b@v1.0.0"`,
-		`<span class="iname mono">github.com/a/b</span> <span class="badge">1</span> <span class="dim mono">v1.0.0</span>`,
-		`<span class="gt">Not checked</span><span class="gc">1</span><span class="plain">no exact identifier to check (1 homebrew)</span>`, "cairo &lt;b&gt;",
-		// the filters read these
-		`data-severity="critical" data-exploit="known exploited" data-source="go binaries" data-type="go"`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("missing %q", want)
-		}
+	var doc struct {
+		Host struct {
+			OS          string                   `json:"os"`
+			Fixes       map[string]vulnx.HostFix `json:"fixes"`
+			NotAssessed []vulnx.HostComponent    `json:"not_assessed"`
+		} `json:"host"`
+		Items []vulnx.StackItem `json:"items"`
 	}
-	if !filepath.IsAbs(path) || strings.Contains(html, "<b>\"") {
-		t.Errorf("path %s", path)
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(filepath.Base(path), "vulnx-host-") || !strings.HasSuffix(path, ".json") || doc.Host.OS != "macOS 26.4" ||
+		len(doc.Items) != len(res.Items) || doc.Host.Fixes["caddy"].Target != "caddy" || len(doc.Host.NotAssessed) != 1 {
+		t.Errorf("%s: %+v, %d items", path, doc.Host, len(doc.Items))
 	}
 }
 

@@ -280,30 +280,24 @@ package; it stays unknown when the package is linked but no listed function is, 
 it. "Fix first" leaves out module versions no binary can reach and shows, per component, how many of the binaries
 carrying it link an affected function (LINKED).
 
-The terminal shows one screen: the headline counts and, per source, the reachable findings by severity. The full
-report is either a local HTML file (`--html`, nothing more is uploaded for it) or a temporary link on SecurityContext
-(`--report`, valid for 24 hours); both only when asked for.
+The terminal shows one screen: the reachable findings per source and severity. Every scan also writes the full
+result as `vulnx-host-<date>.json` in the current directory: every component with its advisories, where it was
+found, how to update it, Go reachability, and what was not checked.
 ```bash
-vulnx scan --host                       # one screen: findings per source and severity
-vulnx scan --host --report              # a report URL that auto-expires in 24 hours
-vulnx scan --host --html                # also write vulnx-host-<date>.html and print its file:// link
-vulnx scan --host --open                # write the report and open it in the browser
-vulnx scan --host --html=out.html       # name the file
+vulnx scan --host                       # one screen, and the full result as vulnx-host-<date>.json
+vulnx scan --host --report              # also a report URL that auto-expires in 24 hours
 vulnx scan --host --sbom                # also write what was checked as a CycloneDX SBOM (vulnx-host-<date>.cdx.json)
 vulnx scan --host --view actions        # in the terminal: what to update, most urgent first
 vulnx scan --host --view details        # per component (also: brief, programs, markdown)
+vulnx scan --host --json                # the full result on stdout (-o names a file)
 vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited (or critical, high)
 ```
-The HTML report has the counts per source, where to fix (one update per place, as the command that makes it where
-one exists: Software Update, `brew upgrade`, the right interpreter's `pip install -U`, `go install <tool>@latest`),
-every affected version with its advisories, the Go module versions no program can reach, what could not be
-matched, and what was not checked.
 
 `--report` is the one option that uploads more than a check does: it stores the machine's component names and
 versions on SecurityContext under an unlisted link, which anyone who has the link can read. The link works for a
 day. After that it stops answering; SecurityContext keeps the names and versions for analysis, no longer tied to who
 sent them. Against an API that cannot expire a link, `--report` uploads nothing. The hosted page shows the verdicts;
-where each component was found and Go reachability stay in the local report. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+where each component was found and Go reachability are in the local JSON. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

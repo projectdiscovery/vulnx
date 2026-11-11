@@ -30,9 +30,7 @@ var (
 	scanAuthor  string
 	scanWait    time.Duration
 	scanShowAll bool
-	scanHTML    string
 	scanView    string
-	scanOpen    bool
 	scanSBOM    string
 	scanReport  bool
 	scanFailOn  string
@@ -66,8 +64,8 @@ Or an operating system:
                                   applications with a known product. Anything read but not judged is listed.
                                   --root reads a mounted Linux filesystem instead. The terminal shows one
                                   screen: findings per source and severity (--view for other views). --report
-                                  prints a report URL that auto-expires in 24 hours; --html writes the report
-                                  as a local file (--open opens it);
+                                  prints a report URL that auto-expires in 24 hours; the full result is written
+                                  as vulnx-host-<date>.json;
                                   --fail-on kev|critical|high exits 2 on a reachable finding.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
@@ -159,18 +157,13 @@ cat versions.txt | vulnx scan`,
 					return
 				}
 				fmt.Print(renderHost(scanView, inv, res, elapsed, scanShowAll, colorConfig()))
-				switch {
-				case scanHTML != "" || scanOpen:
-					path, err := writeHostReport(scanHTML, inv, res, elapsed)
-					if err != nil {
-						gologger.Fatal().Msgf("Failed to write the report: %s", err)
-					}
-					fmt.Printf("  Local report: file://%s\n", path)
-					if scanOpen {
-						openFile(path)
-					}
-				case scanView == "grid" && !scanReport:
-					fmt.Println("  Full report: --report (URL, expires in 24 hours) or --html (local file)")
+				jsonPath, err := writeHostReportJSON(inv, res)
+				if err != nil {
+					gologger.Fatal().Msgf("Failed to write the report: %s", err)
+				}
+				fmt.Printf("  Full report: %s\n", jsonPath)
+				if scanView == "grid" && !scanReport {
+					fmt.Println("  Report URL: --report (expires in 24 hours)")
 				}
 				if scanSBOM != "" || scanReport {
 					path, err := writeHostSBOM(scanSBOM, inv)
@@ -505,12 +498,9 @@ func init() {
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
 	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, and on macOS Homebrew and applications")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
-	scanCmd.Flags().StringVar(&scanHTML, "html", "", "with --host: also write the full report as one local HTML file and print its link (--html=path.html to name it)")
-	scanCmd.Flags().Lookup("html").NoOptDefVal = "auto"
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
 	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: print a report URL that auto-expires in 24 hours")
-	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the local HTML report and open it in the browser")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
 	rootCmd.AddCommand(scanCmd)
