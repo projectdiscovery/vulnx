@@ -622,7 +622,7 @@ func (h *hostReader) binaries() {
 	b := h.readBinaries(h.glob(dirs...))
 	h.add("go binaries", count(b.goBins, "binary", "binaries"), b.goEntries, nil)
 	h.add("rust binaries", count(b.rustBins, "binary", "binaries"), b.rustEntries, nil)
-	h.notRead = append(h.notRead, "Rust binaries built without an embedded crate list; other compiled programs outside Homebrew")
+	h.notRead = append(h.notRead, "Rust binaries built without an embedded crate list; other compiled programs no package manager installed")
 }
 
 type binaryModules struct {
