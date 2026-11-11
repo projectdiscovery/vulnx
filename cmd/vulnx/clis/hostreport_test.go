@@ -293,7 +293,8 @@ func TestHostReportHTML(t *testing.T) {
 	for _, want := range []string{
 		"<h1>macOS 26.4</h1>", "9 components scanned in 7s", "<h2>By source</h2>", "<h2>Where to fix</h2>",
 		"<h3>Update now: known exploited</h3>", `data-copy="brew upgrade caddy"`, "<h2>Affected versions</h2>",
-		`<span class="nm"><span class="kind">go</span>x/net</span>`, "2 of 2 programs reach it",
+		`<span class="nm">x/net<span class="kind">go</span></span>`, `<span class="gt">Homebrew formulae</span><span class="gc">1</span><span class="gp">caddy</span>`,
+		`<span class="gt">Python packages</span><span class="gc">1</span><span class="gp">python3.12</span>`, `<span class="dim mono"> in /opt/homebrew</span>`, "2 of 2 programs reach it",
 		"<h2>Not reachable</h2>", "github.com/a/b v1.0.0", "<h2>Not checked</h2>", "cairo &lt;b&gt;",
 	} {
 		if !strings.Contains(html, want) {

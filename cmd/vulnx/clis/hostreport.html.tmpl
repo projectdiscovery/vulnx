@@ -53,16 +53,35 @@ h3{font:600 14px/1.3 var(--sans);text-transform:uppercase;letter-spacing:.05em;c
 .tools button.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 details.row{border-bottom:1px solid var(--line)}
 details.row:last-child{border-bottom:0}
-details.row>summary{display:grid;grid-template-columns:120px minmax(180px,2fr) minmax(110px,1fr) minmax(110px,1fr) 60px minmax(160px,2fr);gap:12px;padding:10px 14px;cursor:pointer;list-style:none;align-items:baseline}
+details.row>summary{display:grid;grid-template-columns:130px minmax(200px,2.2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(160px,2fr);gap:16px;padding:13px 16px;cursor:pointer;list-style:none;align-items:baseline}
 details.row>summary::-webkit-details-marker{display:none}
 details.row>summary:hover{background:var(--hover)}
-.head{display:grid;grid-template-columns:120px minmax(180px,2fr) minmax(110px,1fr) minmax(110px,1fr) 60px minmax(160px,2fr);gap:12px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.nm{font-weight:600;word-break:break-word}.kind{color:var(--muted);font-size:12px;margin-right:6px}
+.head{display:grid;grid-template-columns:130px minmax(200px,2.2fr) minmax(110px,1fr) minmax(110px,1fr) minmax(160px,2fr);gap:16px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.nm{font-weight:600;word-break:break-word}.kind{color:var(--faint);font-size:12px;font-weight:400;margin-left:8px}
+.cut{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+details.grp{border-bottom:1px solid var(--line)}details.grp:last-child{border-bottom:0}
+details.grp>summary{display:grid;grid-template-columns:190px 44px 1fr auto;gap:14px;padding:14px 16px;cursor:pointer;list-style:none;align-items:baseline}
+details.grp>summary::-webkit-details-marker{display:none}
+details.grp>summary:hover{background:var(--hover)}
+.gt{font-weight:600}.gt::before{content:"▸";color:var(--faint);margin-right:8px;display:inline-block}
+details[open]>summary .gt::before{content:"▾"}
+.gc{font:500 17px var(--serif);text-align:right}
+.gp{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.items{background:var(--surface-2);padding:6px 16px 10px 38px}
+.item{display:grid;grid-template-columns:220px 1fr;gap:4px 16px;padding:9px 0;border-bottom:1px solid var(--line);align-items:baseline}.item:last-child{border-bottom:0}
+.item .cmd{grid-column:1/-1}
+@media (max-width:760px){.item{grid-template-columns:1fr}}
+.iname{font-weight:600}.iname .dim{font-weight:400}
+.chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:13px}
+.chip{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:1px 9px;color:var(--ink-2)}
+
+summary button{font:12px var(--sans);border:1px solid var(--line-2);background:var(--surface);color:var(--ink-2);border-radius:999px;padding:3px 10px;cursor:pointer}
+.vers{margin-top:10px}.vers th{padding:6px 10px 4px 0;border:0}
 .fix{color:var(--low)}
-.advs{padding:4px 14px 14px 146px;background:var(--surface-2)}
+.advs{padding:8px 16px 16px 162px;background:var(--surface-2)}
 .advs table td{padding:5px 10px 5px 0;border:0;font-size:13.5px}
 ul.cols{columns:3;margin:0;padding:14px 16px 14px 34px;font-size:14px}
-@media (max-width:760px){details.row>summary,.head{grid-template-columns:90px 1fr 1fr}.head span:nth-child(n+4),details.row>summary>span:nth-child(n+4){display:none}.advs{padding-left:14px}ul.cols{columns:1}}
+@media (max-width:760px){details.row>summary,.head{grid-template-columns:100px 1fr 1fr}.head span:nth-child(n+4),details.row>summary>span:nth-child(n+4){display:none}.advs{padding-left:16px}ul.cols{columns:1}details.grp>summary{grid-template-columns:1fr 40px}.gp,details.grp>summary button{display:none}}
 footer{margin-top:48px;color:var(--faint);font-size:13px}
 </style>
 </head>
@@ -94,28 +113,33 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 
 {{if .Tiers}}<section id="update">
 <h2>Where to fix</h2>
-<p class="note">One update per place, most urgent first, as the command that makes it where one exists.</p>
+<p class="note">What to update, most urgent first. Open a line to see each item and why.</p>
 {{range .Tiers}}<h3>{{.Title}}</h3>
-<div class="surface">{{range .Actions}}<div class="action">
-{{if .Command}}<div class="cmd"><code>{{.Line}}</code><button type="button" data-copy="{{.Line}}">Copy</button></div>{{else}}<div>{{.Line}}</div>{{end}}
-<div class="why">{{.Why}}</div>
-</div>{{end}}</div>{{end}}
+<div class="surface">{{range .Groups}}<details class="grp">
+<summary><span class="gt">{{.Title}}</span><span class="gc">{{.Count}}</span><span class="gp">{{.Preview}}</span>{{if .Command}}<button type="button" data-copy="{{.Command}}">Copy command</button>{{end}}</summary>
+<div class="items">{{range .Rows}}<div class="item"><div class="iname">{{.Name}}{{if .Detail}}<span class="dim mono"> {{.Detail}}</span>{{end}}</div>
+<div class="chips">{{range .Why}}<span class="chip">{{.}}</span>{{end}}{{if .More}}<span class="dim">+{{.More}} more</span>{{end}}</div>
+{{if .Command}}<div class="cmd"><code>{{.Command}}</code><button type="button" data-copy="{{.Command}}">Copy</button></div>{{end}}</div>{{end}}</div>
+</details>{{end}}</div>{{end}}
 </section>{{end}}
 
 <section id="affected">
 <h2>Affected versions</h2>
-<p class="note">Every affected component a program can reach. Open a row for its advisories.</p>
+<p class="note">One row per affected component a program can reach, most urgent first. Open a row for its advisories.</p>
 <div class="tools"><input id="q" type="search" placeholder="Filter by name, CVE, or where it was found" aria-label="Filter">
-<button type="button" data-sev="">All</button><button type="button" data-sev="kev">Known exploited</button><button type="button" data-sev="critical">Critical</button><button type="button" data-sev="high">High</button><button type="button" data-sev="medium">Medium</button><button type="button" data-sev="low">Low</button>
-<span class="dim" id="shown"></span></div>
+<button type="button" data-sev="">All</button><button type="button" data-sev="kev">Known exploited</button><button type="button" data-sev="critical">Critical</button><button type="button" data-sev="high">High</button><button type="button" data-sev="medium">Medium</button><button type="button" data-sev="low">Low</button></div>
 <div class="surface">
-<div class="head"><span>Severity</span><span>Component</span><span>Version</span><span>Fixed in</span><span class="num">CVEs</span><span>Found in</span></div>
+<div class="head"><span>Severity</span><span>Component</span><span>Version</span><span>Fixed in</span><span>Found in</span></div>
 {{range .Components}}<details class="row" data-sev="{{.Severity}}" data-kev="{{if eq .Mark "KEV"}}1{{end}}" data-text="{{.Search}}">
 <summary><span><span class="sev {{.Severity}}">{{.Severity}}</span>{{if eq .Mark "KEV"}}<span class="badge kev">KEV</span>{{else if eq .Mark "POC"}}<span class="badge poc">POC</span>{{end}}</span>
-<span class="nm"><span class="kind">{{.Kind}}</span>{{.Name}}</span><span class="mono">{{.Version}}</span><span class="mono fix">{{.Fixed}}</span><span class="num">{{.CVEs}}</span><span class="dim">{{.Found}}{{if .Linked}} ({{.Linked}}){{end}}</span></summary>
-<div class="advs"><table>{{range .Advisories}}<tr><td class="mono">{{if .URL}}<a href="{{.URL}}">{{.ID}}</a>{{else}}{{.ID}}{{end}}</td><td><span class="sev {{.Severity}}">{{.Severity}}</span>{{if .Score}} <span class="dim">{{.Score}}</span>{{end}}</td><td>{{.Name}}{{if eq .Mark "KEV"}}<span class="badge kev">KEV</span>{{else if eq .Mark "POC"}}<span class="badge poc">POC</span>{{end}}{{if .NotReachable}}<span class="badge no">not reachable</span>{{end}}</td></tr>{{end}}</table>{{if .More}}<p class="dim">+{{.More}} more advisories (vulnx scan --host --json has every one)</p>{{end}}</div>
+<span class="nm">{{.Name}}<span class="kind">{{.Kind}}</span></span><span class="mono cut">{{.Version}}</span><span class="mono fix cut">{{.Fixed}}</span><span class="dim cut">{{.Found}}{{if .FoundMore}} +{{.FoundMore}}{{end}}</span></summary>
+<div class="advs">{{if .Linked}}<p class="dim">{{.Linked}}.</p>{{end}}
+<table>{{range .Advisories}}<tr><td class="mono">{{if .URL}}<a href="{{.URL}}">{{.ID}}</a>{{else}}{{.ID}}{{end}}</td><td><span class="sev {{.Severity}}">{{.Severity}}</span>{{if .Score}} <span class="dim">{{.Score}}</span>{{end}}</td><td>{{.Name}}{{if eq .Mark "KEV"}}<span class="badge kev">KEV</span>{{else if eq .Mark "POC"}}<span class="badge poc">POC</span>{{end}}{{if .NotReachable}}<span class="badge no">not reachable</span>{{end}}</td></tr>{{end}}</table>
+{{if .More}}<p class="dim">+{{.More}} more advisories (vulnx scan --host --json has every one)</p>{{end}}
+{{if .Versions}}<table class="vers"><tr><th>Version</th><th>Fixed in</th><th>Found in</th></tr>{{range .Versions}}<tr><td class="mono">{{.Version}}</td><td class="mono fix">{{.Fixed}}</td><td class="dim">{{.Found}}</td></tr>{{end}}</table>{{end}}</div>
 </details>{{end}}
 </div>
+<p class="tools" style="margin-top:12px"><span class="dim" id="shown"></span><button type="button" id="all">Show all</button></p>
 </section>
 
 {{if .NotLinked}}<section id="unreachable">
@@ -142,12 +166,13 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 </main>
 <script>
 (function(){
-var rows=[].slice.call(document.querySelectorAll('details.row')),q=document.getElementById('q'),shown=document.getElementById('shown'),sev='';
-function apply(){var t=q.value.toLowerCase(),n=0;rows.forEach(function(r){var ok=(!t||r.dataset.text.indexOf(t)>=0)&&(!sev||(sev==='kev'?r.dataset.kev==='1':r.dataset.sev===sev));r.style.display=ok?'':'none';if(ok)n++});shown.textContent=n+' of '+rows.length;
-[].forEach.call(document.querySelectorAll('.tools button'),function(b){b.classList.toggle('on',b.dataset.sev===sev)})}
-q.addEventListener('input',apply);
-[].forEach.call(document.querySelectorAll('.tools button'),function(b){b.addEventListener('click',function(){sev=b.dataset.sev;apply()})});
-[].forEach.call(document.querySelectorAll('[data-copy]'),function(b){b.addEventListener('click',function(){navigator.clipboard.writeText(b.dataset.copy).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent='Copy'},1200)})})});
+var rows=[].slice.call(document.querySelectorAll('details.row')),q=document.getElementById('q'),shown=document.getElementById('shown'),more=document.getElementById('all'),sev='',all=false,first=30;
+function apply(){var t=q.value.toLowerCase(),match=0,vis=0;rows.forEach(function(r){var ok=(!t||r.dataset.text.indexOf(t)>=0)&&(!sev||(sev==='kev'?r.dataset.kev==='1':r.dataset.sev===sev));if(ok)match++;var show=ok&&(all||match<=first);r.style.display=show?'':'none';if(show)vis++});
+shown.textContent='Showing '+vis+' of '+match+(match<rows.length?' matching ('+rows.length+' in all)':'');more.style.display=vis<match?'':'none';
+[].forEach.call(document.querySelectorAll('.tools button[data-sev]'),function(b){b.classList.toggle('on',b.dataset.sev===sev)})}
+q.addEventListener('input',apply);more.addEventListener('click',function(){all=true;apply()});
+[].forEach.call(document.querySelectorAll('.tools button[data-sev]'),function(b){b.addEventListener('click',function(){sev=b.dataset.sev;apply()})});
+[].forEach.call(document.querySelectorAll('[data-copy]'),function(b){b.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();var label=b.textContent;navigator.clipboard.writeText(b.dataset.copy).then(function(){b.textContent='Copied';setTimeout(function(){b.textContent=label},1200)})})});
 apply();
 })();
 </script>

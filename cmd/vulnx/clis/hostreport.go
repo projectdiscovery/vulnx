@@ -1206,14 +1206,23 @@ type reportGridRow struct {
 	Exploited, Checked int
 }
 
-type reportAction struct {
-	Line, Why string
-	Command   bool
+// reportGroup is one kind of update in a tier ("Homebrew formulae", 28): a line to read, opened for its rows.
+type reportGroup struct {
+	Title, Preview, Command string
+	Count                   int
+	Rows                    []reportGroupRow
+}
+
+// reportGroupRow is one thing to update: a formula, a tool, an interpreter's packages.
+type reportGroupRow struct {
+	Name, Detail, Command string
+	Why                   []string
+	More                  int
 }
 
 type reportTier struct {
-	Title   string
-	Actions []reportAction
+	Title  string
+	Groups []reportGroup
 }
 
 type reportAdvisory struct {
@@ -1221,10 +1230,186 @@ type reportAdvisory struct {
 	NotReachable                         bool
 }
 
+// reportComponent is one affected component, every version of it found on the machine together.
 type reportComponent struct {
 	Severity, Mark, Kind, Name, Version, Fixed, Found, Linked, Search string
-	CVEs, More                                                        int
+	FoundMore, More                                                   int
 	Advisories                                                        []reportAdvisory
+	Versions                                                          []reportVersion
+}
+
+type reportVersion struct{ Version, Fixed, Found string }
+
+// groupTitles name a tier's kinds of update, by HostFix kind.
+var groupTitles = map[string]string{"macos": "System", "system": "System", "app": "Apps", "brew": "Homebrew formulae",
+	"pip": "Python packages", "npm": "npm global packages", "gem": "Ruby gems", "go-install": "Go tools", "cargo": "Rust tools",
+	"binary": "Other programs", "apt": "OS packages", "dnf": "OS packages", "apk": "OS packages", "other": "Other places"}
+
+// reportGroups turns a tier's actions into its kinds of update, each with a preview of what it covers.
+func reportGroups(actions []hostAction) []reportGroup {
+	var out []reportGroup
+	index := map[string]int{}
+	for _, a := range actions {
+		title := groupTitles[a.fix.Kind]
+		i, ok := index[title]
+		if !ok {
+			i = len(out)
+			index[title] = i
+			out = append(out, reportGroup{Title: title})
+		}
+		g := &out[i]
+		row := func(name, detail, command string, reasons []string) {
+			r := reportGroupRow{Name: name, Detail: detail, Command: command, Why: reasons}
+			if len(reasons) > 3 {
+				r.Why, r.More = reasons[:3], len(reasons)-3
+			}
+			g.Rows = append(g.Rows, r)
+		}
+		var all []string
+		for _, t := range a.targets {
+			all = append(all, a.why[t]...)
+		}
+		switch a.fix.Kind {
+		case "brew", "apt", "dnf", "apk", "cargo": // one command, a row per name it takes
+			g.Command = a.line()
+			for _, t := range a.targets {
+				row(t, "", "", a.why[t])
+			}
+			g.Count += len(a.targets)
+		case "pip", "gem": // a row per interpreter, its packages the reasons
+			name, detail := "gems", ""
+			if a.fix.Kind == "pip" { // "/opt/homebrew/bin/python3.12" -> python3.12, in /opt/homebrew
+				interpreter := strings.Fields(a.fix.Command)[0]
+				name = path.Base(interpreter)
+				if dir := strings.TrimSuffix(path.Dir(interpreter), "/bin"); dir != "." {
+					detail = "in " + dir
+				}
+			}
+			row(name, detail, a.line(), all)
+			g.Count += len(a.targets)
+		case "go-install":
+			row(a.program(a.targets[0]), "", a.line(), all)
+			g.Count++
+		case "binary":
+			row(a.fix.Target, strings.TrimSuffix(strings.TrimPrefix(a.fix.Note, "update "+a.fix.Target+" ("), ")"), "", all)
+			g.Count++
+		case "app":
+			row(a.fix.Target, "", "", all)
+			g.Count++
+		case "npm":
+			row("global packages", "", a.line(), all)
+			g.Count += len(a.targets)
+		default: // Software Update and what ships with the system
+			name, detail := strings.SplitN(a.fix.Note, " (", 2)[0], ""
+			if rest, ok := strings.CutPrefix(a.fix.Note, "comes with "); ok { // "comes with macOS: updated with it"
+				what, how, _ := strings.Cut(strings.TrimPrefix(rest, "the "), ": ")
+				name, detail = "Shipped with "+what, how
+			}
+			row(name, detail, "", all)
+			g.Count += len(all)
+		}
+	}
+	for i := range out {
+		var names []string
+		for _, r := range out[i].Rows {
+			names = append(names, r.Name)
+		}
+		if len(names) > 5 {
+			names = append(names[:5:5], fmt.Sprintf("+%d more", len(out[i].Rows)-5))
+		}
+		out[i].Preview = strings.Join(names, ", ")
+	}
+	return out
+}
+
+// reportComponents groups findings (most urgent first) by component: its versions, where they are, its advisories.
+func reportComponents(fs []finding) []reportComponent {
+	var out []reportComponent
+	index := map[string]int{}
+	seenAdv := map[string]map[string]bool{}
+	places := map[string][]string{}
+	reach := map[string][2]int{}
+	for _, f := range fs {
+		key := f.kind + " " + f.name
+		i, ok := index[key]
+		if !ok {
+			i = len(out)
+			index[key] = i
+			out = append(out, reportComponent{Severity: f.worst, Mark: f.mark, Kind: f.kind, Name: f.label()})
+			seenAdv[key] = map[string]bool{}
+		}
+		c := &out[i]
+		if severityRank[f.worst] < severityRank[c.Severity] {
+			c.Severity = f.worst
+		}
+		if c.Mark != "KEV" && f.mark != "" && (f.mark == "KEV" || c.Mark == "") {
+			c.Mark = f.mark
+		}
+		if c.Fixed == "" || versionLess(c.Fixed, f.item.FixedVersion) {
+			c.Fixed = f.item.FixedVersion
+		}
+		c.Versions = append(c.Versions, reportVersion{f.version, f.item.FixedVersion, strings.Join(f.places, ", ")})
+		for _, p := range f.places {
+			if !slices.Contains(places[key], p) {
+				places[key] = append(places[key], p)
+			}
+		}
+		if r := f.item.Reachability; r != nil {
+			n := reach[key]
+			reach[key] = [2]int{n[0] + len(r.Reachable), n[1] + len(r.Reachable) + len(r.NotReachable) + len(r.Unknown)}
+		}
+		for _, a := range f.item.AdvisoryRows {
+			id := a.CVE
+			if id == "" {
+				id = a.AdvisoryID
+			}
+			if seenAdv[key][id] {
+				continue
+			}
+			seenAdv[key][id] = true
+			if len(c.Advisories) >= 12 {
+				c.More++
+				continue
+			}
+			adv := reportAdvisory{ID: id, Name: a.Name, Severity: a.Severity, NotReachable: a.Reachability == "not_reachable"}
+			if a.CVE != "" {
+				adv.URL = advisoryPage + a.CVE
+			}
+			if a.CvssScore > 0 {
+				adv.Score = fmt.Sprintf("%.1f", a.CvssScore)
+			}
+			if a.Exploit != nil && a.Exploit.KnownExploited {
+				adv.Mark = "KEV"
+			} else if a.Exploit != nil && a.Exploit.PublicExploit {
+				adv.Mark = "POC"
+			}
+			c.Advisories = append(c.Advisories, adv)
+		}
+		c.More += max(0, advisoryCount(f.item)-len(f.item.AdvisoryRows))
+	}
+	for key, i := range index {
+		c := &out[i]
+		c.Version = c.Versions[0].Version
+		if len(c.Versions) > 1 {
+			c.Version = fmt.Sprintf("%d versions", len(c.Versions))
+		} else {
+			c.Versions = nil
+		}
+		ps := places[key]
+		search := append([]string{c.Name, key}, ps...)
+		if len(ps) > 2 {
+			c.FoundMore, ps = len(ps)-2, ps[:2]
+		}
+		c.Found = strings.Join(ps, ", ")
+		if n := reach[key]; n[1] > 0 {
+			c.Linked = fmt.Sprintf("%d of %d programs reach it", n[0], n[1])
+		}
+		for _, a := range c.Advisories {
+			search = append(search, a.ID, a.Name)
+		}
+		c.Search = strings.ToLower(strings.Join(search, " "))
+	}
+	return out
 }
 
 type reportUnmatched struct{ Name, Version, Why string }
@@ -1273,60 +1458,17 @@ func hostReportData(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 	fs := findings(inv, res)
 	actions := hostActions(inv, fs)
 	for tier := tierKEV; tier <= tierRest; tier++ {
-		t := reportTier{Title: strings.ReplaceAll(tierTitles[tier], " · ", ": ")}
+		var these []hostAction
 		for _, a := range actions {
-			if a.tier != tier {
-				continue
+			if a.tier == tier {
+				these = append(these, a)
 			}
-			var why []string
-			for _, target := range a.targets {
-				reasons := a.why[target]
-				if len(reasons) > 6 {
-					reasons = append(reasons[:6:6], fmt.Sprintf("+%d more", len(a.why[target])-6))
-				}
-				r := strings.Join(reasons, ", ")
-				if p := a.program(target); p != "" {
-					r = p + ": " + r
-				}
-				why = append(why, r)
-			}
-			t.Actions = append(t.Actions, reportAction{Line: a.line(), Command: a.fix.Command != "", Why: strings.Join(why, "; ")})
 		}
-		if len(t.Actions) > 0 {
-			d.Tiers = append(d.Tiers, t)
+		if len(these) > 0 {
+			d.Tiers = append(d.Tiers, reportTier{Title: strings.ReplaceAll(tierTitles[tier], " · ", ": "), Groups: reportGroups(these)})
 		}
 	}
-	for _, f := range fs {
-		c := reportComponent{Severity: f.worst, Mark: f.mark, Kind: f.kind, Name: f.label(), Version: f.version,
-			Fixed: f.item.FixedVersion, Found: strings.Join(f.places, ", "), CVEs: advisoryCount(f.item)}
-		if r := f.item.Reachability; r != nil {
-			c.Linked = fmt.Sprintf("%d of %d programs reach it", len(r.Reachable), len(r.Reachable)+len(r.NotReachable)+len(r.Unknown))
-		}
-		search := []string{f.name, f.version, c.Found}
-		for _, a := range f.item.AdvisoryRows {
-			id := a.CVE
-			if id == "" {
-				id = a.AdvisoryID
-			}
-			adv := reportAdvisory{ID: id, Name: a.Name, Severity: a.Severity, NotReachable: a.Reachability == "not_reachable"}
-			if a.CVE != "" {
-				adv.URL = advisoryPage + a.CVE
-			}
-			if a.CvssScore > 0 {
-				adv.Score = fmt.Sprintf("%.1f", a.CvssScore)
-			}
-			if a.Exploit != nil && a.Exploit.KnownExploited {
-				adv.Mark = "KEV"
-			} else if a.Exploit != nil && a.Exploit.PublicExploit {
-				adv.Mark = "POC"
-			}
-			c.Advisories = append(c.Advisories, adv)
-			search = append(search, id, a.Name)
-		}
-		c.More = max(0, c.CVEs-len(c.Advisories))
-		c.Search = strings.ToLower(strings.Join(search, " "))
-		d.Components = append(d.Components, c)
-	}
+	d.Components = reportComponents(fs)
 	for _, it := range res.Items {
 		switch {
 		case it.Status == "affected" && unreachable(it):
