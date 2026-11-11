@@ -39,6 +39,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"time"
 )
 
 // HostInventory is what vulnx found on a machine.
@@ -1296,4 +1297,68 @@ func pclntab(path string) (tab []byte, text uint64, err error) {
 	}
 	tab, err = s.Data()
 	return tab, t.Addr, err
+}
+
+// CycloneDX is the inventory as a CycloneDX 1.5 JSON SBOM: one component per entry, by its purl or CPE, with where
+// it was found as properties. It is what --host checked, in a form other tools read and SecurityContext stores.
+func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
+	type property struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	type component struct {
+		Type       string     `json:"type"`
+		BOMRef     string     `json:"bom-ref"`
+		Name       string     `json:"name"`
+		Version    string     `json:"version,omitempty"`
+		PURL       string     `json:"purl,omitempty"`
+		CPE        string     `json:"cpe,omitempty"`
+		Properties []property `json:"properties,omitempty"`
+	}
+	components := make([]component, 0, len(inv.Entries))
+	for _, e := range inv.Entries {
+		c := component{Type: "library", BOMRef: e}
+		if strings.HasPrefix(e, "cpe:2.3:") {
+			f := strings.Split(e, ":")
+			c.CPE, c.Type = e, "application"
+			if len(f) > 5 {
+				c.Name, c.Version = f[4], strings.ReplaceAll(f[5], `\`, "")
+				if f[2] == "o" {
+					c.Type = "operating-system"
+				}
+			}
+		} else {
+			c.PURL = e
+			body, _, _ := strings.Cut(strings.TrimPrefix(e, "pkg:"), "?")
+			_, rest, _ := strings.Cut(body, "/")
+			c.Name = rest
+			if at := strings.LastIndex(rest, "@"); at > 0 {
+				c.Name, c.Version = rest[:at], rest[at+1:]
+			}
+			if u, err := url.PathUnescape(c.Name); err == nil {
+				c.Name = u
+			}
+			if u, err := url.PathUnescape(c.Version); err == nil {
+				c.Version = u
+			}
+		}
+		if src := inv.EntrySource[e]; src != "" {
+			c.Properties = append(c.Properties, property{"vulnx:source", src})
+		}
+		for _, in := range inv.FoundIn[e] {
+			c.Properties = append(c.Properties, property{"vulnx:found_in", in})
+		}
+		components = append(components, c)
+	}
+	return json.MarshalIndent(map[string]any{
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.5",
+		"version":     1,
+		"metadata": map[string]any{
+			"timestamp": now.UTC().Format(time.RFC3339),
+			"tools":     []map[string]string{{"name": "vulnx"}},
+			"component": map[string]string{"type": "device", "bom-ref": "host", "name": inv.OS},
+		},
+		"components": components,
+	}, "", "  ")
 }

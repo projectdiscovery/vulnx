@@ -1570,3 +1570,33 @@ func writeHostReport(path string, inv vulnx.HostInventory, res vulnx.StackResult
 	}
 	return abs, os.WriteFile(abs, buf.Bytes(), 0o644)
 }
+
+// writeHostSBOM writes the inventory as a CycloneDX SBOM and returns its absolute path. path "auto" (or empty)
+// names it vulnx-host-<date>.cdx.json in the working directory, replacing the same day's.
+func writeHostSBOM(path string, inv vulnx.HostInventory) (string, error) {
+	now := time.Now()
+	if path == "" || path == "auto" {
+		path = "vulnx-host-" + now.Format("2006-01-02") + ".cdx.json"
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	raw, err := inv.CycloneDX(now)
+	if err != nil {
+		return "", err
+	}
+	return abs, os.WriteFile(abs, raw, 0o644)
+}
+
+// shareExpiry is how long a shared host report's link works before SecurityContext deletes it.
+const shareExpiry = 24 * time.Hour
+
+// localTime is an API timestamp in the machine's time zone ("12 Nov 15:04 CET"); as given when it is not RFC 3339.
+func localTime(stamp string) string {
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return stamp
+	}
+	return t.Local().Format("2 Jan 15:04 MST")
+}

@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, root, rel, body string) {
@@ -490,6 +491,28 @@ func TestBinaryFix(t *testing.T) {
 		name := filepath.Base(c.real)
 		if got := binaryFix(name, c.real, c.main); got != c.want {
 			t.Errorf("%s: %+v, want %+v", c.real, got, c.want)
+		}
+	}
+}
+
+// TestHostCycloneDX writes the inventory as an SBOM that reads back as the same entries.
+func TestHostCycloneDX(t *testing.T) {
+	inv := HostInventory{OS: "macOS 26.4",
+		Entries:     []string{"cpe:2.3:o:apple:macos:26.4:*:*:*:*:*:*:*", "pkg:npm/%40scope/tool@1.2.3", "pkg:golang/golang.org/x/net@v0.7.0"},
+		FoundIn:     map[string][]string{"pkg:golang/golang.org/x/net@v0.7.0": {"caddy", "act"}},
+		EntrySource: map[string]string{"pkg:golang/golang.org/x/net@v0.7.0": "go binaries"}}
+	raw, err := inv.CycloneDX(time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, format, ok := SBOMEntries(raw)
+	if !ok || format != "cyclonedx" || strings.Join(entries, "\n") != strings.Join(inv.Entries, "\n") {
+		t.Errorf("%s %v\n%s", format, ok, strings.Join(entries, "\n"))
+	}
+	for _, want := range []string{`"name": "@scope/tool"`, `"version": "1.2.3"`, `"type": "operating-system"`, `"name": "macos"`,
+		`"name": "golang.org/x/net"`, `"value": "go binaries"`, `"value": "caddy"`, `"name": "macOS 26.4"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("missing %s", want)
 		}
 	}
 }

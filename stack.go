@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,6 +144,7 @@ type stackPage struct {
 	Items     []StackItem  `json:"items"`
 	Total     int          `json:"total"`
 	Cursor    string       `json:"cursor"`
+	ExpiresAt string       `json:"expires_at"`
 	Functions GoFunctions  `json:"go_functions"`
 	// Advisories is a compact answer's shared row content, by ref.
 	Advisories map[string]StackAdvisory `json:"advisories"`
@@ -410,6 +412,56 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 // ScanFile uploads a lockfile, SBOM, Compose file or Dockerfile (POST /v1/stack, multipart) and returns the
 // queued stack's id. SecurityContext recognises the file by its name, so the file's own name is sent.
 func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
+	page, err := c.uploadFile(ctx, path, nil)
+	return page.ID, err
+}
+
+// ErrExpiryUnsupported: the API cannot expire a stored stack, so nothing was uploaded.
+var ErrExpiryUnsupported = errkit.New("this SecurityContext API cannot expire a stored report, so nothing was uploaded")
+
+// ShareFile uploads a file as a stored stack that expires: after expires its link stops answering and
+// SecurityContext deletes its rows. It returns the stack's id and when it expires. An API that cannot expire
+// stacks is not sent the file at all (ErrExpiryUnsupported): a stack stored there could not be taken back.
+func (c *Client) ShareFile(ctx context.Context, path string, expires time.Duration) (id, expiresAt string, err error) {
+	if err := c.StackExpirySupported(ctx); err != nil {
+		return "", "", err
+	}
+	page, err := c.uploadFile(ctx, path, map[string]string{"expires_in": strconv.Itoa(int(expires.Seconds()))})
+	if err != nil {
+		return "", "", err
+	}
+	if page.ExpiresAt == "" {
+		return page.ID, "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("stack %s was stored without an expiry", page.ID))
+	}
+	return page.ID, page.ExpiresAt, nil
+}
+
+// StackExpirySupported is nil when the API can expire a stored stack (its description names expires_in), and
+// ErrExpiryUnsupported when it cannot.
+func (c *Client) StackExpirySupported(ctx context.Context) error {
+	req, err := c.newRequest(ctx, http.MethodGet, "/v1/openapi.json", nil, nil)
+	if err != nil {
+		return errkit.Append(ErrRequestBuildFailure, err)
+	}
+	var spec json.RawMessage
+	if err := c.do(req, &spec); err != nil {
+		return errkit.Append(ErrRequestFailed, err)
+	}
+	if !bytes.Contains(spec, []byte(`"expires_in"`)) {
+		return ErrExpiryUnsupported
+	}
+	return nil
+}
+
+// uploadFile posts a file (and form fields) to /v1/stack and returns the answer, its ID set.
+func (c *Client) uploadFile(ctx context.Context, path string, fields map[string]string) (stackPage, error) {
+	var page stackPage
+	id, err := c.uploadInto(ctx, path, fields, &page)
+	page.ID = id
+	return page, err
+}
+
+func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]string, page *stackPage) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -423,6 +475,11 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 	}
 	if _, err := io.Copy(part, f); err != nil {
 		return "", err
+	}
+	for k, v := range fields {
+		if err := mw.WriteField(k, v); err != nil {
+			return "", err
+		}
 	}
 	if err := mw.Close(); err != nil {
 		return "", err
@@ -438,8 +495,7 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 	}
 	// a body that can be sent again, for do()'s one retry after a 429
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body.Bytes())), nil }
-	var page stackPage
-	if err := c.do(req, &page); err != nil {
+	if err := c.do(req, page); err != nil {
 		return "", errkit.Append(ErrRequestFailed, err)
 	}
 	id := page.ID
@@ -450,6 +506,46 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 		return "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("the upload was accepted but no stack id came back"))
 	}
 	return id, nil
+}
+
+// StackPage is where a stored stack is read by a person: its page on the SecurityContext site (an unlisted link:
+// whoever has it can read it), or for another API its /v1/stack/{id}.
+func (c *Client) StackPage(id string) string {
+	if c.baseURL == DefaultBaseURL {
+		return "https://securitycontext.com/stack/" + url.PathEscape(id)
+	}
+	return c.baseURL + "/v1/stack/" + url.PathEscape(id)
+}
+
+// WaitStackReady waits until a stored stack is parsed and returns its status and summary without its items (one
+// small request a poll, where WaitStack reads every page).
+func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, error) {
+	var res StackResult
+	for {
+		req, err := c.newRequest(ctx, http.MethodGet, "/v1/stack/"+url.PathEscape(id), url.Values{"limit": {"1"}}, nil)
+		if err != nil {
+			return res, errkit.Append(ErrRequestBuildFailure, err)
+		}
+		var p stackPage
+		if err := c.do(req, &p); err != nil {
+			return res, errkit.Append(ErrRequestFailed, err)
+		}
+		res.Stack, res.Summary, res.Total = p.Stack, p.Summary, p.Total
+		if res.Stack == nil {
+			res.Stack = &StackInfo{ID: p.ID, Status: p.Status}
+		}
+		switch res.Stack.Status {
+		case "", "ready":
+			return res, nil
+		case "failed":
+			return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the stack could not be read: %s", res.Stack.Error))
+		}
+		select {
+		case <-ctx.Done():
+			return res, ctx.Err()
+		case <-time.After(7 * time.Second): // under an anonymous caller's ten requests a minute
+		}
+	}
 }
 
 // GetStack reads a stack: while it is queued or being scanned, its status; when ready, the summary and every item

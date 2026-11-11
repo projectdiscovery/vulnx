@@ -8,9 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/projectdiscovery/utils/errkit"
 )
 
 func TestNormalizeCheckEntry(t *testing.T) {
@@ -280,5 +284,43 @@ func TestCheckCompactFallback(t *testing.T) {
 	}
 	if _, err := c.CheckManyWith(context.Background(), entries, CheckOptions{Compact: true}); err != nil || plain != 3 {
 		t.Fatalf("err %v, plain requests %d (want 3 of 500)", err, plain)
+	}
+}
+
+// TestShareFile uploads with a one-day expiry where the API can expire stacks, and does not send the file where
+// it cannot.
+func TestShareFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "host.cdx.json")
+	if err := os.WriteFile(file, []byte(`{"bomFormat":"CycloneDX","components":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, supported := range []bool{true, false} {
+		uploads, field := 0, ""
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/openapi.json" {
+				if supported {
+					_, _ = w.Write([]byte(`{"paths": {"/v1/stack": {"post": {"properties": {"expires_in": {}}}}}}`))
+				} else {
+					_, _ = w.Write([]byte(`{"paths": {}}`))
+				}
+				return
+			}
+			uploads++
+			field = r.FormValue("expires_in")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"found": true, "id": "abc", "status": "queued", "expires_at": "2026-11-12T15:00:00Z"}`))
+		}))
+		c, err := New(WithBaseURL(srv.URL))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, expiresAt, err := c.ShareFile(context.Background(), file, 24*time.Hour)
+		srv.Close()
+		if supported && (err != nil || id != "abc" || expiresAt != "2026-11-12T15:00:00Z" || field != "86400" || uploads != 1) {
+			t.Errorf("supported: id %q expires %q field %q uploads %d err %v", id, expiresAt, field, uploads, err)
+		}
+		if !supported && (!errkit.Is(err, ErrExpiryUnsupported) || uploads != 0) {
+			t.Errorf("unsupported: uploads %d err %v", uploads, err)
+		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/utils/errkit"
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/spf13/cobra"
@@ -32,6 +33,8 @@ var (
 	scanReport  string
 	scanView    string
 	scanOpen    bool
+	scanSBOM    string
+	scanShare   bool
 	scanFailOn  string
 	scanImage   string
 	scanPlat    string
@@ -119,6 +122,13 @@ cat versions.txt | vulnx scan`,
 				if scanFailOn != "" && !slices.Contains(failOnLevels, scanFailOn) {
 					gologger.Fatal().Msgf("--fail-on takes %s (got %s)", strings.Join(failOnLevels, ", "), scanFailOn)
 				}
+				if scanShare { // before the scan: a report that could not expire is never uploaded
+					if err := vulnxClient.StackExpirySupported(ctx); errkit.Is(err, vulnx.ErrExpiryUnsupported) {
+						gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a stored report yet, so nothing was scanned or uploaded")
+					} else if err != nil {
+						fatalAPI("share", err)
+					}
+				}
 				start := time.Now()
 				hostProgress("Reading what is installed ...")
 				inv, err := vulnx.HostEntries(scanRoot)
@@ -158,8 +168,32 @@ cat versions.txt | vulnx scan`,
 					if scanOpen {
 						openFile(path)
 					}
-				case scanView == "grid":
+				case scanView == "grid" && !scanShare:
 					fmt.Println("  Full report: vulnx scan --host --report")
+				}
+				if scanSBOM != "" || scanShare {
+					path, err := writeHostSBOM(scanSBOM, inv)
+					if err != nil {
+						gologger.Fatal().Msgf("Failed to write the SBOM: %s", err)
+					}
+					fmt.Printf("  SBOM: %s\n", path)
+					if scanShare {
+						hostProgress("Uploading the SBOM to SecurityContext ...")
+						id, expiresAt, err := vulnxClient.ShareFile(ctx, path, shareExpiry)
+						if err == nil {
+							hostProgress("Waiting for SecurityContext to read it ...")
+							_, err = vulnxClient.WaitStackReady(ctx, id)
+						}
+						hostProgress("")
+						if errkit.Is(err, vulnx.ErrExpiryUnsupported) {
+							gologger.Fatal().Msg("--share: this SecurityContext API cannot expire a stored report yet, so nothing was uploaded")
+						}
+						if err != nil {
+							fatalAPI("share", err)
+						}
+						fmt.Printf("  Unlisted report: %s\n", vulnxClient.StackPage(id))
+						fmt.Printf("  Anyone with the link can read it until %s, when it is deleted\n", localTime(expiresAt))
+					}
 				}
 				if failsOn(scanFailOn, inv, res) {
 					os.Exit(2)
@@ -470,6 +504,9 @@ func init() {
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
 	scanCmd.Flags().StringVar(&scanReport, "report", "", "with --host: also write the full report as one HTML file and print its link (--report=path.html to name it)")
 	scanCmd.Flags().Lookup("report").NoOptDefVal = "auto"
+	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
+	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
+	scanCmd.Flags().BoolVar(&scanShare, "share", false, "with --host: write the SBOM, upload it to SecurityContext and print its unlisted report link; the link works for a day, then the report is deleted (until then anyone with the link can read the machine's component list)")
 	scanCmd.Flags().BoolVar(&scanOpen, "open", false, "with --host: write the report and open it in the browser")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
