@@ -1072,9 +1072,12 @@ func (h *hostReader) kegContents(keg string) (out []found, read bool) {
 // A keg without one (certificates, schemas, headers) is data: there is nothing in it to check.
 func hasExecutable(dir string) bool {
 	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error { // an unreadable entry is skipped
-		if err != nil || found {
-			return nil
+	walked := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if found {
+			return filepath.SkipAll
 		}
 		if d.Type().IsRegular() {
 			ext := filepath.Ext(path)
@@ -1084,7 +1087,8 @@ func hasExecutable(dir string) bool {
 		}
 		return nil
 	})
-	return found
+	// a keg that could not be read through is not called data: it stays "not checked"
+	return found || walked != nil
 }
 
 var brewRevision = regexp.MustCompile(`_\d+$`)
