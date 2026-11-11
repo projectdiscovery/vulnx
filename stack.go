@@ -11,6 +11,7 @@ package vulnx
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,6 +43,8 @@ type StackAdvisory struct {
 	Match      any             `json:"match,omitempty"`
 	Exploit    *scExploitation `json:"exploitation,omitempty"`
 	Aliases    []string        `json:"aliases,omitempty"`
+	// Ref is a compact answer's pointer into its advisories map; expandRefs replaces the row with the entry.
+	Ref string `json:"ref,omitempty"`
 	// Reachability is set by vulnx on a host scan's Go rows: reachable (a binary links a function the advisory names
 	// as affected) or not_reachable (no binary carrying the module links any); empty when no function list is known.
 	Reachability string `json:"reachability,omitempty"`
@@ -141,10 +144,28 @@ type stackPage struct {
 	Total     int          `json:"total"`
 	Cursor    string       `json:"cursor"`
 	Functions GoFunctions  `json:"go_functions"`
+	// Advisories is a compact answer's shared row content, by ref.
+	Advisories map[string]StackAdvisory `json:"advisories"`
 }
 
 // MaxCheckEntries is how many entries one check sends (one request).
 const MaxCheckEntries = 500
+
+// MaxCompactEntries is how many entries one compact check sends: a whole machine's inventory.
+const MaxCompactEntries = 5000
+
+// checkMode is what a check asks the API for besides the verdicts.
+type checkMode struct {
+	functions bool // each Go advisory's affected functions (go_functions)
+	compact   bool // each advisory once, up to MaxCompactEntries entries, a gzip body
+}
+
+func (m checkMode) maxEntries() int {
+	if m.compact {
+		return MaxCompactEntries
+	}
+	return MaxCheckEntries
+}
 
 var productShorthand = regexp.MustCompile(`^([a-z0-9][a-z0-9_.\-]*)[:/]([a-z0-9][a-z0-9_.\-+]*)@(\S+)$`)
 
@@ -173,22 +194,22 @@ func isEcosystem(s string) bool {
 
 // CheckPackages answers a list of entries at once (POST /v1/stack {"packages"}).
 func (c *Client) CheckPackages(ctx context.Context, entries []string) (StackResult, error) {
-	return c.checkPackages(ctx, entries, false)
+	return c.checkPackages(ctx, entries, checkMode{})
 }
 
-func (c *Client) checkPackages(ctx context.Context, entries []string, functions bool) (StackResult, error) {
+func (c *Client) checkPackages(ctx context.Context, entries []string, mode checkMode) (StackResult, error) {
 	var res StackResult
 	if len(entries) == 0 {
 		return res, errkit.Append(ErrBadRequest, fmt.Errorf("nothing to check"))
 	}
-	if len(entries) > MaxCheckEntries {
-		return res, errkit.Append(ErrBadRequest, fmt.Errorf("at most %d entries per check (got %d)", MaxCheckEntries, len(entries)))
+	if len(entries) > mode.maxEntries() {
+		return res, errkit.Append(ErrBadRequest, fmt.Errorf("at most %d entries per check (got %d)", mode.maxEntries(), len(entries)))
 	}
 	norm := make([]string, len(entries))
 	for i, e := range entries {
 		norm[i] = NormalizeCheckEntry(e)
 	}
-	return c.checkChunk(ctx, norm, functions)
+	return c.checkChunk(ctx, norm, mode)
 }
 
 // checkChunk posts a list and reads the whole answer. An answer cut at the API's response size carries a cursor:
@@ -196,10 +217,10 @@ func (c *Client) checkPackages(ctx context.Context, entries []string, functions 
 // first page. An API that cuts without a cursor gets the list split in halves instead. A cursor the API no longer
 // accepts (the dataset was rebuilt between pages) restarts the list once. (save: true would page it too, but a
 // saved stack loses an rpm's binary package name and with it advisories that name the binary.)
-func (c *Client) checkChunk(ctx context.Context, entries []string, functions bool) (StackResult, error) {
-	res, err := c.checkPages(ctx, entries, functions)
+func (c *Client) checkChunk(ctx context.Context, entries []string, mode checkMode) (StackResult, error) {
+	res, err := c.checkPages(ctx, entries, mode)
 	if err != nil && staleCursor(err) {
-		return c.checkPages(ctx, entries, functions)
+		return c.checkPages(ctx, entries, mode)
 	}
 	return res, err
 }
@@ -207,11 +228,14 @@ func (c *Client) checkChunk(ctx context.Context, entries []string, functions boo
 // maxCheckPages bounds the pages one list is read in: 500 entries at one item a page.
 const maxCheckPages = MaxCheckEntries
 
-func (c *Client) checkPages(ctx context.Context, entries []string, functions bool) (StackResult, error) {
+func (c *Client) checkPages(ctx context.Context, entries []string, mode checkMode) (StackResult, error) {
 	var res StackResult
 	body := map[string]any{"packages": entries}
-	if functions {
+	if mode.functions {
 		body["functions"] = true
+	}
+	if mode.compact {
+		body["compact"] = true
 	}
 	cursor := ""
 	for n := 0; n < maxCheckPages; n++ {
@@ -220,6 +244,9 @@ func (c *Client) checkPages(ctx context.Context, entries []string, functions boo
 			query = url.Values{"cursor": {cursor}}
 		}
 		req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", query, body)
+		if err == nil && mode.compact {
+			err = gzipBody(req, body)
+		}
 		if err != nil {
 			return res, errkit.Append(ErrRequestBuildFailure, err)
 		}
@@ -227,6 +254,7 @@ func (c *Client) checkPages(ctx context.Context, entries []string, functions boo
 		if err := c.do(req, &page); err != nil {
 			return res, errkit.Append(ErrRequestFailed, err)
 		}
+		expandRefs(page.Items, page.Advisories)
 		if n == 0 {
 			res.Summary, res.Total = page.Summary, page.Total
 		}
@@ -238,7 +266,7 @@ func (c *Client) checkPages(ctx context.Context, entries []string, functions boo
 			if n > 0 || len(entries) < 2 {
 				return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the answer was cut with no cursor after %d of %d items", len(res.Items), res.Total))
 			}
-			return c.checkHalves(ctx, entries, functions)
+			return c.checkHalves(ctx, entries, mode)
 		}
 		cursor = page.Cursor
 	}
@@ -246,18 +274,58 @@ func (c *Client) checkPages(ctx context.Context, entries []string, functions boo
 }
 
 // checkHalves checks a list in two halves, for an API that cuts an answer without a cursor.
-func (c *Client) checkHalves(ctx context.Context, entries []string, functions bool) (StackResult, error) {
+func (c *Client) checkHalves(ctx context.Context, entries []string, mode checkMode) (StackResult, error) {
 	half := len(entries) / 2
-	first, err := c.checkChunk(ctx, entries[:half], functions)
+	first, err := c.checkChunk(ctx, entries[:half], mode)
 	if err != nil {
 		return first, err
 	}
-	second, err := c.checkChunk(ctx, entries[half:], functions)
+	second, err := c.checkChunk(ctx, entries[half:], mode)
 	if err != nil {
 		return first, err
 	}
 	mergeStack(&first, second)
 	return first, nil
+}
+
+// gzipBody replaces a request's JSON body with its gzip, so a compact check of thousands of entries stays small.
+func gzipBody(req *http.Request, body any) error {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(raw); err != nil {
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	b := buf.Bytes()
+	req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(b)), int64(len(b))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
+	req.Header.Set("Content-Encoding", "gzip")
+	return nil
+}
+
+// expandRefs turns a compact answer's rows back into whole rows: the shared entry, with the row's own ranges and
+// fixes.
+func expandRefs(items []StackItem, advisories map[string]StackAdvisory) {
+	expand := func(rows []StackAdvisory) {
+		for i, r := range rows {
+			if r.Ref == "" {
+				continue
+			}
+			full := advisories[r.Ref]
+			full.Ranges, full.FixedIn = r.Ranges, r.FixedIn
+			rows[i] = full
+		}
+	}
+	for i := range items {
+		expand(items[i].AdvisoryRows)
+		expand(items[i].Undetermined)
+	}
 }
 
 // staleCursor is the API's 400 for a cursor of another list or dataset.
@@ -607,6 +675,9 @@ type CheckOptions struct {
 	// Functions asks for each Go advisory's affected functions (StackResult.GoFunctions). An API that does not
 	// serve them yet answers without: StackResult.FunctionsUnavailable.
 	Functions bool
+	// Compact asks for compact answers: MaxCompactEntries entries a request, each advisory once, a gzip body. An
+	// API without them is asked again the plain way.
+	Compact bool
 	// Progress, when set, is called after each request with the entries checked so far.
 	Progress func(done, total int)
 }
@@ -614,15 +685,19 @@ type CheckOptions struct {
 // CheckManyWith is CheckMany with options.
 func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts CheckOptions) (StackResult, error) {
 	var all StackResult
-	for start := 0; start < len(entries); start += MaxCheckEntries {
-		end := start + MaxCheckEntries
-		if end > len(entries) {
-			end = len(entries)
+	mode := checkMode{functions: opts.Functions, compact: opts.Compact}
+	size := mode.maxEntries()
+	for start := 0; start < len(entries); start += size {
+		end := min(start+size, len(entries))
+		res, err := c.checkPackages(ctx, entries[start:end], mode)
+		// an API without compact answers refuses the field, the gzip body or the batch size: the plain way instead
+		if err != nil && mode.compact && start == 0 && errkit.Is(err, ErrBadRequest) {
+			opts.Compact = false
+			return c.CheckManyWith(ctx, entries, opts)
 		}
-		res, err := c.checkPackages(ctx, entries[start:end], opts.Functions)
-		if err != nil && opts.Functions && functionsRejected(err) {
-			opts.Functions, all.FunctionsUnavailable = false, true
-			res, err = c.checkPackages(ctx, entries[start:end], false)
+		if err != nil && mode.functions && functionsRejected(err) {
+			mode.functions, all.FunctionsUnavailable = false, true
+			res, err = c.checkPackages(ctx, entries[start:end], mode)
 		}
 		if err != nil {
 			return all, err

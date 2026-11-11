@@ -113,9 +113,8 @@ cat versions.txt | vulnx scan`,
 				if err != nil {
 					gologger.Fatal().Msgf("Failed to read the host: %s", err)
 				}
-				gologger.Info().Msgf("Checking %s components of %s (%d requests; without an API key, 10 a minute)",
-					thousands(len(inv.Entries)), inv.OS, (len(inv.Entries)+vulnx.MaxCheckEntries-1)/vulnx.MaxCheckEntries)
-				res, err := vulnxClient.CheckManyWith(ctx, inv.Entries, vulnx.CheckOptions{Functions: true, Progress: func(done, total int) {
+				gologger.Info().Msgf("Checking %s components of %s", thousands(len(inv.Entries)), inv.OS)
+				res, err := vulnxClient.CheckManyWith(ctx, inv.Entries, vulnx.CheckOptions{Functions: true, Compact: true, Progress: func(done, total int) {
 					if done < total {
 						gologger.Info().Msgf("checked %s of %s", thousands(done), thousands(total))
 					}

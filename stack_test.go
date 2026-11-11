@@ -1,6 +1,7 @@
 package vulnx
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -204,5 +205,80 @@ func TestCheckFollowsTheCursor(t *testing.T) {
 		if !c.cursorless && (res.Total != 5 || res.Summary.Packages != 5) {
 			t.Errorf("%s: total %d, summary %d: the first page's, once", c.name, res.Total, res.Summary.Packages)
 		}
+	}
+}
+
+// TestCheckCompact sends a gzip body asking for a compact answer and turns its refs back into whole rows.
+func TestCheckCompact(t *testing.T) {
+	var gotCompact bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Encoding") != "gzip" {
+			t.Error("no gzip body")
+		}
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			Packages []string
+			Compact  bool
+		}
+		if err := json.NewDecoder(zr).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		gotCompact = body.Compact
+		_, _ = w.Write([]byte(`{"total": 3, "summary": {"packages": 3, "affected": 2},
+			"items": [
+				{"input": "pkg:npm/a@1", "package": "npm/a", "status": "affected", "advisory_rows": [{"ref": "a1", "fixed_in": ["2"]}]},
+				{"input": "pkg:npm/a@1.5", "package": "npm/a", "status": "affected", "advisory_rows": [{"ref": "a1", "fixed_in": ["2"], "ranges": ["< 2"]}]},
+				{"input": "pkg:npm/b@1", "package": "npm/b", "status": "clean"}],
+			"advisories": {"a1": {"advisory_id": "GHSA-x", "cve": "CVE-2026-1", "severity": "high",
+				"exploitation": {"known_exploited": true}}}}`))
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]string, 1200) // more than a plain request takes: one compact request
+	for i := range entries {
+		entries[i] = fmt.Sprintf("pkg:npm/p%d@1", i)
+	}
+	res, err := c.CheckManyWith(context.Background(), entries, CheckOptions{Compact: true})
+	if err != nil || !gotCompact {
+		t.Fatalf("err %v, compact %v", err, gotCompact)
+	}
+	row := res.Items[1].AdvisoryRows[0]
+	if row.Ref != "" || row.AdvisoryID != "GHSA-x" || row.CVE != "CVE-2026-1" || row.Exploit == nil || !row.Exploit.KnownExploited ||
+		fmt.Sprint(row.Ranges) != "[< 2]" || fmt.Sprint(res.Items[0].AdvisoryRows[0].Ranges) != "[]" {
+		t.Errorf("rows not expanded: %+v / %+v", res.Items[0].AdvisoryRows[0], row)
+	}
+}
+
+// TestCheckCompactFallback asks the plain way, MaxCheckEntries a request, when the API refuses a compact check.
+func TestCheckCompactFallback(t *testing.T) {
+	plain := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error": "the body must be JSON", "field": "body"}`))
+			return
+		}
+		plain++
+		var body struct{ Packages []string }
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": len(body.Packages), "items": []map[string]string{}})
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]string, 1200)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("pkg:npm/p%d@1", i)
+	}
+	if _, err := c.CheckManyWith(context.Background(), entries, CheckOptions{Compact: true}); err != nil || plain != 3 {
+		t.Fatalf("err %v, plain requests %d (want 3 of 500)", err, plain)
 	}
 }
