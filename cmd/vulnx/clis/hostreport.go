@@ -1207,23 +1207,25 @@ type reportGridRow struct {
 	Exploited, Checked int
 }
 
-// reportGroup is one kind of update in a tier ("Homebrew formulae", 28): a line to read, opened for its rows.
+// reportGroup is one kind of update ("Homebrew formulae", 102): a line to read, opened for its rows.
 type reportGroup struct {
-	Title, Preview, Command string
-	Count                   int
-	Rows                    []reportGroupRow
+	Title, Command string
+	Count          int
+	Urgency        []reportUrgency // how many of Count at each urgency, most urgent first
+	Rows           []reportGroupRow
+}
+
+// reportUrgency is a count at one urgency tier.
+type reportUrgency struct {
+	Label, Class string
+	N            int
 }
 
 // reportGroupRow is one thing to update: a formula, a tool, an interpreter's packages.
 type reportGroupRow struct {
-	Name, Detail, Command string
-	Why                   []string
-	More                  int
-}
-
-type reportTier struct {
-	Title  string
-	Groups []reportGroup
+	Name, Detail, Command, Urgency, Class string
+	Why                                   []string
+	More                                  int
 }
 
 type reportAdvisory struct {
@@ -1246,37 +1248,59 @@ var groupTitles = map[string]string{"macos": "System", "system": "System", "app"
 	"pip": "Python packages", "npm": "npm global packages", "gem": "Ruby gems", "go-install": "Go tools", "cargo": "Rust tools",
 	"binary": "Other programs", "apt": "OS packages", "dnf": "OS packages", "apk": "OS packages", "other": "Other places"}
 
-// reportGroups turns a tier's actions into its kinds of update, each with a preview of what it covers.
+// urgencyLabels name the tiers on a report line, with their style class.
+var urgencyLabels = [][2]string{{"known exploited", "kev"}, {"public exploit", "poc"}, {"critical or high", "sevhigh"}, {"medium or low", "no"}}
+
+// reportGroups turns the actions (most urgent first) into one list of kinds of update. A place updated at several
+// urgencies (an interpreter with an exploited package and a low one) is one row at its most urgent, its command
+// naming everything.
 func reportGroups(actions []hostAction) []reportGroup {
-	var out []reportGroup
-	index := map[string]int{}
+	type row struct {
+		name, detail string
+		fix          vulnx.HostFix
+		tier         int
+		targets, why []string
+	}
+	type group struct {
+		title   string
+		rows    []*row
+		byName  map[string]*row
+		units   [4]int
+		targets []string // a one-command kind's names, most urgent first
+		fix     vulnx.HostFix
+	}
+	var order []*group
+	byTitle := map[string]*group{}
 	for _, a := range actions {
 		title := groupTitles[a.fix.Kind]
-		i, ok := index[title]
-		if !ok {
-			i = len(out)
-			index[title] = i
-			out = append(out, reportGroup{Title: title})
+		g := byTitle[title]
+		if g == nil {
+			g = &group{title: title, byName: map[string]*row{}, fix: a.fix}
+			byTitle[title] = g
+			order = append(order, g)
 		}
-		g := &out[i]
-		row := func(name, detail, command string, reasons []string) {
-			r := reportGroupRow{Name: name, Detail: detail, Command: command, Why: reasons}
-			if len(reasons) > 3 {
-				r.Why, r.More = reasons[:3], len(reasons)-3
+		add := func(name, detail string, targets, why []string) {
+			r := g.byName[name+"|"+detail]
+			if r == nil {
+				r = &row{name: name, detail: detail, fix: a.fix, tier: a.tier}
+				g.byName[name+"|"+detail] = r
+				g.rows = append(g.rows, r)
 			}
-			g.Rows = append(g.Rows, r)
+			r.targets = append(r.targets, targets...)
+			r.why = append(r.why, why...)
 		}
 		var all []string
 		for _, t := range a.targets {
 			all = append(all, a.why[t]...)
 		}
+		units := 1
 		switch a.fix.Kind {
 		case "brew", "apt", "dnf", "apk", "cargo": // one command, a row per name it takes
-			g.Command = a.line()
 			for _, t := range a.targets {
-				row(t, "", "", a.why[t])
+				add(t, "", nil, a.why[t])
 			}
-			g.Count += len(a.targets)
+			g.targets = append(g.targets, a.targets...)
+			units = len(a.targets)
 		case "pip", "gem": // a row per interpreter, its packages the reasons
 			name, detail := "gems", ""
 			if a.fix.Kind == "pip" { // "/opt/homebrew/bin/python3.12" -> python3.12, in /opt/homebrew
@@ -1286,39 +1310,54 @@ func reportGroups(actions []hostAction) []reportGroup {
 					detail = "in " + dir
 				}
 			}
-			row(name, detail, a.line(), all)
-			g.Count += len(a.targets)
+			add(name, detail, a.targets, all)
+			units = len(a.targets)
 		case "go-install":
-			row(a.program(a.targets[0]), "", a.line(), all)
-			g.Count++
+			add(a.program(a.targets[0]), "", a.targets, all)
 		case "binary":
-			row(a.fix.Target, strings.TrimSuffix(strings.TrimPrefix(a.fix.Note, "update "+a.fix.Target+" ("), ")"), "", all)
-			g.Count++
+			add(a.fix.Target, strings.TrimSuffix(strings.TrimPrefix(a.fix.Note, "update "+a.fix.Target+" ("), ")"), nil, all)
 		case "app":
-			row(a.fix.Target, "", "", all)
-			g.Count++
+			add(a.fix.Target, "", nil, all)
 		case "npm":
-			row("global packages", "", a.line(), all)
-			g.Count += len(a.targets)
+			add("global packages", "", nil, all)
+			units = len(a.targets)
 		default: // Software Update and what ships with the system
 			name, detail := strings.SplitN(a.fix.Note, " (", 2)[0], ""
 			if rest, ok := strings.CutPrefix(a.fix.Note, "comes with "); ok { // "comes with macOS: updated with it"
 				what, how, _ := strings.Cut(strings.TrimPrefix(rest, "the "), ": ")
 				name, detail = "Shipped with "+what, how
 			}
-			row(name, detail, "", all)
-			g.Count += len(all)
+			add(name, detail, nil, all)
+			units = len(all)
 		}
+		g.units[a.tier] += units
 	}
-	for i := range out {
-		var names []string
-		for _, r := range out[i].Rows {
-			names = append(names, r.Name)
+	var out []reportGroup
+	for _, g := range order {
+		rg := reportGroup{Title: g.title}
+		if len(g.targets) > 0 {
+			rg.Command = g.fix.Command + " " + strings.Join(g.targets, " ")
 		}
-		if len(names) > 5 {
-			names = append(names[:5:5], fmt.Sprintf("+%d more", len(out[i].Rows)-5))
+		for tier, n := range g.units {
+			rg.Count += n
+			if n > 0 {
+				rg.Urgency = append(rg.Urgency, reportUrgency{urgencyLabels[tier][0], urgencyLabels[tier][1], n})
+			}
 		}
-		out[i].Preview = strings.Join(names, ", ")
+		for _, r := range g.rows {
+			row := reportGroupRow{Name: r.name, Detail: r.detail, Urgency: urgencyLabels[r.tier][0], Class: urgencyLabels[r.tier][1], Why: r.why}
+			if len(r.why) > 3 {
+				row.Why, row.More = r.why[:3], len(r.why)-3
+			}
+			switch r.fix.Kind {
+			case "pip", "gem", "go-install":
+				row.Command = r.fix.Command + " " + strings.Join(r.targets, " ")
+			case "npm":
+				row.Command = r.fix.Command
+			}
+			rg.Rows = append(rg.Rows, row)
+		}
+		out = append(out, rg)
 	}
 	return out
 }
@@ -1421,7 +1460,7 @@ type hostReport struct {
 	Undetermined, Clean             int
 	Grid                            []reportGridRow
 	Total                           reportGridRow
-	Tiers                           []reportTier
+	Groups                          []reportGroup
 	Components                      []reportComponent
 	NotLinked                       []string
 	CouldNotMatch                   []reportUnmatched
@@ -1458,17 +1497,7 @@ func hostReportData(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 
 	fs := findings(inv, res)
 	actions := hostActions(inv, fs)
-	for tier := tierKEV; tier <= tierRest; tier++ {
-		var these []hostAction
-		for _, a := range actions {
-			if a.tier == tier {
-				these = append(these, a)
-			}
-		}
-		if len(these) > 0 {
-			d.Tiers = append(d.Tiers, reportTier{Title: strings.ReplaceAll(tierTitles[tier], " · ", ": "), Groups: reportGroups(these)})
-		}
-	}
+	d.Groups = reportGroups(actions)
 	d.Components = reportComponents(fs)
 	for _, it := range res.Items {
 		switch {

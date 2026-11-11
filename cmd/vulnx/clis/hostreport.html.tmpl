@@ -68,7 +68,8 @@ details.grp>summary:hover{background:var(--hover)}
 .gt{font-weight:600}.gt::before{content:"▸";color:var(--faint);margin-right:8px;display:inline-block}
 details[open]>summary .gt::before{content:"▾"}
 .gc{font:500 17px var(--serif);text-align:right}
-.gp{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gu{display:flex;gap:6px;flex-wrap:wrap}.gu .badge,.chips .badge{margin-left:0}
+.badge.sevhigh{background:var(--surface-2);color:var(--high)}
 .items{background:var(--surface-2);padding:6px 16px 10px 38px}
 .item{display:grid;grid-template-columns:220px 1fr;gap:4px 16px;padding:9px 0;border-bottom:1px solid var(--line);align-items:baseline}.item:last-child{border-bottom:0}
 .item .cmd{grid-column:1/-1}
@@ -83,7 +84,7 @@ summary button{font:12px var(--sans);border:1px solid var(--line-2);background:v
 .advs{padding:8px 16px 16px 162px;background:var(--surface-2)}
 .advs table td{padding:5px 10px 5px 0;border:0;font-size:13.5px}
 ul.cols{columns:3;margin:0;padding:14px 16px 14px 34px;font-size:14px}
-@media (max-width:760px){details.row>summary,.head{grid-template-columns:100px 1fr 1fr}.head span:nth-child(n+4),details.row>summary>span:nth-child(n+4){display:none}.advs{padding-left:16px}ul.cols{columns:1}details.grp>summary{grid-template-columns:1fr 40px}.gp,details.grp>summary button{display:none}}
+@media (max-width:760px){details.row>summary,.head{grid-template-columns:100px 1fr 1fr}.head span:nth-child(n+4),details.row>summary>span:nth-child(n+4){display:none}.advs{padding-left:16px}ul.cols{columns:1}details.grp>summary{grid-template-columns:1fr 40px}.gu,details.grp>summary button{display:none}}
 footer{margin-top:48px;color:var(--faint);font-size:13px}
 </style>
 </head>
@@ -101,7 +102,7 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 <div class="fact"><b>{{thousands .Clean}}</b><span>No known advisory</span></div>
 <div class="fact"><b>{{thousands (len .NotChecked)}}</b><span>Not checked</span></div>
 </div>
-<nav><a href="#sources">By source</a>{{if .Tiers}}<a href="#update">Where to fix</a>{{end}}<a href="#affected">Affected versions</a>{{if .NotLinked}}<a href="#unreachable">Not reachable</a>{{end}}{{if .CouldNotMatch}}<a href="#undetermined">Couldn't match</a>{{end}}{{if .NotChecked}}<a href="#notchecked">Not checked</a>{{end}}</nav>
+<nav><a href="#sources">By source</a>{{if .Groups}}<a href="#update">Where to fix</a>{{end}}<a href="#affected">Affected versions</a>{{if .NotLinked}}<a href="#unreachable">Not reachable</a>{{end}}{{if .CouldNotMatch}}<a href="#undetermined">Couldn't match</a>{{end}}{{if .NotChecked}}<a href="#notchecked">Not checked</a>{{end}}</nav>
 
 <section id="sources">
 <h2>By source</h2>
@@ -113,16 +114,15 @@ footer{margin-top:48px;color:var(--faint);font-size:13px}
 </table></div>
 </section>
 
-{{if .Tiers}}<section id="update">
+{{if .Groups}}<section id="update">
 <h2>Where to fix</h2>
-<p class="note">What to update, most urgent first. Open a line to see each item and why.</p>
-{{range .Tiers}}<h3>{{.Title}}</h3>
+<p class="note">Everything to update, by how it is updated. Open a line to see each item, most urgent first, and why.</p>
 <div class="surface">{{range .Groups}}<details class="grp">
-<summary><span class="gt">{{.Title}}</span><span class="gc">{{.Count}}</span><span class="gp">{{.Preview}}</span>{{if .Command}}<button type="button" data-copy="{{.Command}}">Copy command</button>{{end}}</summary>
+<summary><span class="gt">{{.Title}}</span><span class="gc">{{.Count}}</span><span class="gu">{{range .Urgency}}<span class="badge {{.Class}}">{{.N}} {{.Label}}</span>{{end}}</span>{{if .Command}}<button type="button" data-copy="{{.Command}}">Copy command</button>{{end}}</summary>
 <div class="items">{{range .Rows}}<div class="item"><div class="iname">{{.Name}}{{if .Detail}}<span class="dim mono"> {{.Detail}}</span>{{end}}</div>
-<div class="chips">{{range .Why}}<span class="chip">{{.}}</span>{{end}}{{if .More}}<span class="dim">+{{.More}} more</span>{{end}}</div>
+<div class="chips"><span class="badge {{.Class}}">{{.Urgency}}</span>{{range .Why}}<span class="chip">{{.}}</span>{{end}}{{if .More}}<span class="dim">+{{.More}} more</span>{{end}}</div>
 {{if .Command}}<div class="cmd"><code>{{.Command}}</code><button type="button" data-copy="{{.Command}}">Copy</button></div>{{end}}</div>{{end}}</div>
-</details>{{end}}</div>{{end}}
+</details>{{end}}</div>
 </section>{{end}}
 
 <section id="affected">
