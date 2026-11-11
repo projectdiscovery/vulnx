@@ -36,25 +36,35 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 )
 
 // HostInventory is what vulnx found on a machine.
 type HostInventory struct {
-	OS          string       // "debian 12", "macOS 26.4", ...
-	Source      string       // where the OS packages came from: dpkg, rpm, apk, sw_vers
-	Entries     []string     // purls and CPEs, each once
-	Sources     []HostSource // what each reader found
-	NotAssessed []string     // "name version (source)": read, but with no identifier SecurityContext judges exactly
-	Note        string       // per source counts, and what is not read
+	OS          string              `json:"os"`                  // "debian 12", "macOS 26.4", ...
+	Source      string              `json:"os_source,omitempty"` // where the OS packages came from: dpkg, rpm, apk, sw_vers
+	Entries     []string            `json:"-"`                   // purls and CPEs, each once (the result's items)
+	FoundIn     map[string][]string `json:"found_in"`            // entry -> where it was found: a binary, an app, a formula, a directory
+	Sources     []HostSource        `json:"sources"`             // what each reader found
+	NotAssessed []HostComponent     `json:"not_assessed"`        // read, but with no identifier SecurityContext judges exactly
+	NotRead     []string            `json:"not_read"`            // what no reader covers
+	Note        string              `json:"-"`                   // per source counts, and what is not read, as text
+}
+
+// HostComponent is an installed component vulnx read but could not identify exactly.
+type HostComponent struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+	Source  string `json:"source"`
 }
 
 // HostSource is one reader's count: Sent components went into Entries, NotAssessed were read but not sent.
 type HostSource struct {
-	Name        string
-	Sent        int
-	NotAssessed int
-	Detail      string // "9 binaries", ...
+	Name        string `json:"name"`
+	Sent        int    `json:"checked"`
+	NotAssessed int    `json:"not_assessed"`
+	Detail      string `json:"read_from,omitempty"` // "9 binaries", ...
 }
 
 // HostEntries reads what is installed on the machine (or on a Linux filesystem mounted at root).
@@ -69,7 +79,7 @@ func HostEntries(root string) (HostInventory, error) {
 	if goos != "linux" && goos != "darwin" {
 		return HostInventory{}, fmt.Errorf("--host reads Linux and macOS machines (this is %s); scan an SBOM of it instead", goos)
 	}
-	h := &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{}}
+	h := newHostReader(root, goos)
 	var err error
 	if goos == "darwin" {
 		err = h.macOS()
@@ -91,12 +101,16 @@ func HostEntries(root string) (HostInventory, error) {
 	return h.inv, nil
 }
 
+func newHostReader(root, goos string) *hostReader {
+	return &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
+		inv: HostInventory{FoundIn: map[string][]string{}}}
+}
+
 type hostReader struct {
 	root, goos string
 	inv        HostInventory
 	seen       map[string]bool // entries already sent
 	binSeen    map[string]bool // executables already read, by real path: true when Go or Rust
-	notRead    []string
 }
 
 func (h *hostReader) path(rel string) string { return filepath.Join(h.root, rel) }
@@ -149,18 +163,51 @@ func (h *hostReader) inHomes(rel ...string) []string {
 	return out
 }
 
-// add records entries for one source; an entry another source already sent counts once, under the first.
-func (h *hostReader) add(name, detail string, entries []string, notAssessed []string) {
-	src := HostSource{Name: name, Detail: detail, NotAssessed: len(notAssessed)}
-	for _, e := range entries {
-		if !h.seen[e] {
-			h.seen[e] = true
-			h.inv.Entries = append(h.inv.Entries, e)
-			src.Sent++
+var homePrefix = regexp.MustCompile(`^/(Users|home)/[^/]+|^/root|^/var/root`)
+
+// label names a package directory for display: under a home as ~, cut at the interpreter's lib directory
+// (~/.pyenv/versions/3.10.7, /opt/homebrew).
+func (h *hostReader) label(dir string) string {
+	rel, err := filepath.Rel(h.root, dir)
+	if err != nil {
+		rel = dir
+	}
+	p := homePrefix.ReplaceAllString("/"+filepath.ToSlash(rel), "~")
+	for _, cut := range []string{"/lib/python", "/lib/node_modules", "/lib/ruby", "/specifications", "/site-packages"} {
+		if i := strings.Index(p, cut); i > 0 {
+			p = p[:i]
 		}
 	}
-	for _, n := range notAssessed {
-		h.inv.NotAssessed = append(h.inv.NotAssessed, n+" ("+name+")")
+	return p
+}
+
+// found is an entry and where it was found.
+type found struct{ entry, in string }
+
+func foundIn(in string, entries []string) []found {
+	out := make([]found, len(entries))
+	for i, e := range entries {
+		out[i] = found{e, in}
+	}
+	return out
+}
+
+// add records entries for one source; an entry another source already sent counts once, under the first.
+func (h *hostReader) add(name, detail string, entries []found, notAssessed []HostComponent) {
+	src := HostSource{Name: name, Detail: detail, NotAssessed: len(notAssessed)}
+	for _, f := range entries {
+		if !h.seen[f.entry] {
+			h.seen[f.entry] = true
+			h.inv.Entries = append(h.inv.Entries, f.entry)
+			src.Sent++
+		}
+		if f.in != "" && !slices.Contains(h.inv.FoundIn[f.entry], f.in) {
+			h.inv.FoundIn[f.entry] = append(h.inv.FoundIn[f.entry], f.in)
+		}
+	}
+	for _, c := range notAssessed {
+		c.Source = name
+		h.inv.NotAssessed = append(h.inv.NotAssessed, c)
 	}
 	h.inv.Sources = append(h.inv.Sources, src) // a reader that found nothing is reported too
 }
@@ -178,8 +225,8 @@ func (h *hostReader) note() string {
 		parts = append(parts, p)
 	}
 	note := "read: " + strings.Join(parts, "; ")
-	if len(h.notRead) > 0 {
-		note += "\nnot read: " + strings.Join(h.notRead, "; ")
+	if len(h.inv.NotRead) > 0 {
+		note += "\nnot read: " + strings.Join(h.inv.NotRead, "; ")
 	}
 	return note
 }
@@ -192,7 +239,7 @@ func (h *hostReader) macOS() error {
 	}
 	ver := strings.TrimSpace(string(out))
 	h.inv.OS = "macOS " + ver
-	h.add("macOS", "", []string{fmt.Sprintf("cpe:2.3:o:apple:macos:%s:*:*:*:*:*:*:*", ver)}, nil)
+	h.add("macOS", "sw_vers", foundIn("macOS", []string{fmt.Sprintf("cpe:2.3:o:apple:macos:%s:*:*:*:*:*:*:*", ver)}), nil)
 	return nil
 }
 
@@ -260,15 +307,15 @@ func (h *hostReader) linuxOS() error {
 	switch id {
 	case "debian", "ubuntu", "rhel", "rocky", "almalinux", "alpine":
 	default:
-		h.notRead = append(h.notRead, fmt.Sprintf("SecurityContext has advisories for Debian, Ubuntu, Alpine, RHEL, Rocky and AlmaLinux; %s packages will come back undetermined", id))
+		h.inv.NotRead = append(h.inv.NotRead, fmt.Sprintf("SecurityContext has advisories for Debian, Ubuntu, Alpine, RHEL, Rocky and AlmaLinux; %s packages will come back undetermined", id))
 	}
 	source, entries, err := linuxPackages(h.root, id, version)
 	if err != nil {
-		h.notRead = append(h.notRead, err.Error())
+		h.inv.NotRead = append(h.inv.NotRead, err.Error())
 		return nil
 	}
 	h.inv.Source = source
-	h.add(source, "", entries, nil)
+	h.add(source, "", foundIn(source, entries), nil)
 	return nil
 }
 
@@ -445,27 +492,27 @@ func (h *hostReader) languagePackages() {
 	}
 
 	dirs := h.glob(pyDirs...)
-	var py []string
+	var py []found
 	for _, d := range dirs {
-		py = append(py, pythonPackages(d)...)
+		py = append(py, foundIn(h.label(d), pythonPackages(d))...)
 	}
 	h.add("python", count(len(dirs), "site-packages dir", "site-packages dirs"), py, nil)
 
 	dirs = h.glob(nodeDirs...)
-	var node []string
+	var node []found
 	for _, d := range dirs {
-		node = append(node, nodePackages(d, 0)...)
+		node = append(node, foundIn(h.label(d), nodePackages(d, 0))...)
 	}
 	h.add("npm", count(len(dirs), "global node_modules", "global node_modules"), node, nil)
 
 	dirs = h.glob(gemDirs...)
-	var gems []string
+	var gems []found
 	for _, d := range dirs {
-		gems = append(gems, rubyGems(d)...)
-		gems = append(gems, rubyGems(filepath.Join(d, "default"))...)
+		gems = append(gems, foundIn(h.label(d), rubyGems(d))...)
+		gems = append(gems, foundIn(h.label(d), rubyGems(filepath.Join(d, "default")))...)
 	}
 	h.add("gems", count(len(dirs), "gem dir", "gem dirs"), gems, nil)
-	h.notRead = append(h.notRead, "virtualenvs and project dependencies (scan their lockfiles)")
+	h.inv.NotRead = append(h.inv.NotRead, "virtualenvs and project dependencies (scan their lockfiles)")
 }
 
 func count(n int, one, many string) string {
@@ -622,11 +669,11 @@ func (h *hostReader) binaries() {
 	b := h.readBinaries(h.glob(dirs...))
 	h.add("go binaries", count(b.goBins, "binary", "binaries"), b.goEntries, nil)
 	h.add("rust binaries", count(b.rustBins, "binary", "binaries"), b.rustEntries, nil)
-	h.notRead = append(h.notRead, "Rust binaries built without an embedded crate list; other compiled programs no package manager installed")
+	h.inv.NotRead = append(h.inv.NotRead, "Rust binaries built without an embedded crate list; other compiled programs no package manager installed")
 }
 
 type binaryModules struct {
-	goEntries, rustEntries []string
+	goEntries, rustEntries []found
 	goBins, rustBins       int
 	judged                 int // Go and Rust executables in dirs, counting those an earlier call read
 }
@@ -657,10 +704,10 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 			}
 			if mods, ok := goModules(real); ok {
 				b.goBins++
-				b.goEntries = append(b.goEntries, mods...)
+				b.goEntries = append(b.goEntries, foundIn(e.Name(), mods)...)
 			} else if crates, ok := rustCrates(real); ok {
 				b.rustBins++
-				b.rustEntries = append(b.rustEntries, crates...)
+				b.rustEntries = append(b.rustEntries, foundIn(e.Name(), crates)...)
 			} else {
 				continue
 			}
@@ -817,7 +864,8 @@ var brewProducts = map[string][]string{
 // packages it carries, and its Go and Rust executables (linked onto PATH or not). The rest are not assessed;
 // casks are applications and read from their bundles.
 func (h *hostReader) homebrew() {
-	var entries, notAssessed []string
+	var entries []found
+	var notAssessed []HostComponent
 	formulae, byProduct, byContents := 0, 0, 0
 	for _, cellar := range h.glob("opt/homebrew/Cellar", "usr/local/Cellar", "home/linuxbrew/.linuxbrew/Cellar") {
 		names, _ := os.ReadDir(cellar)
@@ -831,11 +879,12 @@ func (h *hostReader) homebrew() {
 				keg := filepath.Join(cellar, n.Name(), v.Name())
 				contents, read := h.kegContents(keg)
 				entries = append(entries, contents...)
+				in := n.Name() + " (formula)"
 				base, _, _ := strings.Cut(n.Name(), "@")
 				if products, ok := brewProducts[base]; ok {
 					ver := brewRevision.ReplaceAllString(v.Name(), "")
 					for _, p := range products {
-						entries = append(entries, productCPE(p, ver))
+						entries = append(entries, found{productCPE(p, ver), in})
 					}
 					byProduct++
 					continue
@@ -844,7 +893,7 @@ func (h *hostReader) homebrew() {
 					byContents++
 					continue
 				}
-				notAssessed = append(notAssessed, n.Name()+" "+v.Name())
+				notAssessed = append(notAssessed, HostComponent{Name: n.Name(), Version: v.Name()})
 			}
 		}
 	}
@@ -854,13 +903,14 @@ func (h *hostReader) homebrew() {
 
 // kegContents is what one installed formula carries with an exact identifier; read is false when it carries
 // nothing (its executables already read from PATH count).
-func (h *hostReader) kegContents(keg string) (out []string, read bool) {
+func (h *hostReader) kegContents(keg string) (out []found, read bool) {
+	in := filepath.Base(filepath.Dir(keg)) + " (formula)"
 	for _, d := range globAll(filepath.Join(keg, "lib/python3*/site-packages"), filepath.Join(keg, "libexec/lib/python3*/site-packages"),
 		filepath.Join(keg, "libexec/venv/lib/python3*/site-packages"), filepath.Join(keg, "Frameworks/Python.framework/Versions/*/lib/python3*/site-packages")) {
-		out = append(out, pythonPackages(d)...)
+		out = append(out, foundIn(in, pythonPackages(d))...)
 	}
 	for _, d := range globAll(filepath.Join(keg, "lib/node_modules"), filepath.Join(keg, "libexec/lib/node_modules")) {
-		out = append(out, nodePackages(d, 0)...)
+		out = append(out, foundIn(in, nodePackages(d, 0))...)
 	}
 	b := h.readBinaries(globAll(filepath.Join(keg, "bin"), filepath.Join(keg, "sbin"), filepath.Join(keg, "libexec/bin")))
 	out = append(out, b.goEntries...)
@@ -909,7 +959,8 @@ var appProducts = map[string]string{
 
 // applications reads the bundles in /Applications and each user's ~/Applications.
 func (h *hostReader) applications() {
-	var entries, notAssessed []string
+	var entries []found
+	var notAssessed []HostComponent
 	bundles := h.glob(append([]string{"Applications/*.app", "Applications/Utilities/*.app"}, h.inHomes("Applications/*.app")...)...)
 	for _, b := range bundles {
 		info := appInfo(filepath.Join(b, "Contents", "Info.plist"))
@@ -919,10 +970,10 @@ func (h *hostReader) applications() {
 		}
 		name := strings.TrimSuffix(filepath.Base(b), ".app")
 		if p, ok := appProducts[id]; ok && ver != "" {
-			entries = append(entries, productCPE(p, ver))
+			entries = append(entries, found{productCPE(p, ver), name + ".app"})
 			continue
 		}
-		notAssessed = append(notAssessed, strings.TrimSpace(name+" "+ver))
+		notAssessed = append(notAssessed, HostComponent{Name: name, Version: ver})
 	}
 	h.add("applications", count(len(bundles), "bundle", "bundles"), entries, notAssessed)
 }

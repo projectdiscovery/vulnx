@@ -513,6 +513,11 @@ func withUpstream(purl string, props map[string]string) string {
 
 // CheckMany checks any number of entries, MaxCheckEntries a request, and merges the answers.
 func (c *Client) CheckMany(ctx context.Context, entries []string) (StackResult, error) {
+	return c.CheckManyProgress(ctx, entries, nil)
+}
+
+// CheckManyProgress is CheckMany, calling progress (when set) after each request with the entries checked so far.
+func (c *Client) CheckManyProgress(ctx context.Context, entries []string, progress func(done, total int)) (StackResult, error) {
 	var all StackResult
 	for start := 0; start < len(entries); start += MaxCheckEntries {
 		end := start + MaxCheckEntries
@@ -524,6 +529,9 @@ func (c *Client) CheckMany(ctx context.Context, entries []string) (StackResult, 
 			return all, err
 		}
 		mergeStack(&all, res)
+		if progress != nil {
+			progress(end, len(entries))
+		}
 	}
 	return all, nil
 }

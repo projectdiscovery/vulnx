@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"debug/elf"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -251,6 +252,19 @@ func TestHostLinuxSources(t *testing.T) {
 		"pkg:gem/rack@2.0.0", "pkg:gem/json@2.6.1",
 		goStdlib(), "pkg:cargo/hyper@0.14.10")
 	hasNone(t, inv.Entries, "distro-owned", "not-a-header", "forked", "rusttool")
+	for entry, want := range map[string]string{
+		"pkg:pypi/requests@2.19.0": "/usr/local",
+		"pkg:pypi/legacy@0.3":      "~/.local",
+		"pkg:npm/corepack@0.18.0":  "~/.nvm/versions/node/v20.1.0",
+		"pkg:gem/json@2.6.1":       "/var/lib/gems/3.0.0",
+		"pkg:cargo/hyper@0.14.10":  "rusttool",
+		goStdlib():                 "gotool",
+		"pkg:deb/ubuntu/bash@5.1-6ubuntu1?arch=amd64&distro=ubuntu-22.04": "dpkg",
+	} {
+		if got := strings.Join(inv.FoundIn[entry], ","); got != want {
+			t.Errorf("%s found in %q, want %q", entry, got, want)
+		}
+	}
 	if inv.Source != "dpkg" || len(inv.NotAssessed) != 0 {
 		t.Errorf("source %q, not assessed %v", inv.Source, inv.NotAssessed)
 	}
@@ -308,7 +322,7 @@ func TestHostHomebrew(t *testing.T) {
 	copyTestBinary(t, root, cellar+"gotool/1.0/bin/gotool")
 	copyTestBinary(t, root, cellar+"linked/2.0/bin/linked")
 	writeFile(t, root, cellar+"cairo/1.18.4/lib/libcairo.dylib", "")
-	h := &hostReader{root: root, goos: "darwin", seen: map[string]bool{}, binSeen: map[string]bool{}}
+	h := newHostReader(root, "darwin")
 	// linked's executable is on PATH and read there first; the formula still counts as read
 	if err := os.MkdirAll(filepath.Join(root, "opt/homebrew/bin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -318,11 +332,14 @@ func TestHostHomebrew(t *testing.T) {
 	}
 	h.binaries()
 	h.homebrew()
+	if got := strings.Join(h.inv.FoundIn["pkg:pypi/botocore@1.31.0"], ","); got != "awscli (formula)" {
+		t.Errorf("botocore found in %q", got)
+	}
 	hasAll(t, h.inv.Entries,
 		"cpe:2.3:a:openssl:openssl:3.4.0:*:*:*:*:*:*:*",
 		"cpe:2.3:a:c-ares:c-ares:1.34.4:*:*:*:*:*:*:*", "cpe:2.3:a:c-ares_project:c-ares:1.34.4:*:*:*:*:*:*:*",
 		"pkg:pypi/botocore@1.31.0", "pkg:npm/prettier@3.0.0", goStdlib())
-	if strings.Join(h.inv.NotAssessed, ",") != "cairo 1.18.4 (homebrew)" {
+	if fmt.Sprint(h.inv.NotAssessed) != "[{cairo 1.18.4 homebrew}]" {
 		t.Errorf("not assessed: %v", h.inv.NotAssessed)
 	}
 	if n := h.note(); !strings.Contains(n, "7 formulae: 2 by product, 4 by their packages or binaries), 1 not assessed") {
@@ -337,13 +354,16 @@ func TestHostApplications(t *testing.T) {
 	writeFile(t, root, "Applications/Utilities/Wireshark.app/Contents/Info.plist", appPlist("org.wireshark.Wireshark", "4.4.2"))
 	writeFile(t, root, "Users/alice/Applications/Editor.app/Contents/Info.plist", appPlist("com.example.editor", "2.1 (300)"))
 	writeFile(t, root, "Applications/Broken.app/Contents/MacOS/broken", "")
-	h := &hostReader{root: root, goos: "darwin", seen: map[string]bool{}, binSeen: map[string]bool{}}
+	h := newHostReader(root, "darwin")
 	h.applications()
 	want := []string{"cpe:2.3:a:google:chrome:131.0.6778.86:*:*:*:*:*:*:*", "cpe:2.3:a:wireshark:wireshark:4.4.2:*:*:*:*:*:*:*"}
 	if strings.Join(h.inv.Entries, "\n") != strings.Join(want, "\n") {
 		t.Errorf("entries:\n%s", strings.Join(h.inv.Entries, "\n"))
 	}
-	if strings.Join(h.inv.NotAssessed, ",") != "Broken (applications),Editor 2.1 (300) (applications)" {
+	if got := h.inv.FoundIn[want[0]]; len(got) != 1 || got[0] != "Google Chrome.app" {
+		t.Errorf("found in %v", got)
+	}
+	if fmt.Sprint(h.inv.NotAssessed) != "[{Broken  applications} {Editor 2.1 (300) applications}]" {
 		t.Errorf("not assessed: %v", h.inv.NotAssessed)
 	}
 	if n := h.note(); !strings.Contains(n, "applications 2 (4 bundles), 2 not assessed") {
