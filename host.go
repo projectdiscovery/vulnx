@@ -132,6 +132,7 @@ func HostEntries(root string) (HostInventory, error) {
 	if goos == "darwin" {
 		h.applications()
 	}
+	h.aiTools()
 	h.inv.Note = h.note()
 	return h.inv, nil
 }
@@ -224,6 +225,8 @@ func (h *hostReader) fix(label string, f HostFix) {
 	}
 }
 
+var toolVenv = regexp.MustCompile(`/(uv/tools|pipx/venvs)/([^/]+)/lib/python3`)
+
 var pythonLib = regexp.MustCompile(`/lib/(python3\.\d+)/(site|dist)-packages$`)
 
 // pythonPlace labels a site-packages directory with its interpreter and says how its packages are updated: that
@@ -237,6 +240,12 @@ func (h *hostReader) pythonPlace(dir string) (string, HostFix) {
 	case strings.Contains(path, "/Library/Python/"): // ~/Library/Python/3.9/lib/python/site-packages
 		v := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(dir))))
 		return label + " (python" + v + ")", HostFix{Kind: "pip", Command: "python" + v + " -m pip install --user -U"}
+	}
+	if t := toolVenv.FindStringSubmatch(path); t != nil { // a command-line tool installed in its own environment
+		if t[1] == "uv/tools" {
+			return label, HostFix{Kind: "pip", Command: "uv tool upgrade", Target: t[2]}
+		}
+		return label, HostFix{Kind: "pip", Command: "pipx upgrade", Target: t[2]}
 	}
 	m := pythonLib.FindStringSubmatch(path)
 	if m == nil {
@@ -547,7 +556,9 @@ func apkInstalled(f io.Reader) []osPackage {
 func (h *hostReader) languagePackages() {
 	var pyDirs, nodeDirs, gemDirs []string
 	pyDirs = append(pyDirs, "usr/local/lib/python3*/site-packages", "usr/local/lib/python3*/dist-packages")
-	pyDirs = append(pyDirs, h.inHomes(".local/lib/python3*/site-packages", ".pyenv/versions/*/lib/python3*/site-packages")...)
+	pyDirs = append(pyDirs, h.inHomes(".local/lib/python3*/site-packages", ".pyenv/versions/*/lib/python3*/site-packages",
+		".local/share/uv/tools/*/lib/python3*/site-packages", ".local/pipx/venvs/*/lib/python3*/site-packages",
+		".local/share/pipx/venvs/*/lib/python3*/site-packages")...)
 	nodeDirs = append(nodeDirs, "usr/local/lib/node_modules")
 	nodeDirs = append(nodeDirs, h.inHomes(".npm-global/lib/node_modules", ".nvm/versions/node/*/lib/node_modules")...)
 	gemDirs = append(gemDirs, "usr/local/lib/ruby/gems/*/specifications", "usr/local/share/gems/specifications")
@@ -1242,7 +1253,7 @@ func (h *hostReader) applications() {
 			entries = append(entries, found{productCPE(p, ver), name + ".app"})
 			continue
 		}
-		if len(bundled) > 0 {
+		if _, ai := aiApps[id]; ai || len(bundled) > 0 { // an AI application is aiTools' to report
 			continue
 		}
 		notAssessed = append(notAssessed, HostComponent{Name: name, Version: ver})

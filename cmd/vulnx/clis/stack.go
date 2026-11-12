@@ -61,7 +61,9 @@ Or an operating system:
                                   /etc/os-release, judged by the distribution's own advisories (macOS: its
                                   version); Python, npm and Ruby packages installed outside the distribution;
                                   the modules of Go and Rust binaries on PATH; on macOS, Homebrew formulae and
-                                  applications with a known product. Anything read but not judged is listed.
+                                  applications with a known product; AI tools: assistant apps, agent CLIs,
+                                  AI editor extensions and the packages MCP servers are started from.
+                                  Anything read but not judged is listed.
                                   --root reads a mounted Linux filesystem instead. The terminal shows one
                                   screen: findings per source and severity (--view for other views). --report
                                   prints a report URL that auto-expires in 24 hours; the full result is written
@@ -155,6 +157,7 @@ cat versions.txt | vulnx scan`,
 					fatalAPI("scan", err)
 				}
 				inv.DropUnknownProducts(&res)
+				inv.DropOtherSchemes(&res)
 				hostProgress("Checking which Go programs reach affected code ...")
 				inv.MarkReachability(&res)
 				hostProgress("")
@@ -506,7 +509,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output (with --host: every affected component and every one not assessed)")
 	scanCmd.Flags().StringVar(&scanImage, "image", "", "scan a public container image by reference (e.g. debian:12-slim, ghcr.io/owner/name:tag)")
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
-	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, and on macOS Homebrew and applications")
+	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, AI tools, and on macOS Homebrew and applications")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"

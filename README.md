@@ -273,6 +273,12 @@ binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formu
 formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
 listed as not assessed, with a count per source. Only names and versions are sent.
 
+AI tools are read as a source of their own: assistant and editor applications, an agent command-line tool that
+updates itself, AI editor extensions, and the packages MCP servers are started from (`npx server@1.2.0`,
+`uvx server==1.2.0`) in each agent's configuration. A server with no version pinned, or one that is a local program,
+is listed as not assessed. Only the package name and version are read from a configuration, never its environment.
+Python tools installed in their own environment (`uv tool`, `pipx`) are read with the other Python packages.
+
 A formula is judged by product when its own source repository is the one the product lists: vulnx reads the
 repository from the formula's own file and asks SecurityContext which products list it, keeping only a product that
 lists that repository alone. An application built
