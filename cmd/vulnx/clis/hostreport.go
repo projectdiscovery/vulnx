@@ -1227,14 +1227,18 @@ const shareExpiry = 24 * time.Hour
 
 var agentKinds = []struct{ kind, one, many string }{
 	{"extension", "editor extension", "editor extensions"}, {"skill", "skill", "skills"}, {"plugin", "plugin", "plugins"},
-	{"hook", "hook", "hooks"}, {"mcp_server", "MCP server", "MCP servers"},
+	{"hook", "hook", "hooks"}, {"mcp_server", "MCP server", "MCP servers"}, {"model", "local model", "local models"},
 }
 
-var agentRisks = []string{"removed_malware", "removed", "lookalike", "sideloaded", "pipe_to_shell", "hidden_text", "unverified_source", "unpinned", "plaintext", "approvals_off"}
+// infoRisks are true of most machines that run local models: said, in grey, without the mark of a finding.
+var infoRisks = map[string]bool{"pickle_format": true, "custom_code": true}
+
+var agentRisks = []string{"model_runs_commands", "exposed", "removed_malware", "removed", "lookalike", "sideloaded", "pipe_to_shell", "hidden_text", "unverified_source", "unpinned", "plaintext", "approvals_off", "pickle_format", "custom_code"}
 
 var riskSubject = map[string][2]string{
 	"extension": {"extension", "extensions"}, "skill": {"skill", "skills"}, "hook": {"hook", "hooks"},
 	"mcp_server": {"MCP server", "MCP servers"}, "agent": {"agent", "agents"}, "plugin": {"plugin", "plugins"},
+	"model": {"local model", "local models"}, "runtime": {"model runtime", "model runtimes"},
 }
 
 // agentSetup is the block under the grid for what agents and editors load: what was read, then one line per kind
@@ -1259,8 +1263,17 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 	}
 	var b strings.Builder
 	head := "  Agent setup: " + strings.Join(parts, ", ")
+	findings := 0
+	for _, r := range inv.Risks {
+		if !infoRisks[r.Risk] {
+			findings++
+		}
+	}
 	if len(inv.Risks) == 0 {
 		return dim(head+", no risky setup found") + "\n"
+	}
+	if findings == 0 {
+		head += ", no risky setup found"
 	}
 	b.WriteString(head + "\n")
 	for _, risk := range agentRisks {
@@ -1285,7 +1298,12 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 		if len(shown) > 4 {
 			shown = append(slices.Clone(names[:4]), fmt.Sprintf("+%d", len(names)-4))
 		}
-		b.WriteString(fmt.Sprintf("    %s %d %s %s: %s\n", c.Colorize("!", gridColors["high"]), len(names), subject, vulnx.RiskText[risk], strings.Join(shown, ", ")))
+		text := fmt.Sprintf("%d %s %s: %s", len(names), subject, vulnx.RiskText[risk], strings.Join(shown, ", "))
+		if infoRisks[risk] {
+			b.WriteString(dim("      "+text) + "\n")
+			continue
+		}
+		b.WriteString(fmt.Sprintf("    %s %s\n", c.Colorize("!", gridColors["high"]), text))
 	}
 	return b.String()
 }

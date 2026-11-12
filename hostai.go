@@ -27,6 +27,7 @@ var aiApps = map[string]string{
 	"jan.ai.app":                     "",
 	"com.exafunction.windsurf":       "",
 	"com.t3tools.t3code":             "",
+	"ai.elementlabs.bionic":          "",
 	"ai.opencode.desktop":            "",
 }
 

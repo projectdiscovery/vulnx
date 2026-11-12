@@ -284,6 +284,12 @@ OpenCode (its `plugin` packages and local plugin files too), Copilot CLI, Goose,
 Crush, Junie, LM Studio, Continue, and the Cline, Roo Code and Kilo Code extensions. One that is not installed
 reads nothing.
 
+Local models are read too: the models in the Hugging Face cache, LM Studio's and Ollama's stores and the PyTorch
+hub cache. A model file that is a pickle can run code when it is loaded (safetensors and GGUF cannot): one whose
+pickle imports something that runs commands is flagged, the others are counted. Also said: a model that ships its
+own code, and Ollama or LM Studio set to listen beyond this machine, since neither asks for a login. The runtimes
+themselves (Ollama, llama.cpp, vLLM, MLX) are checked with the binaries, formulae and Python packages.
+
 Under the grid, `Agent setup` counts what coding agents and editors load and run for you: editor extensions, skills,
 plugins, hooks and MCP servers. It then lists the ones whose setup lets someone else decide what runs on the
 machine: an MCP server with no version pinned, fetched from a git URL or another registry, or reached over plain

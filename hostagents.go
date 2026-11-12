@@ -13,7 +13,7 @@ import (
 
 // HostAgentItem is one thing a coding agent or an editor loads and runs for the user.
 type HostAgentItem struct {
-	Kind    string `json:"kind"` // extension, skill, plugin, hook, mcp_server
+	Kind    string `json:"kind"` // extension, skill, plugin, hook, mcp_server, model, runtime
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 	Where   string `json:"where"`            // the directory or configuration it is in
@@ -32,16 +32,20 @@ type HostRisk struct {
 
 // RiskText says each risk in a few words, for a count line.
 var RiskText = map[string]string{
-	"removed_malware":   "removed from a marketplace as malware",
-	"removed":           "removed from a marketplace as an impersonation or untrustworthy",
-	"unpinned":          "run whatever version is newest at each start",
-	"unverified_source": "fetched from a git URL or a non-default registry",
-	"plaintext":         "reached over unencrypted http",
-	"sideloaded":        "installed from a file, not a marketplace",
-	"lookalike":         "named like a well-known extension from another publisher",
-	"pipe_to_shell":     "download code and run it",
-	"hidden_text":       "carry invisible characters in their instructions",
-	"approvals_off":     "run commands without asking",
+	"removed_malware":     "removed from a marketplace as malware",
+	"removed":             "removed from a marketplace as an impersonation or untrustworthy",
+	"unpinned":            "run whatever version is newest at each start",
+	"unverified_source":   "fetched from a git URL or a non-default registry",
+	"plaintext":           "reached over unencrypted http",
+	"sideloaded":          "installed from a file, not a marketplace",
+	"lookalike":           "named like a well-known extension from another publisher",
+	"pipe_to_shell":       "download code and run it",
+	"hidden_text":         "carry invisible characters in their instructions",
+	"approvals_off":       "run commands without asking",
+	"model_runs_commands": "import command-running code when loaded",
+	"exposed":             "set to listen beyond this machine with no login",
+	"pickle_format":       "in a format that can run code when loaded (pickle)",
+	"custom_code":         "ship their own code, run when loaded with remote code trusted",
 }
 
 // knownExtensions names the publisher of extensions whose name is copied to deceive ("python" from anyone but

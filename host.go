@@ -140,6 +140,7 @@ func HostEntries(root string) (HostInventory, error) {
 		h.applications()
 	}
 	h.aiTools()
+	h.localModels()
 	h.inv.Note = h.note()
 	return h.inv, nil
 }
