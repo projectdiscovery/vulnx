@@ -203,7 +203,7 @@ var (
 
 const skillFileCap = 256 << 10
 
-// skills lists each agent's skills and plugins, and reads a skill's instructions and the scripts beside them.
+// skills lists each harness's skills and plugins, and reads a skill's instructions and the scripts beside them.
 func (h *hostReader) skills() {
 	for _, path := range h.glob(h.inHomes(".claude/plugins/installed_plugins.json")...) {
 		var installed struct {
@@ -224,44 +224,72 @@ func (h *hostReader) skills() {
 			}
 		}
 	}
-	files := h.glob(h.inHomes(".claude/skills/*/SKILL.md", ".claude/plugins/cache/*/*/*/skills/*/SKILL.md",
-		".codex/skills/*/SKILL.md", ".agents/skills/*/SKILL.md", ".cursor/skills/*/SKILL.md", ".gemini/skills/*/SKILL.md")...)
-	for _, file := range files {
-		dir := filepath.Dir(file)
-		name, where := filepath.Base(dir), h.label(filepath.Dir(dir))
-		h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "skill", Name: name, Where: where})
-		found := map[string]string{}
-		walkErr := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			info, err := d.Info()
-			if err != nil || !info.Mode().IsRegular() || info.Size() > skillFileCap {
-				return nil
-			}
-			raw, err := os.ReadFile(p)
-			if err != nil {
-				return nil
-			}
-			rel, err := filepath.Rel(dir, p)
-			if err != nil {
-				rel = d.Name()
-			}
-			if m := pipeToShell.Find(raw); m != nil && found["pipe_to_shell"] == "" {
-				found["pipe_to_shell"] = rel + ": " + clip(string(m))
-			}
-			if strings.HasSuffix(p, ".md") && hiddenText.Match(raw) && found["hidden_text"] == "" {
-				found["hidden_text"] = rel + " has characters a reader does not see and the agent does"
-			}
-			return nil
-		})
-		if walkErr != nil {
+	for _, path := range h.glob(h.inHomes(".codex/config.toml", ".codex-*/config.toml")...) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
 			continue
 		}
-		for _, risk := range []string{"pipe_to_shell", "hidden_text"} {
-			if found[risk] != "" {
-				h.risk(HostRisk{risk, "skill", name, where, found[risk]})
+		for _, m := range codexPlugin.FindAllStringSubmatch(string(raw), -1) {
+			h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "plugin", Name: m[1], Where: h.label(path)})
+		}
+	}
+	seen := map[string]bool{}
+	for _, hn := range harnesses(h.goos) {
+		for _, file := range h.glob(h.inHomes(hn.skills...)...) {
+			dir := filepath.Dir(file)
+			if seen[dir] {
+				continue
 			}
+			seen[dir] = true
+			name, where := filepath.Base(dir), h.label(filepath.Dir(dir))
+			h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "skill", Name: name, Where: where})
+			h.scan(dir, "skill", name, where)
+		}
+		// a file the harness loads as a plugin runs inside it, with everything the harness can do
+		for _, path := range h.glob(h.inHomes(hn.scripts...)...) {
+			name, where := filepath.Base(path), h.label(filepath.Dir(path))
+			h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "plugin", Name: name, Where: where, Detail: "a local file " + hn.name + " loads"})
+			h.scan(path, "plugin", name, where)
+		}
+	}
+}
+
+var codexPlugin = regexp.MustCompile(`(?m)^\[plugins\."([^"]+)"\]`)
+
+// scan reads the files under a path (a skill's directory, a plugin file) for a download handed to a shell and,
+// in its Markdown, for characters a reader does not see.
+func (h *hostReader) scan(root, kind, name, where string) {
+	found := map[string]string{}
+	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > skillFileCap {
+			return nil
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == "." {
+			rel = d.Name()
+		}
+		if m := pipeToShell.Find(raw); m != nil && found["pipe_to_shell"] == "" {
+			found["pipe_to_shell"] = rel + ": " + clip(string(m))
+		}
+		if strings.HasSuffix(p, ".md") && hiddenText.Match(raw) && found["hidden_text"] == "" {
+			found["hidden_text"] = rel + " has characters a reader does not see and the agent does"
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return
+	}
+	for _, risk := range []string{"pipe_to_shell", "hidden_text"} {
+		if found[risk] != "" {
+			h.risk(HostRisk{risk, kind, name, where, found[risk]})
 		}
 	}
 }
@@ -274,16 +302,24 @@ func clip(s string) string {
 	return s
 }
 
-// hooks lists the commands an agent runs by itself on its own events, from the user's settings and each plugin.
+// hooks lists the commands a harness runs by itself on its own events, from the user's settings and each plugin.
+// An event's entry is a command, or a group of them under `hooks`.
 func (h *hostReader) hooks() {
-	type hookFile struct {
-		Hooks map[string][]struct {
-			Hooks []struct{ Command string }
-		}
+	type command struct {
+		Command string
+		Hooks   []struct{ Command string }
 	}
-	files := h.glob(h.inHomes(".claude/settings.json", ".claude/settings.local.json", ".claude/plugins/cache/*/*/*/hooks/hooks.json")...)
-	for _, path := range files {
-		var f hookFile
+	var files []string
+	for _, hn := range harnesses(h.goos) {
+		files = append(files, h.inHomes(hn.hooks...)...)
+	}
+	seen := map[string]bool{}
+	for _, path := range h.glob(files...) {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		var f struct{ Hooks map[string][]command }
 		raw, err := os.ReadFile(path)
 		if err != nil || json.Unmarshal(stripJSONComments(raw), &f) != nil {
 			continue
@@ -295,14 +331,18 @@ func (h *hostReader) hooks() {
 		sort.Strings(events)
 		where := h.label(path)
 		for _, event := range events {
-			for _, group := range f.Hooks[event] {
-				for _, hook := range group.Hooks {
-					if hook.Command == "" {
+			for _, entry := range f.Hooks[event] {
+				commands := []string{entry.Command}
+				for _, hook := range entry.Hooks {
+					commands = append(commands, hook.Command)
+				}
+				for _, c := range commands {
+					if strings.TrimSpace(c) == "" {
 						continue
 					}
-					name := filepath.Base(strings.Fields(hook.Command)[0])
+					name := filepath.Base(strings.Fields(c)[0])
 					h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "hook", Name: name, Where: where, Detail: "on " + event})
-					if m := pipeToShell.FindString(hook.Command); m != "" {
+					if m := pipeToShell.FindString(c); m != "" {
 						h.risk(HostRisk{"pipe_to_shell", "hook", name, where, "on " + event + ": " + clip(m)})
 					}
 				}

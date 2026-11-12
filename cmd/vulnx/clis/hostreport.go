@@ -1234,7 +1234,7 @@ var agentRisks = []string{"removed_malware", "removed", "lookalike", "sideloaded
 
 var riskSubject = map[string][2]string{
 	"extension": {"extension", "extensions"}, "skill": {"skill", "skills"}, "hook": {"hook", "hooks"},
-	"mcp_server": {"MCP server", "MCP servers"}, "agent": {"agent", "agents"},
+	"mcp_server": {"MCP server", "MCP servers"}, "agent": {"agent", "agents"}, "plugin": {"plugin", "plugins"},
 }
 
 // agentSetup is the block under the grid for what agents and editors load: what was read, then one line per kind

@@ -279,6 +279,11 @@ updates itself, AI editor extensions, and the packages MCP servers are started f
 is listed as not assessed. Only the package name and version are read from a configuration, never its environment.
 Python tools installed in their own environment (`uv tool`, `pipx`) are read with the other Python packages.
 
+The harnesses read: Claude Code and Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Qwen Code,
+OpenCode (its `plugin` packages and local plugin files too), Copilot CLI, Goose, Amp, Droid, Kiro, Amazon Q, Zed,
+Crush, Junie, LM Studio, Continue, and the Cline, Roo Code and Kilo Code extensions. One that is not installed
+reads nothing.
+
 Under the grid, `Agent setup` counts what coding agents and editors load and run for you: editor extensions, skills,
 plugins, hooks and MCP servers. It then lists the ones whose setup lets someone else decide what runs on the
 machine: an MCP server with no version pinned, fetched from a git URL or another registry, or reached over plain

@@ -2,13 +2,11 @@ package vulnx
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -28,6 +26,8 @@ var aiApps = map[string]string{
 	"ai.elementlabs.lmstudio":        "",
 	"jan.ai.app":                     "",
 	"com.exafunction.windsurf":       "",
+	"com.t3tools.t3code":             "",
+	"ai.opencode.desktop":            "",
 }
 
 // aiExtensions names the NVD product of editor extensions by publisher.name, where the extension's version is the
@@ -91,6 +91,13 @@ func (h *hostReader) aiTools() {
 			entries = append(entries, found{productCPE("anthropic:claude_code", v), label})
 		}
 	}
+	// an agent that keeps its own versions and has no product to check it against: read, and said so
+	for _, dir := range h.glob(h.inHomes(".local/share/cursor-agent/versions")...) {
+		if v := newestEntry(dir); v != "" {
+			clis++
+			notAssessed = append(notAssessed, HostComponent{Name: "cursor-agent", Version: v})
+		}
+	}
 	add(clis, "agent CLI", "agent CLIs")
 
 	exts := 0
@@ -129,6 +136,20 @@ func (h *hostReader) aiTools() {
 	add(len(servers), "configured MCP server", "configured MCP servers")
 	h.agentSurface(servers)
 
+	// a package a harness loads into itself runs with everything the harness can do
+	loaded := h.loadedPackages()
+	for _, p := range loaded {
+		h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "plugin", Name: p.spec, Where: p.config, Detail: "an npm package " + p.harness + " loads"})
+		if p.purl != "" {
+			h.fix(p.config, HostFix{Kind: "system", Note: "pin a fixed version in the plugin list"})
+			entries = append(entries, found{p.purl, p.config})
+			continue
+		}
+		notAssessed = append(notAssessed, HostComponent{Name: p.harness + " plugin " + p.spec, Reason: p.reason})
+		h.risk(HostRisk{"unpinned", "plugin", p.spec, p.config, p.spec + " has no version pinned: a new release runs inside " + p.harness + " the next time it starts"})
+	}
+	add(len(loaded), "harness plugin", "harness plugins")
+
 	h.add(aiSource, strings.Join(parts, ", "), entries, notAssessed)
 }
 
@@ -144,6 +165,21 @@ func newestVersion(dir string) string {
 	best := ""
 	for _, e := range list {
 		if versionName.MatchString(e.Name()) && (best == "" || versionLess(best, e.Name())) {
+			best = e.Name()
+		}
+	}
+	return best
+}
+
+// newestEntry is the last of a directory's subdirectories by name: versions named by date sort in order.
+func newestEntry(dir string) string {
+	list, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	best := ""
+	for _, e := range list {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") && e.Name() > best {
 			best = e.Name()
 		}
 	}
@@ -203,128 +239,6 @@ type mcpServer struct {
 	reason       string // why there is no purl
 	command      []string
 	url          string // set for a server reached over the network
-}
-
-// mcpServers reads the MCP servers configured for the agents on the machine, each once per configuration.
-func (h *hostReader) mcpServers() (out []mcpServer) {
-	files := h.inHomes(".claude.json", ".claude/settings.json", ".cursor/mcp.json", ".gemini/settings.json",
-		".codeium/windsurf/mcp_config.json", ".config/opencode/opencode.json")
-	if h.goos == "darwin" {
-		files = append(files, h.inHomes("Library/Application Support/Code/User/mcp.json",
-			"Library/Application Support/Claude/claude_desktop_config.json")...)
-	} else {
-		files = append(files, h.inHomes(".config/Code/User/mcp.json", ".config/Claude/claude_desktop_config.json")...)
-	}
-	type launch struct {
-		name    string
-		command []string
-		url     string
-	}
-	seen := map[string]bool{}
-	read := func(path string, servers []launch) {
-		label := h.label(path)
-		for _, s := range servers {
-			key := label + "\x00" + s.name
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			if s.url != "" {
-				out = append(out, mcpServer{name: s.name, config: label, url: s.url})
-				continue
-			}
-			if len(s.command) == 0 {
-				continue
-			}
-			m := mcpServer{name: s.name, config: label, command: s.command}
-			eco, spec := runnerPackage(s.command)
-			switch {
-			case eco == "":
-				m.reason = "a program on this machine, not a package"
-			default:
-				m.spec = spec
-				name, version := splitSpec(eco, spec)
-				if version == "" && eco == "npm" {
-					version = h.npxCached(filepath.Dir(path), name)
-				}
-				if version == "" {
-					m.spec, m.reason = name, "no version pinned: whichever is newest when it starts"
-				} else if eco == "npm" {
-					m.purl = npmPurl(name, version)
-				} else {
-					m.purl = "pkg:pypi/" + pypiNameSep.ReplaceAllString(strings.ToLower(name), "-") + "@" + version
-				}
-			}
-			out = append(out, m)
-		}
-	}
-	for _, path := range h.glob(files...) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var cfg map[string]json.RawMessage
-		if json.Unmarshal(stripJSONComments(raw), &cfg) != nil {
-			continue
-		}
-		var servers []launch
-		groups := []json.RawMessage{cfg["mcpServers"], cfg["mcp_servers"], cfg["servers"], cfg["mcp"]}
-		var projects map[string]struct {
-			McpServers json.RawMessage `json:"mcpServers"`
-		}
-		if json.Unmarshal(cfg["projects"], &projects) == nil {
-			keys := make([]string, 0, len(projects))
-			for k := range projects {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				groups = append(groups, projects[k].McpServers)
-			}
-		}
-		for _, g := range groups {
-			var group map[string]struct {
-				Command   json.RawMessage `json:"command"`
-				Args      []string        `json:"args"`
-				URL       string          `json:"url"`
-				HTTPURL   string          `json:"httpUrl"`
-				ServerURL string          `json:"serverUrl"`
-			}
-			if len(g) == 0 || json.Unmarshal(g, &group) != nil {
-				continue
-			}
-			names := make([]string, 0, len(group))
-			for n := range group {
-				names = append(names, n)
-			}
-			sort.Strings(names)
-			for _, n := range names {
-				s := group[n]
-				l := launch{name: n, url: cmp.Or(s.URL, s.HTTPURL, s.ServerURL)}
-				var one string
-				var many []string
-				if json.Unmarshal(s.Command, &one) == nil && one != "" {
-					l.command = append([]string{one}, s.Args...)
-				} else if json.Unmarshal(s.Command, &many) == nil {
-					l.command = many
-				}
-				servers = append(servers, l)
-			}
-		}
-		read(path, servers)
-	}
-	for _, path := range h.glob(h.inHomes(".codex/config.toml")...) {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var servers []launch
-		for _, s := range tomlMCPServers(string(raw)) {
-			servers = append(servers, launch{name: s.name, command: s.command, url: s.url})
-		}
-		read(path, servers)
-	}
-	return out
 }
 
 type tomlServer struct {
