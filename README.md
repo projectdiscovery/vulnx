@@ -273,7 +273,9 @@ binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formu
 formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
 listed as not assessed, with a count per source. Only names and versions are sent.
 
-A formula is judged by product when its own source repository is the one the product lists. An application built
+A formula is judged by product when its own source repository is the one the product lists: vulnx reads the
+repository from the formula's own file and asks SecurityContext which products list it, keeping only a product that
+lists that repository alone. An application built
 on the Electron framework is judged by the framework's version and the npm packages in its bundle. A product the
 index turns out not to know is listed as not checked instead of clean, and a formula with nothing that runs
 (certificates, headers) is left out as data.

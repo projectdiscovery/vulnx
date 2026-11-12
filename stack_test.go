@@ -324,3 +324,36 @@ func TestShareFile(t *testing.T) {
 		}
 	}
 }
+
+// TestProductsByRepository reads the products per repository, and reports an API without the lookup as unsupported.
+func TestProductsByRepository(t *testing.T) {
+	old := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if old {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error": "unknown query parameter(s) ['repository']", "field": "query"}`))
+			return
+		}
+		if r.URL.Query().Get("repository") != "unicode-org/icu,google/brotli" {
+			t.Errorf("query %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"items": [
+			{"product": "icu-project:international_components_for_unicode", "repositories": ["unicode-org/icu"], "repositories_total": 1},
+			{"product": "unicode:international_components_for_unicode", "repositories": ["unicode-org/icu"], "repositories_total": 1},
+			{"product": "other:suite", "repositories": ["google/brotli"], "repositories_total": 2},
+			{"product": "google:brotli", "repositories": ["google/brotli"], "repositories_total": 1}], "cursor": null}`))
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	products, supported, err := c.ProductsByRepository(context.Background(), []string{"unicode-org/icu", "google/brotli"})
+	if err != nil || !supported || len(products["unicode-org/icu"]) != 2 || strings.Join(products["google/brotli"], ",") != "google:brotli" { // not the product that lists two
+		t.Errorf("%v %v %v", products, supported, err)
+	}
+	old = true
+	if _, supported, err := c.ProductsByRepository(context.Background(), []string{"a/b"}); err != nil || supported {
+		t.Errorf("an API without the lookup: supported %v err %v", supported, err)
+	}
+}

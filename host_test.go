@@ -628,3 +628,45 @@ func TestHasExecutable(t *testing.T) {
 		t.Error("a keg of data has nothing to run; a library does")
 	}
 }
+
+// TestHostFormulaByRepository reads a formula's source repository from its own formula file (top-level lines
+// only) and checks it as the products that list that repository; without one it is not assessed.
+func TestHostFormulaByRepository(t *testing.T) {
+	root := t.TempDir()
+	cellar := "opt/homebrew/Cellar/"
+	writeFile(t, root, cellar+"unitext@78/78.3_1/lib/libunitext.dylib", "")
+	writeFile(t, root, cellar+"unitext@78/78.3_1/.brew/unitext@78.rb", `class Icu4cAT78 < Formula
+  desc "C/C++ and Java libraries for Unicode"
+  homepage "https://icu.unicode.org/home"
+  url "https://github.com/Unicode-Org/ICU/releases/download/release-78.3/icu4c-78.3-sources.tgz"
+
+  test do
+    resource "data" do
+      url "https://github.com/other/project/raw/main/file.bin"
+    end
+  end
+end
+`)
+	writeFile(t, root, cellar+"orphan/1.0/lib/liborphan.dylib", "")
+	writeFile(t, root, cellar+"orphan/1.0/.brew/orphan.rb", "class Orphan < Formula\n  head \"https://github.com/nobody/orphan.git\", branch: \"main\"\nend\n")
+	writeFile(t, root, cellar+"libomp/17.0.2/lib/libomp.dylib", "") // a slice of its repository: never joined
+	writeFile(t, root, cellar+"libomp/17.0.2/.brew/libomp.rb", "class Libomp < Formula\n  url \"https://github.com/llvm/llvm-project/releases/x.tar.xz\"\nend\n")
+	h := newHostReader(root, "darwin")
+	h.homebrew()
+	inv := h.inv
+	if got := strings.Join(inv.PendingRepositories(), ","); got != "nobody/orphan,unicode-org/icu" {
+		t.Fatalf("pending repositories: %s", got)
+	}
+	inv.ResolvePending(map[string][]string{"unicode-org/icu": {"icu-project:international_components_for_unicode", "unicode:international_components_for_unicode"}})
+	hasAll(t, inv.Entries, "cpe:2.3:a:icu-project:international_components_for_unicode:78.3:*:*:*:*:*:*:*",
+		"cpe:2.3:a:unicode:international_components_for_unicode:78.3:*:*:*:*:*:*:*")
+	if fmt.Sprint(inv.NotAssessed) != "[{libomp 17.0.2 homebrew } {orphan 1.0 homebrew }]" || len(inv.Pending) != 0 {
+		t.Errorf("not assessed: %v", inv.NotAssessed)
+	}
+	if got := inv.FoundIn[inv.Entries[0]]; len(got) != 1 || got[0] != "unitext@78 (formula)" {
+		t.Errorf("found in %v", got)
+	}
+	if src := inv.Sources[0]; src.Sent != 2 || src.NotAssessed != 2 {
+		t.Errorf("source %+v", src)
+	}
+}

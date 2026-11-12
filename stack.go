@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -508,6 +509,59 @@ func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]
 		return "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("the upload was accepted but no stack id came back"))
 	}
 	return id, nil
+}
+
+// ProductsByRepository asks which NVD products list each source repository (owner/name): repository -> its
+// vendor:product names. Only a product that lists that repository alone counts: one that lists several may be
+// another program. supported is false when the API has no such lookup; a repository without such a product is
+// absent from the map.
+func (c *Client) ProductsByRepository(ctx context.Context, repositories []string) (products map[string][]string, supported bool, err error) {
+	products = map[string][]string{}
+	const batch = 100
+	for start := 0; start < len(repositories); start += batch {
+		end := min(start+batch, len(repositories))
+		cursor := ""
+		for page := 0; page < 50; page++ {
+			q := url.Values{"repository": {strings.Join(repositories[start:end], ",")}, "limit": {"100"},
+				"fields": {"product"}}
+			if cursor != "" {
+				q.Set("cursor", cursor)
+			}
+			req, err := c.newRequest(ctx, http.MethodGet, "/v1/products", q, nil)
+			if err != nil {
+				return nil, true, errkit.Append(ErrRequestBuildFailure, err)
+			}
+			var resp struct {
+				Items []struct {
+					Product      string   `json:"product"`
+					Repositories []string `json:"repositories"`
+					Total        int      `json:"repositories_total"`
+				} `json:"items"`
+				Cursor string `json:"cursor"`
+			}
+			if err := c.do(req, &resp); err != nil {
+				if errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "repository") {
+					return nil, false, nil
+				}
+				return nil, true, errkit.Append(ErrRequestFailed, err)
+			}
+			for _, it := range resp.Items {
+				if it.Total != 1 {
+					continue // it lists other repositories too: it may be another program than this repository's
+				}
+				for _, r := range it.Repositories {
+					if !slices.Contains(products[r], it.Product) {
+						products[r] = append(products[r], it.Product)
+					}
+				}
+			}
+			if resp.Cursor == "" || len(resp.Items) == 0 {
+				break
+			}
+			cursor = resp.Cursor
+		}
+	}
+	return products, true, nil
 }
 
 // StackPage is where a stored stack is read by a person: its page on the SecurityContext site (an unlisted link:

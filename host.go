@@ -60,6 +60,7 @@ type HostInventory struct {
 	Fixes       map[string]HostFix      `json:"fixes"`               // FoundIn label -> how to update what is there
 	EntrySource map[string]string       `json:"-"`                   // entry -> the source (HostSource.Name) that counted it
 	DataOnly    []HostComponent         `json:"data_only"`           // installed, but nothing in them runs: nothing to check
+	Pending     []HostPending           `json:"-"`                   // read with a source repository but no product yet: ResolvePending decides
 	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
 }
 
@@ -70,6 +71,14 @@ type HostFix struct {
 	Command string `json:"command,omitempty"` // "brew upgrade", "/opt/homebrew/bin/python3.12 -m pip install -U", ...
 	Target  string `json:"target,omitempty"`  // what the command names for this place (a formula, a Go package); empty: the components
 	Note    string `json:"note,omitempty"`    // what to do when there is no command ("update Wireshark")
+}
+
+// HostPending is a component whose source repository is known and whose product is not: SecurityContext is asked
+// which products list that repository (Client.ProductsByRepository), an exact join where a name would be a guess.
+type HostPending struct {
+	Name, Version, Source string
+	Repository            string // owner/name, lower-cased
+	FoundIn               string // its FoundIn label
 }
 
 // HostBinary is an executable vulnx read: its real path and the name it was found under (a PATH link's).
@@ -92,6 +101,8 @@ type HostSource struct {
 }
 
 // HostEntries reads what is installed on the machine (or on a Linux filesystem mounted at root).
+// Components with a known source repository and no product yet are returned in Pending: call ResolvePending (with
+// Client.ProductsByRepository's answer, or nil) before checking, or they are in neither Entries nor NotAssessed.
 func HostEntries(root string) (HostInventory, error) {
 	if root == "" {
 		root = "/"
@@ -1038,6 +1049,11 @@ func (h *hostReader) homebrew() {
 					byContents++
 					continue
 				}
+				if repo := formulaRepository(keg, n.Name()); repo != "" && !brewSlices[base] {
+					h.inv.Pending = append(h.inv.Pending, HostPending{Name: n.Name(), Version: v.Name(), Source: "homebrew",
+						Repository: repo, FoundIn: in})
+					continue
+				}
 				if !hasExecutable(keg) {
 					h.inv.DataOnly = append(h.inv.DataOnly, HostComponent{Name: n.Name(), Version: v.Name(), Source: "homebrew"})
 					continue
@@ -1066,6 +1082,76 @@ func (h *hostReader) kegContents(keg string) (out []found, read bool) {
 	out = append(out, b.goEntries...)
 	out = append(out, b.rustEntries...)
 	return out, len(out) > 0 || b.judged > 0
+}
+
+// brewSlices are formulae that build one part of their source repository (a runtime library out of a compiler's
+// repository, one tool out of a collection): the repository's product would judge code they do not install.
+var brewSlices = map[string]bool{"libomp": true, "llvm": true, "docker-completion": true, "gnu-getopt": true}
+
+var formulaSource = regexp.MustCompile(`(?m)^  (?:url|homepage|head)\s+"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[/"#?]|$)`)
+
+// formulaRepository is the source repository a keg's own formula file names (owner/name, lower-cased), from its
+// top-level url, homepage or head line only: a resource or test block names other projects' files.
+func formulaRepository(keg, formula string) string {
+	raw, err := os.ReadFile(filepath.Join(keg, ".brew", formula+".rb"))
+	if err != nil {
+		return ""
+	}
+	m := formulaSource.FindSubmatch(raw)
+	if m == nil {
+		return ""
+	}
+	return strings.ToLower(string(m[1]) + "/" + string(m[2]))
+}
+
+// PendingRepositories are the source repositories ResolvePending needs products for, each once.
+func (inv HostInventory) PendingRepositories() []string {
+	var out []string
+	for _, p := range inv.Pending {
+		if !slices.Contains(out, p.Repository) {
+			out = append(out, p.Repository)
+		}
+	}
+	return out
+}
+
+// ResolvePending settles every pending component: with products for its repository it is checked as each of
+// them; without (no product lists the repository, or the API could not be asked) it is not assessed.
+func (inv *HostInventory) ResolvePending(products map[string][]string) {
+	have := map[string]bool{}
+	for _, e := range inv.Entries {
+		have[e] = true
+	}
+	for _, p := range inv.Pending {
+		var src *HostSource
+		for i := range inv.Sources {
+			if inv.Sources[i].Name == p.Source {
+				src = &inv.Sources[i]
+			}
+		}
+		if len(products[p.Repository]) == 0 {
+			inv.NotAssessed = append(inv.NotAssessed, HostComponent{Name: p.Name, Version: p.Version, Source: p.Source})
+			if src != nil {
+				src.NotAssessed++
+			}
+			continue
+		}
+		for _, vp := range products[p.Repository] {
+			e := productCPE(vp, brewRevision.ReplaceAllString(p.Version, ""))
+			if !have[e] {
+				have[e] = true
+				inv.Entries = append(inv.Entries, e)
+				inv.EntrySource[e] = p.Source
+				if src != nil {
+					src.Sent++
+				}
+			}
+			if !slices.Contains(inv.FoundIn[e], p.FoundIn) {
+				inv.FoundIn[e] = append(inv.FoundIn[e], p.FoundIn)
+			}
+		}
+	}
+	inv.Pending = nil
 }
 
 // hasExecutable is whether anything under dir can run: a regular file with an execute bit, or a library.

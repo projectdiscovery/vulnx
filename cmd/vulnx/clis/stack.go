@@ -135,6 +135,15 @@ cat versions.txt | vulnx scan`,
 					hostProgress("")
 					gologger.Fatal().Msgf("Failed to read the host: %s", err)
 				}
+				if repos := inv.PendingRepositories(); len(repos) > 0 {
+					hostProgress("Looking up products by source repository ...")
+					products, _, err := vulnxClient.ProductsByRepository(ctx, repos)
+					if err != nil {
+						hostProgress("")
+						fatalAPI("scan", err)
+					}
+					inv.ResolvePending(products) // an API without the lookup resolves none: they stay not checked
+				}
 				hostProgress(fmt.Sprintf("Checking %s components ...", thousands(len(inv.Entries))))
 				res, err := vulnxClient.CheckManyWith(ctx, inv.Entries, vulnx.CheckOptions{Functions: true, Compact: true, Progress: func(done, total int) {
 					if done < total {
