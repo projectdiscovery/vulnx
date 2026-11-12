@@ -93,6 +93,18 @@ type StackItem struct {
 	URL               string            `json:"url,omitempty"`
 	IntroducedBy      any               `json:"introduced_by,omitempty"`
 	Reachability      *ItemReachability `json:"reachability,omitempty"` // set by vulnx on a host scan's Go items
+	// Removed is set for an editor extension a marketplace took down: where, and as what.
+	Removed []StackRemoval `json:"removed,omitempty"`
+	Note    string         `json:"note,omitempty"`
+}
+
+// StackRemoval is one marketplace's removal of an editor extension.
+type StackRemoval struct {
+	Marketplace string `json:"marketplace,omitempty"` // vs-marketplace | open-vsx
+	Type        string `json:"type,omitempty"`        // the list's own word: Malware, Impersonation, ...
+	Tier        string `json:"tier,omitempty"`        // malicious | suspected | impersonation | untrustworthy
+	RemovedAt   string `json:"removed_at,omitempty"`
+	ListURL     string `json:"list_url,omitempty"`
 }
 
 // StackSummary counts a stack's items.
@@ -863,6 +875,20 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 }
 
 // functionsRejected is an API's 400 for a body field it does not know: one deployed before function lists.
+// CheckExtensions checks editor extensions (pkg:vscode-extension/publisher/name@version) against the marketplaces'
+// removals. checked is false, with no error, when the API does not know the type: it refuses the list whole, which
+// is why extensions are never sent with the other entries.
+func (c *Client) CheckExtensions(ctx context.Context, entries []string) (res StackResult, checked bool, err error) {
+	if len(entries) == 0 {
+		return res, true, nil
+	}
+	res, err = c.CheckManyWith(ctx, entries, CheckOptions{})
+	if err != nil && errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "unknown purl type") {
+		return StackResult{}, false, nil
+	}
+	return res, err == nil, err
+}
+
 func functionsRejected(err error) bool {
 	return errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "functions")
 }

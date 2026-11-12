@@ -66,6 +66,9 @@ type HostInventory struct {
 	// plugins, hooks and MCP servers. Risks are the ones whose setup lets someone else change what runs here.
 	AgentSurface []HostAgentItem `json:"agent_surface"`
 	Risks        []HostRisk      `json:"risks"`
+	// Extensions are the installed editor extensions as entries (pkg:vscode-extension/publisher/name@version), kept
+	// out of Entries until AddExtensions: an API that does not know the type would refuse the whole list.
+	Extensions []string `json:"-"`
 }
 
 // HostFix is how to update what was found in one place (a FoundIn label): a command the components or Target are

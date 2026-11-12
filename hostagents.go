@@ -23,7 +23,7 @@ type HostAgentItem struct {
 // HostRisk is a fact about how one of them is set up that lets someone else decide what runs on this machine. It
 // is read from the files: a risk, never a verdict that the thing is hostile.
 type HostRisk struct {
-	Risk   string `json:"risk"` // unpinned, unverified_source, plaintext, sideloaded, lookalike, pipe_to_shell, hidden_text, approvals_off
+	Risk   string `json:"risk"` // removed_malware, removed, unpinned, unverified_source, plaintext, sideloaded, lookalike, pipe_to_shell, hidden_text, approvals_off
 	Kind   string `json:"kind"` // HostAgentItem.Kind, or agent
 	Name   string `json:"name"`
 	Where  string `json:"where"`
@@ -32,6 +32,8 @@ type HostRisk struct {
 
 // RiskText says each risk in a few words, for a count line.
 var RiskText = map[string]string{
+	"removed_malware":   "removed from a marketplace as malware",
+	"removed":           "removed from a marketplace as an impersonation or untrustworthy",
 	"unpinned":          "run whatever version is newest at each start",
 	"unverified_source": "fetched from a git URL or a non-default registry",
 	"plaintext":         "reached over unencrypted http",
@@ -66,6 +68,13 @@ func (h *hostReader) agentSurface(servers []mcpServer) {
 		for _, e := range editorExtensions(dir) {
 			h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "extension", Name: e.id, Version: e.version, Where: label})
 			publisher, name, _ := strings.Cut(e.id, ".")
+			entry := "pkg:vscode-extension/" + url.PathEscape(publisher) + "/" + url.PathEscape(name) + "@" + url.PathEscape(e.version)
+			if !slices.Contains(h.inv.Extensions, entry) {
+				h.inv.Extensions = append(h.inv.Extensions, entry)
+			}
+			if !slices.Contains(h.inv.FoundIn[entry], label) {
+				h.inv.FoundIn[entry] = append(h.inv.FoundIn[entry], label)
+			}
 			if owner, ok := knownExtensions[name]; ok && publisher != owner && publisher != "anysphere" {
 				h.risk(HostRisk{"lookalike", "extension", e.id, label, "the well-known " + name + " extension is published by " + owner})
 			}
@@ -324,4 +333,57 @@ func (h *hostReader) approvals() {
 			h.risk(HostRisk{"approvals_off", "agent", "Codex", h.label(path), "approval_policy is never with sandbox_mode danger-full-access: commands run unasked and unconfined"})
 		}
 	}
+}
+
+// extensionSource is the HostSource name of the editor extensions checked against the marketplaces' removals.
+const extensionSource = "editor extensions"
+
+// AddExtensions takes the answer for inv.Extensions into the scan: the entries join Entries under their own
+// source, the items join res, and an extension a marketplace removed becomes a risk naming where and why. With
+// checked false (an API that does not judge extensions) they are counted as read and not checked instead.
+func (inv *HostInventory) AddExtensions(res *StackResult, ext StackResult, checked bool) {
+	if len(inv.Extensions) == 0 {
+		return
+	}
+	src := HostSource{Name: extensionSource, Detail: count(len(inv.Extensions), "extension", "extensions")}
+	if !checked {
+		for _, e := range inv.Extensions {
+			name, version := extensionName(e)
+			inv.NotAssessed = append(inv.NotAssessed, HostComponent{Name: name, Version: version, Source: extensionSource,
+				Reason: "this SecurityContext API does not check editor extensions yet"})
+			delete(inv.FoundIn, e)
+		}
+		src.NotAssessed = len(inv.Extensions)
+		inv.Sources = append(inv.Sources, src)
+		return
+	}
+	for _, e := range inv.Extensions {
+		inv.Entries = append(inv.Entries, e)
+		inv.EntrySource[e] = extensionSource
+	}
+	src.Sent = len(inv.Extensions)
+	inv.Sources = append(inv.Sources, src)
+	for _, it := range ext.Items {
+		if len(it.Removed) == 0 {
+			continue
+		}
+		name, _ := extensionName(it.Input)
+		where := strings.Join(inv.FoundIn[it.Input], ", ")
+		risk := "removed"
+		if it.Malicious {
+			risk = "removed_malware"
+		}
+		inv.Risks = append(inv.Risks, HostRisk{risk, "extension", name, where, it.Note})
+	}
+	mergeStack(res, ext)
+}
+
+// extensionName is an extension entry's publisher.name and version.
+func extensionName(entry string) (name, version string) {
+	body := strings.TrimPrefix(entry, "pkg:vscode-extension/")
+	body, version, _ = strings.Cut(body, "@")
+	if u, err := url.PathUnescape(strings.Replace(body, "/", ".", 1)); err == nil {
+		body = u
+	}
+	return strings.ToLower(body), version
 }

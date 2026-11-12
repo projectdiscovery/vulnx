@@ -287,6 +287,44 @@ func TestCheckCompactFallback(t *testing.T) {
 	}
 }
 
+// TestCheckExtensions reads the removals an API that judges editor extensions answers, and says "not checked",
+// with no error, for one that refuses the type.
+func TestCheckExtensions(t *testing.T) {
+	knows := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !knows {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error": "packages: unknown purl type 'vscode-extension'", "field": "packages"}`)); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		if _, err := w.Write([]byte(`{"total": 1, "summary": {"packages": 1, "affected": 1, "malicious": 1}, "items": [
+			{"input": "pkg:vscode-extension/evil/stealer@1.0.0", "status": "affected", "malicious": true, "note": "removed",
+			 "removed": [{"marketplace": "vs-marketplace", "type": "Malware", "tier": "malicious", "removed_at": "2026-10-02"}]}]}`)); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := []string{"pkg:vscode-extension/evil/stealer@1.0.0"}
+	res, checked, err := c.CheckExtensions(context.Background(), entries)
+	if err != nil || !checked || len(res.Items) != 1 || !res.Items[0].Malicious ||
+		res.Items[0].Removed[0] != (StackRemoval{Marketplace: "vs-marketplace", Type: "Malware", Tier: "malicious", RemovedAt: "2026-10-02"}) {
+		t.Fatalf("err %v checked %v res %+v", err, checked, res)
+	}
+	knows = false
+	if res, checked, err = c.CheckExtensions(context.Background(), entries); err != nil || checked || len(res.Items) != 0 {
+		t.Fatalf("an API without the type: err %v checked %v", err, checked)
+	}
+	if _, checked, err = c.CheckExtensions(context.Background(), nil); err != nil || !checked {
+		t.Fatalf("nothing to check: err %v checked %v", err, checked)
+	}
+}
+
 // TestShareFile uploads with a one-day expiry where the API can expire stacks, and does not send the file where
 // it cannot.
 func TestShareFile(t *testing.T) {

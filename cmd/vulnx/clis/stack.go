@@ -158,6 +158,15 @@ cat versions.txt | vulnx scan`,
 				}
 				inv.DropUnknownProducts(&res)
 				inv.DropOtherSchemes(&res)
+				if len(inv.Extensions) > 0 {
+					hostProgress("Checking editor extensions against marketplace removals ...")
+					ext, checked, err := vulnxClient.CheckExtensions(ctx, inv.Extensions)
+					if err != nil {
+						hostProgress("")
+						fatalAPI("scan", err)
+					}
+					inv.AddExtensions(&res, ext, checked)
+				}
 				hostProgress("Checking which Go programs reach affected code ...")
 				inv.MarkReachability(&res)
 				hostProgress("")

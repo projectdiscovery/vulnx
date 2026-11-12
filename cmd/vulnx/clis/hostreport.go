@@ -1230,7 +1230,7 @@ var agentKinds = []struct{ kind, one, many string }{
 	{"hook", "hook", "hooks"}, {"mcp_server", "MCP server", "MCP servers"},
 }
 
-var agentRisks = []string{"lookalike", "sideloaded", "pipe_to_shell", "hidden_text", "unverified_source", "unpinned", "plaintext", "approvals_off"}
+var agentRisks = []string{"removed_malware", "removed", "lookalike", "sideloaded", "pipe_to_shell", "hidden_text", "unverified_source", "unpinned", "plaintext", "approvals_off"}
 
 var riskSubject = map[string][2]string{
 	"extension": {"extension", "extensions"}, "skill": {"skill", "skills"}, "hook": {"hook", "hooks"},

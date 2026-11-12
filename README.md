@@ -284,7 +284,10 @@ plugins, hooks and MCP servers. It then lists the ones whose setup lets someone 
 machine: an MCP server with no version pinned, fetched from a git URL or another registry, or reached over plain
 http; an extension installed from a file or named like a well-known one from another publisher; a skill or hook
 that downloads code and runs it, or whose instructions carry invisible characters; an agent set to run commands
-without asking. These are read from the files and are risks, not verdicts: they are listed in the JSON report
+without asking. Every installed editor extension is also checked against the marketplaces' own removal lists (the Visual Studio
+Marketplace's and Open VSX's): one removed as malware, as an impersonation or as untrustworthy is named there.
+An extension on no list is counted as checked, which says only that no marketplace removed it.
+These are read from the files and are risks, not verdicts: they are listed in the JSON report
 under `host.agent_surface` and `host.risks`, apart from the vulnerabilities.
 
 A formula is judged by product when its own source repository is the one the product lists: vulnx reads the

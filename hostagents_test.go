@@ -74,3 +74,42 @@ func TestAgentSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestAddExtensions(t *testing.T) {
+	entries := []string{"pkg:vscode-extension/evil/stealer@1.0.0", "pkg:vscode-extension/copy/cat@2.0.0", "pkg:vscode-extension/ms-python/python@3.0.0"}
+	fresh := func() HostInventory {
+		return HostInventory{Extensions: entries, EntrySource: map[string]string{}, Entries: []string{"pkg:npm/a@1.0.0"},
+			FoundIn: map[string][]string{entries[0]: {"~/.vscode/extensions"}, entries[1]: {"~/.cursor/extensions"}}}
+	}
+
+	inv := fresh()
+	res := StackResult{Total: 1, Summary: StackSummary{Packages: 1, Clean: 1}, Items: []StackItem{{Input: "pkg:npm/a@1.0.0", Status: "clean"}}}
+	ext := StackResult{Total: 3, Summary: StackSummary{Packages: 3, Affected: 2, Clean: 1, Malicious: 1}, Items: []StackItem{
+		{Input: entries[0], Status: "affected", Malicious: true, Note: "removed from Open VSX (malicious)", Removed: []StackRemoval{{Marketplace: "open-vsx", Tier: "malicious"}}},
+		{Input: entries[1], Status: "affected", Note: "removed (Impersonation)", Removed: []StackRemoval{{Marketplace: "vs-marketplace", Tier: "impersonation"}}},
+		{Input: entries[2], Status: "clean", Seen: "none"}}}
+	inv.AddExtensions(&res, ext, true)
+	if len(inv.Entries) != 4 || inv.EntrySource[entries[0]] != extensionSource || len(res.Items) != 4 ||
+		res.Summary.Packages != 4 || res.Summary.Malicious != 1 || res.Summary.Affected != 2 || res.Total != 4 {
+		t.Fatalf("merged: entries %d items %d summary %+v", len(inv.Entries), len(res.Items), res.Summary)
+	}
+	want := []HostRisk{
+		{"removed_malware", "extension", "evil.stealer", "~/.vscode/extensions", "removed from Open VSX (malicious)"},
+		{"removed", "extension", "copy.cat", "~/.cursor/extensions", "removed (Impersonation)"}}
+	if !reflect.DeepEqual(inv.Risks, want) {
+		t.Fatalf("risks %+v", inv.Risks)
+	}
+	if src := inv.Sources[0]; src.Name != extensionSource || src.Sent != 3 || src.NotAssessed != 0 {
+		t.Fatalf("source %+v", src)
+	}
+
+	inv = fresh()
+	res = StackResult{Total: 1}
+	inv.AddExtensions(&res, StackResult{}, false)
+	if len(inv.Entries) != 1 || len(res.Items) != 0 || len(inv.NotAssessed) != 3 || inv.Sources[0].NotAssessed != 3 || len(inv.Risks) != 0 {
+		t.Fatalf("an API that does not check extensions: %+v %+v", inv.Sources, inv.NotAssessed)
+	}
+	if c := inv.NotAssessed[0]; c.Name != "evil.stealer" || c.Version != "1.0.0" || c.Source != extensionSource {
+		t.Fatalf("not assessed %+v", c)
+	}
+}
