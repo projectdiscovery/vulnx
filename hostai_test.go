@@ -1,6 +1,8 @@
 package vulnx
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,6 +26,11 @@ func TestHostAITools(t *testing.T) {
 	writePlist(t, root, "Notes", "com.example.notes", "1.0")
 	writeFile(t, root, "Users/a/.local/share/claude/versions/2.1.9/claude", "x")
 	writeFile(t, root, "Users/a/.local/share/claude/versions/2.1.10/claude", "x")
+	writeFile(t, root, "Users/a/.lmstudio/bin/lms", "x")
+	if err := os.Chmod(filepath.Join(root, "Users/a/.lmstudio/bin/lms"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "Users/b/.lmstudio/bin/lms", "not executable")
 	ext := "Users/a/.vscode/extensions/"
 	writeFile(t, root, ext+"saoudrizwan.claude-dev-3.0.1/package.json", `{"publisher":"saoudrizwan","name":"claude-dev","version":"3.0.1","displayName":"Cline"}`)
 	writeFile(t, root, ext+"github.copilot-1.250.0/package.json", `{"publisher":"GitHub","name":"copilot","version":"1.250.0","displayName":"GitHub Copilot"}`)
@@ -77,7 +84,7 @@ func TestHostAITools(t *testing.T) {
 		notChecked[c.Source+": "+c.Name] = c.Version
 	}
 	wantNot := map[string]string{
-		"ai tools: LM Studio": "0.3.1", "ai tools: github.copilot": "1.250.0", "ai tools: acme.helper": "1.0.0",
+		"ai tools: LM Studio": "0.3.1", "ai tools: lms (LM Studio CLI)": "", "ai tools: github.copilot": "1.250.0", "ai tools: acme.helper": "1.0.0",
 		"ai tools: MCP server loose": "mcp-remote", "ai tools: MCP server local": "",
 		"applications: Notes": "1.0",
 	}
@@ -85,8 +92,8 @@ func TestHostAITools(t *testing.T) {
 		t.Fatalf("not checked:\n got %q\nwant %q", notChecked, wantNot)
 	}
 	src := h.inv.Sources[len(h.inv.Sources)-1]
-	if src.Name != aiSource || src.Sent != 7 || src.NotAssessed != 5 ||
-		src.Detail != "2 applications, 1 agent CLI, 3 editor extensions, 9 configured MCP servers" {
+	if src.Name != aiSource || src.Sent != 7 || src.NotAssessed != 6 ||
+		src.Detail != "2 applications, 2 agent CLIs, 3 editor extensions, 9 configured MCP servers" {
 		t.Fatalf("source %+v", src)
 	}
 }

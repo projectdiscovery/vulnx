@@ -50,6 +50,11 @@ var aiExtensions = map[string]string{
 	"tabnine.tabnine-vscode":            "",
 }
 
+// standaloneCLIs are the agent and model command-line tools installed as a lone binary under a home.
+var standaloneCLIs = []struct{ path, name string }{
+	{".lmstudio/bin/lms", "lms (LM Studio CLI)"},
+}
+
 // aiTools reads the AI software a machine runs that no package manager lists: assistant and editor applications,
 // agent command-line tools that update themselves, AI editor extensions, and the packages MCP servers are started
 // from. Only names, versions and package specifiers are read from a configuration; environment values never are.
@@ -97,6 +102,16 @@ func (h *hostReader) aiTools() {
 		if v := newestEntry(dir); v != "" {
 			clis++
 			notAssessed = append(notAssessed, HostComponent{Name: "cursor-agent", Version: v})
+		}
+	}
+	// a command-line tool that is neither a Go nor a Rust binary and comes from no package manager: no reader
+	// sees it, so it is named here rather than left out
+	for _, cli := range standaloneCLIs {
+		for _, path := range h.glob(h.inHomes(cli.path)...) {
+			if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+				clis++
+				notAssessed = append(notAssessed, HostComponent{Name: cli.name, Reason: "a standalone binary that names no version (" + h.label(path) + ")"})
+			}
 		}
 	}
 	add(clis, "agent CLI", "agent CLIs")
