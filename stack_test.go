@@ -290,8 +290,15 @@ func TestCheckCompactFallback(t *testing.T) {
 // TestCheckExtensions reads the removals an API that judges editor extensions answers, and says "not checked",
 // with no error, for one that refuses the type.
 func TestCheckExtensions(t *testing.T) {
-	knows := true
+	knows, unavailable := true, false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unavailable {
+			if _, err := w.Write([]byte(`{"total": 1, "items": [{"input": "pkg:vscode-extension/evil/stealer@1.0.0",
+				"status": "undetermined", "reason": "extension_removals_unavailable"}]}`)); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		if !knows {
 			w.WriteHeader(http.StatusBadRequest)
 			if _, err := w.Write([]byte(`{"error": "packages: unknown purl type 'vscode-extension'", "field": "packages"}`)); err != nil {
@@ -319,6 +326,10 @@ func TestCheckExtensions(t *testing.T) {
 	knows = false
 	if res, checked, err = c.CheckExtensions(context.Background(), entries); err != nil || checked || len(res.Items) != 0 {
 		t.Fatalf("an API without the type: err %v checked %v", err, checked)
+	}
+	knows, unavailable = true, true
+	if res, checked, err = c.CheckExtensions(context.Background(), entries); err != nil || checked || len(res.Items) != 0 {
+		t.Fatalf("an API with no removal lists: err %v checked %v", err, checked)
 	}
 	if _, checked, err = c.CheckExtensions(context.Background(), nil); err != nil || !checked {
 		t.Fatalf("nothing to check: err %v checked %v", err, checked)

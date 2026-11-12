@@ -876,8 +876,8 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 
 // functionsRejected is an API's 400 for a body field it does not know: one deployed before function lists.
 // CheckExtensions checks editor extensions (pkg:vscode-extension/publisher/name@version) against the marketplaces'
-// removals. checked is false, with no error, when the API does not know the type: it refuses the list whole, which
-// is why extensions are never sent with the other entries.
+// removals. checked is false, with no error, when the API does not know the type (it refuses the list whole, which
+// is why extensions are never sent with the other entries) or holds no removal lists to check against.
 func (c *Client) CheckExtensions(ctx context.Context, entries []string) (res StackResult, checked bool, err error) {
 	if len(entries) == 0 {
 		return res, true, nil
@@ -886,7 +886,15 @@ func (c *Client) CheckExtensions(ctx context.Context, entries []string) (res Sta
 	if err != nil && errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "unknown purl type") {
 		return StackResult{}, false, nil
 	}
-	return res, err == nil, err
+	if err != nil {
+		return res, false, err
+	}
+	for _, it := range res.Items {
+		if it.Reason == "extension_removals_unavailable" {
+			return StackResult{}, false, nil
+		}
+	}
+	return res, true, nil
 }
 
 func functionsRejected(err error) bool {

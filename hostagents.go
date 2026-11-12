@@ -394,7 +394,7 @@ func (inv *HostInventory) AddExtensions(res *StackResult, ext StackResult, check
 		for _, e := range inv.Extensions {
 			name, version := extensionName(e)
 			inv.NotAssessed = append(inv.NotAssessed, HostComponent{Name: name, Version: version, Source: extensionSource,
-				Reason: "this SecurityContext API does not check editor extensions yet"})
+				Reason: "this SecurityContext API cannot check editor extensions (it has no marketplace removal lists)"})
 			delete(inv.FoundIn, e)
 		}
 		src.NotAssessed = len(inv.Extensions)
