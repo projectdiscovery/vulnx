@@ -2,6 +2,7 @@ package vulnx
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -112,10 +113,11 @@ func (h *hostReader) aiTools() {
 	}
 	add(exts, "editor extension", "editor extensions")
 
-	servers, remote := h.mcpServers()
+	servers := h.mcpServers()
 	listed := map[string]bool{}
 	for _, s := range servers {
 		switch {
+		case s.url != "": // reached over the network: nothing of it is installed here
 		case s.purl != "":
 			h.fix(s.config, HostFix{Kind: "system", Note: "pin a fixed version in the MCP server's command"})
 			entries = append(entries, found{s.purl, s.config})
@@ -124,7 +126,8 @@ func (h *hostReader) aiTools() {
 			notAssessed = append(notAssessed, HostComponent{Name: "MCP server " + s.name, Version: s.spec, Reason: s.reason})
 		}
 	}
-	add(len(servers)+remote, "configured MCP server", "configured MCP servers")
+	add(len(servers), "configured MCP server", "configured MCP servers")
+	h.agentSurface(servers)
 
 	h.add(aiSource, strings.Join(parts, ", "), entries, notAssessed)
 }
@@ -198,11 +201,12 @@ type mcpServer struct {
 	spec         string // the package specifier, when the command runs a package
 	purl         string // set when the package and its version are both known
 	reason       string // why there is no purl
+	command      []string
+	url          string // set for a server reached over the network
 }
 
-// mcpServers reads the MCP servers configured for the agents on the machine, each once per configuration, and
-// counts the ones reached over the network (nothing of those is installed here).
-func (h *hostReader) mcpServers() (out []mcpServer, remote int) {
+// mcpServers reads the MCP servers configured for the agents on the machine, each once per configuration.
+func (h *hostReader) mcpServers() (out []mcpServer) {
 	files := h.inHomes(".claude.json", ".claude/settings.json", ".cursor/mcp.json", ".gemini/settings.json",
 		".codeium/windsurf/mcp_config.json", ".config/opencode/opencode.json")
 	if h.goos == "darwin" {
@@ -214,7 +218,7 @@ func (h *hostReader) mcpServers() (out []mcpServer, remote int) {
 	type launch struct {
 		name    string
 		command []string
-		remote  bool
+		url     string
 	}
 	seen := map[string]bool{}
 	read := func(path string, servers []launch) {
@@ -225,13 +229,14 @@ func (h *hostReader) mcpServers() (out []mcpServer, remote int) {
 				continue
 			}
 			seen[key] = true
-			if s.remote || len(s.command) == 0 {
-				if s.remote {
-					remote++
-				}
+			if s.url != "" {
+				out = append(out, mcpServer{name: s.name, config: label, url: s.url})
 				continue
 			}
-			m := mcpServer{name: s.name, config: label}
+			if len(s.command) == 0 {
+				continue
+			}
+			m := mcpServer{name: s.name, config: label, command: s.command}
 			eco, spec := runnerPackage(s.command)
 			switch {
 			case eco == "":
@@ -295,7 +300,7 @@ func (h *hostReader) mcpServers() (out []mcpServer, remote int) {
 			sort.Strings(names)
 			for _, n := range names {
 				s := group[n]
-				l := launch{name: n, remote: s.URL != "" || s.HTTPURL != "" || s.ServerURL != ""}
+				l := launch{name: n, url: cmp.Or(s.URL, s.HTTPURL, s.ServerURL)}
 				var one string
 				var many []string
 				if json.Unmarshal(s.Command, &one) == nil && one != "" {
@@ -315,17 +320,17 @@ func (h *hostReader) mcpServers() (out []mcpServer, remote int) {
 		}
 		var servers []launch
 		for _, s := range tomlMCPServers(string(raw)) {
-			servers = append(servers, launch{name: s.name, command: s.command, remote: s.remote})
+			servers = append(servers, launch{name: s.name, command: s.command, url: s.url})
 		}
 		read(path, servers)
 	}
-	return out, remote
+	return out
 }
 
 type tomlServer struct {
 	name    string
 	command []string
-	remote  bool
+	url     string
 }
 
 var (
@@ -355,7 +360,7 @@ func tomlMCPServers(text string) []tomlServer {
 		}
 		if m := tomlString.FindStringSubmatch(line); m != nil {
 			if m[1] == "url" {
-				out[cur].remote = true
+				out[cur].url = m[2]
 			} else {
 				out[cur].command = append([]string{m[2]}, out[cur].command...)
 			}

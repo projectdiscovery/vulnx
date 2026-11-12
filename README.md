@@ -279,6 +279,14 @@ updates itself, AI editor extensions, and the packages MCP servers are started f
 is listed as not assessed. Only the package name and version are read from a configuration, never its environment.
 Python tools installed in their own environment (`uv tool`, `pipx`) are read with the other Python packages.
 
+Under the grid, `Agent setup` counts what coding agents and editors load and run for you: editor extensions, skills,
+plugins, hooks and MCP servers. It then lists the ones whose setup lets someone else decide what runs on the
+machine: an MCP server with no version pinned, fetched from a git URL or another registry, or reached over plain
+http; an extension installed from a file or named like a well-known one from another publisher; a skill or hook
+that downloads code and runs it, or whose instructions carry invisible characters; an agent set to run commands
+without asking. These are read from the files and are risks, not verdicts: they are listed in the JSON report
+under `host.agent_surface` and `host.risks`, apart from the vulnerabilities.
+
 A formula is judged by product when its own source repository is the one the product lists: vulnx reads the
 repository from the formula's own file and asks SecurityContext which products list it, keeping only a product that
 lists that repository alone. An application built

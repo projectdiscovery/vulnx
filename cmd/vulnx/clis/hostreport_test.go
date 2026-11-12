@@ -322,3 +322,22 @@ func TestRenderHostGridColors(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentSetup(t *testing.T) {
+	c := renderer.NoColorConfig()
+	if got := agentSetup(vulnx.HostInventory{}, c); got != "" {
+		t.Fatalf("nothing read: %q", got)
+	}
+	inv := vulnx.HostInventory{AgentSurface: []vulnx.HostAgentItem{{Kind: "extension"}, {Kind: "extension"}, {Kind: "skill"}, {Kind: "mcp_server"}}}
+	if got, want := agentSetup(inv, c), "  Agent setup: 2 editor extensions, 1 skill, 1 MCP server, no risky setup found\n"; got != want {
+		t.Fatalf("got %q", got)
+	}
+	inv.Risks = []vulnx.HostRisk{{Risk: "unpinned", Kind: "mcp_server", Name: "files"}, {Risk: "unpinned", Kind: "mcp_server", Name: "files"},
+		{Risk: "unpinned", Kind: "mcp_server", Name: "web"}, {Risk: "lookalike", Kind: "extension", Name: "evil.python"}}
+	want := "  Agent setup: 2 editor extensions, 1 skill, 1 MCP server\n" +
+		"    ! 1 extension named like a well-known extension from another publisher: evil.python\n" +
+		"    ! 2 MCP servers run whatever version is newest at each start: files, web\n"
+	if got := agentSetup(inv, c); got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}

@@ -626,6 +626,7 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 	b.WriteString("  " + dim(strings.Repeat("─", width+2+4*13+9+2+8-2)) + "\n")
 	line(total, false)
 	b.WriteString("\n")
+	b.WriteString(agentSetup(inv, c))
 	if len(inv.NotAssessed) > 0 {
 		var parts []string
 		for _, s := range inv.Sources {
@@ -1223,3 +1224,68 @@ func writeHostSBOM(path string, inv vulnx.HostInventory) (string, error) {
 
 // shareExpiry is how long a shared host report's link works.
 const shareExpiry = 24 * time.Hour
+
+var agentKinds = []struct{ kind, one, many string }{
+	{"extension", "editor extension", "editor extensions"}, {"skill", "skill", "skills"}, {"plugin", "plugin", "plugins"},
+	{"hook", "hook", "hooks"}, {"mcp_server", "MCP server", "MCP servers"},
+}
+
+var agentRisks = []string{"lookalike", "sideloaded", "pipe_to_shell", "hidden_text", "unverified_source", "unpinned", "plaintext", "approvals_off"}
+
+var riskSubject = map[string][2]string{
+	"extension": {"extension", "extensions"}, "skill": {"skill", "skills"}, "hook": {"hook", "hooks"},
+	"mcp_server": {"MCP server", "MCP servers"}, "agent": {"agent", "agents"},
+}
+
+// agentSetup is the block under the grid for what agents and editors load: what was read, then one line per kind
+// of risk with the names it applies to. These are risks in how things are set up, not known vulnerabilities, so
+// they stay out of the severity columns.
+func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
+	if len(inv.AgentSurface) == 0 && len(inv.Risks) == 0 {
+		return ""
+	}
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	n := map[string]int{}
+	for _, it := range inv.AgentSurface {
+		n[it.Kind]++
+	}
+	var parts []string
+	for _, k := range agentKinds {
+		if n[k.kind] == 1 {
+			parts = append(parts, "1 "+k.one)
+		} else if n[k.kind] > 1 {
+			parts = append(parts, fmt.Sprintf("%d %s", n[k.kind], k.many))
+		}
+	}
+	var b strings.Builder
+	head := "  Agent setup: " + strings.Join(parts, ", ")
+	if len(inv.Risks) == 0 {
+		return dim(head+", no risky setup found") + "\n"
+	}
+	b.WriteString(head + "\n")
+	for _, risk := range agentRisks {
+		var names []string
+		kind := ""
+		for _, r := range inv.Risks {
+			if r.Risk == risk {
+				kind = r.Kind
+				if !slices.Contains(names, r.Name) {
+					names = append(names, r.Name)
+				}
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+		subject := riskSubject[kind][1]
+		if len(names) == 1 {
+			subject = riskSubject[kind][0]
+		}
+		shown := names
+		if len(shown) > 4 {
+			shown = append(slices.Clone(names[:4]), fmt.Sprintf("+%d", len(names)-4))
+		}
+		b.WriteString(fmt.Sprintf("    %s %d %s %s: %s\n", c.Colorize("!", gridColors["high"]), len(names), subject, vulnx.RiskText[risk], strings.Join(shown, ", ")))
+	}
+	return b.String()
+}

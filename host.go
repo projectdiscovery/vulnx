@@ -62,6 +62,10 @@ type HostInventory struct {
 	DataOnly    []HostComponent         `json:"data_only"`           // installed, but nothing in them runs: nothing to check
 	Pending     []HostPending           `json:"-"`                   // read with a source repository but no product yet: ResolvePending decides
 	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
+	// AgentSurface is what coding agents and editors load and run on the user's behalf: editor extensions, skills,
+	// plugins, hooks and MCP servers. Risks are the ones whose setup lets someone else change what runs here.
+	AgentSurface []HostAgentItem `json:"agent_surface"`
+	Risks        []HostRisk      `json:"risks"`
 }
 
 // HostFix is how to update what was found in one place (a FoundIn label): a command the components or Target are
