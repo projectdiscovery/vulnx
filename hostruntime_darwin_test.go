@@ -148,3 +148,56 @@ func TestRuntimeLiveListeners(t *testing.T) {
 	}
 	t.Logf("observed %d endpoints and %d owner processes; status %s; %d explicit gaps", len(inv.Runtime.Endpoints), len(inv.Runtime.Processes), inv.Runtime.Status, len(inv.Runtime.Gaps))
 }
+
+func TestRuntimeSocketConfirmation(t *testing.T) {
+	endpoint := HostEndpoint{Protocol: "tcp", Family: "ipv4", Address: "127.0.0.1", Port: 8000, Socket: "42:7", Owners: []int{42}}
+	for _, kind := range []string{"stable", "closed-on-exec", "changed-image", "reused-fd"} {
+		t.Run(kind, func(t *testing.T) {
+			r := &HostRuntime{Endpoints: []HostEndpoint{endpoint}, Processes: []HostProcess{{PID: 42}}}
+			later := []HostEndpoint{endpoint}
+			stable := map[int]bool{42: true}
+			switch kind {
+			case "closed-on-exec":
+				later = nil
+			case "changed-image":
+				stable[42] = false
+			case "reused-fd":
+				later[0].Port = 9000
+			}
+			reconcileRuntimeOwners(r, later, stable)
+			if kind == "stable" {
+				if len(r.Endpoints[0].Owners) != 1 {
+					t.Fatal("stable owner lost")
+				}
+			} else if len(r.Endpoints[0].Owners) != 0 || len(r.Processes) != 0 || len(r.Gaps) == 0 {
+				t.Fatal("unstable association retained")
+			}
+		})
+	}
+}
+
+func TestRuntimeOutputChild(t *testing.T) {
+	if !slices.Contains(os.Args, "--runtime-output-fixture") {
+		return
+	}
+	if _, err := os.Stdout.Write(bytes.Repeat([]byte{'x'}, (8<<20)+1024)); err != nil {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func TestRuntimeCommandOutputBound(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, warning, err := runRuntimeSocketCommand(ctx, executable, []string{"-test.run=^TestRuntimeOutputChild$", "--", "--runtime-output-fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !warning || len(out) != 8<<20 {
+		t.Fatalf("output cap bypassed: len=%d warning=%v", len(out), warning)
+	}
+}

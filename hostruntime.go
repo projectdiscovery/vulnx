@@ -1,14 +1,43 @@
 package vulnx
 
 import (
+	"bytes"
 	"context"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
+
+type runtimeBuffer struct {
+	mu        sync.Mutex
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (b *runtimeBuffer) Len() int { b.mu.Lock(); defer b.mu.Unlock(); return b.buffer.Len() }
+func (b *runtimeBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bytes.Clone(b.buffer.Bytes())
+}
+func (b *runtimeBuffer) Truncated() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.truncated }
+func (b *runtimeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	if room := (8 << 20) - b.buffer.Len(); len(p) > room {
+		p = p[:room]
+		b.truncated = true
+	}
+	if _, err := b.buffer.Write(p); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
 
 // HostRuntime contains observations, not a verdict about external access or exploitability.
 type HostRuntime struct {
@@ -67,7 +96,7 @@ type HostRuntimeGap struct {
 
 const runtimeBudget = 10 * time.Second
 
-// CollectRuntime never inspects the scanning host for a mounted-filesystem inventory.
+// CollectRuntime skips mounted filesystems. Cancellation is cooperative; the CLI uses a bounded worker.
 func (inv *HostInventory) CollectRuntime(ctx context.Context, root string) {
 	inv.collectRuntime(ctx, root, collectHostRuntime)
 }
@@ -75,7 +104,7 @@ func (inv *HostInventory) CollectRuntime(ctx context.Context, root string) {
 func (inv *HostInventory) collectRuntime(ctx context.Context, root string, collect func(context.Context, *HostRuntime)) {
 	r := &HostRuntime{StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "collected", Endpoints: []HostEndpoint{}, Processes: []HostProcess{}, Gaps: []HostRuntimeGap{}}
 	inv.Runtime = r
-	if root != "" && filepath.Clean(root) != "/" {
+	if root != "" && filepath.Clean(root) != filepath.Clean("/") {
 		r.Status, r.Scope = "skipped", "mounted filesystem; no live runtime inspected"
 	} else {
 		bounded, cancel := context.WithTimeout(ctx, runtimeBudget)
@@ -86,7 +115,6 @@ func (inv *HostInventory) collectRuntime(ctx context.Context, root string, colle
 		if bounded.Err() != nil {
 			r.gap("collection", 0, bounded.Err().Error())
 		}
-		inv.matchRuntime(bounded, r)
 	}
 	r.normalize()
 	r.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -140,7 +168,6 @@ func runtimePath(path string) string {
 
 func (inv HostInventory) matchRuntime(ctx context.Context, r *HostRuntime) {
 	for i := range r.Processes {
-		r.Processes[i].Matches = []HostRuntimeMatch{}
 		r.Processes[i].Installations = nil
 	}
 	var roots []HostRuntimeInstallation
@@ -166,51 +193,6 @@ func (inv HostInventory) matchRuntime(ctx context.Context, r *HostRuntime) {
 		}
 		return strings.Compare(a.Path, b.Path)
 	})
-	byPath := map[string]map[string][]string{}
-	cache := map[string]string{}
-	resolve := func(path string) string {
-		if resolved, ok := cache[path]; ok {
-			return resolved
-		}
-		resolved := runtimePath(path)
-		cache[path] = resolved
-		return resolved
-	}
-	add := func(path, place, component string) {
-		if ctx.Err() != nil {
-			return
-		}
-		path = resolve(path)
-		if path == "" {
-			return
-		}
-		if byPath[path] == nil {
-			byPath[path] = map[string][]string{}
-		}
-		if !slices.Contains(byPath[path][place], component) {
-			byPath[path][place] = append(byPath[path][place], component)
-		}
-	}
-	for component, places := range inv.FoundIn {
-		if ctx.Err() != nil {
-			r.gap("matching", 0, "collection deadline reached before inventory indexing completed")
-			return
-		}
-		for _, place := range places {
-			if path := inv.Paths[place]; path != "" {
-				add(path, place, component)
-			}
-		}
-	}
-	for component, binaries := range inv.GoBinaries {
-		if ctx.Err() != nil {
-			r.gap("matching", 0, "collection deadline reached before inventory indexing completed")
-			return
-		}
-		for _, binary := range binaries {
-			add(binary.Path, binary.Name, component)
-		}
-	}
 	for i := range r.Processes {
 		if ctx.Err() != nil {
 			r.gap("matching", 0, "collection deadline reached before executable matching completed")
@@ -221,6 +203,7 @@ func (inv HostInventory) matchRuntime(ctx context.Context, r *HostRuntime) {
 			continue
 		}
 		if !sameRuntimeImage(p.Executable, p.image) {
+			p.Matches = []HostRuntimeMatch{}
 			r.gap("matching", p.PID, "observed executable no longer matches on-disk identity")
 			continue
 		}
@@ -230,10 +213,7 @@ func (inv HostInventory) matchRuntime(ctx context.Context, r *HostRuntime) {
 					p.Installations = append(p.Installations, root)
 				}
 			}
-			for place, components := range byPath[path] {
-				slices.Sort(components)
-				p.Matches = append(p.Matches, HostRuntimeMatch{Place: place, Components: components})
-			}
+
 		}
 		slices.SortFunc(p.Matches, func(a, b HostRuntimeMatch) int { return strings.Compare(a.Place, b.Place) })
 	}

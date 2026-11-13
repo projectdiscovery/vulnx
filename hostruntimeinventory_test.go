@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -39,7 +41,7 @@ func TestEnrichRuntimeInventory(t *testing.T) {
 	runtimeInventoryFile(t, two)
 	inv := HostInventory{Entries: []string{"pkg:golang/example.org/shared@v1.0.0"}, EntrySource: map[string]string{"pkg:golang/example.org/shared@v1.0.0": "go binaries"}, Runtime: &HostRuntime{Status: "partial", Processes: []HostProcess{runtimeInventoryProcess(t, 1, one), runtimeInventoryProcess(t, 2, one), runtimeInventoryProcess(t, 3, two)}}}
 	calls := 0
-	inv.enrichRuntimeInventory(context.Background(), func(path string) runtimeModules {
+	inv.enrichRuntimeInventory(context.Background(), func(file *os.File) runtimeModules {
 		calls++
 		return runtimeModules{entries: []string{"pkg:golang/example.org/shared@v1.0.0", "pkg:golang/example.org/renamed@v2.0.0"}, renamed: map[string]bool{"pkg:golang/example.org/renamed@v2.0.0": true}, goBinary: true}
 	})
@@ -60,7 +62,7 @@ func TestEnrichRuntimeInventory(t *testing.T) {
 			t.Fatalf("%+v", p)
 		}
 	}
-	inv.enrichRuntimeInventory(context.Background(), func(string) runtimeModules { t.Fatal("repeat enrichment read binary"); return runtimeModules{} })
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules { t.Fatal("repeat enrichment read binary"); return runtimeModules{} })
 	if len(inv.Sources) != 1 {
 		t.Fatal("duplicate runtime source")
 	}
@@ -91,7 +93,7 @@ func TestRuntimeInventoryMixedGenerations(t *testing.T) {
 	current := runtimeInventoryProcess(t, 2, path)
 	inv := HostInventory{Runtime: &HostRuntime{Processes: []HostProcess{old, current}}}
 	calls := 0
-	inv.enrichRuntimeInventory(context.Background(), func(string) runtimeModules {
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules {
 		calls++
 		return runtimeModules{entries: []string{"pkg:cargo/example@1.0.0"}}
 	})
@@ -104,14 +106,18 @@ func TestRuntimeInventoryKnownAndSkipped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tool")
 	runtimeInventoryFile(t, path)
 	p := runtimeInventoryProcess(t, 1, path)
-	p.Matches = []HostRuntimeMatch{{Place: "existing", Components: []string{"pkg:x/y@1"}}}
+	p.Matches = []HostRuntimeMatch{{Place: "old", Components: []string{"pkg:golang/example.org/old@v1.0.0"}}}
 	inv := HostInventory{Runtime: &HostRuntime{Processes: []HostProcess{p}}}
-	inv.enrichRuntimeInventory(context.Background(), func(string) runtimeModules { t.Fatal("known binary read again"); return runtimeModules{} })
-	if inv.Runtime.Processes[0].Inventory != "inventoried" {
-		t.Fatal("known binary not reused")
+	calls := 0
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules {
+		calls++
+		return runtimeModules{entries: []string{"pkg:golang/example.org/new@v2.0.0"}}
+	})
+	if calls != 1 || inv.Runtime.Processes[0].Matches[0].Components[0] != "pkg:golang/example.org/new@v2.0.0" {
+		t.Fatal("stale inventory reused")
 	}
 	inv = HostInventory{Runtime: &HostRuntime{Status: "skipped", Processes: []HostProcess{p}}}
-	inv.enrichRuntimeInventory(context.Background(), func(string) runtimeModules { t.Fatal("mounted-root runtime read"); return runtimeModules{} })
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules { t.Fatal("mounted filesystem inspected"); return runtimeModules{} })
 	if len(inv.Entries) != 0 || len(inv.Sources) != 0 {
 		t.Fatal("mounted root enriched")
 	}
@@ -127,7 +133,7 @@ func TestRuntimeInventoryFailures(t *testing.T) {
 			defer cancel()
 			switch kind {
 			case "permission":
-				if os.Geteuid() == 0 {
+				if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 					t.Skip("privileged process can read permission fixture")
 				}
 				if err := os.Chmod(path, 0); err != nil {
@@ -155,7 +161,7 @@ func TestRuntimeInventoryFailures(t *testing.T) {
 			}
 			inv := HostInventory{Runtime: &HostRuntime{Processes: []HostProcess{p}}}
 			calls := 0
-			inv.enrichRuntimeInventory(ctx, func(string) runtimeModules {
+			inv.enrichRuntimeInventory(ctx, func(*os.File) runtimeModules {
 				calls++
 				if kind == "unsupported" {
 					return runtimeModules{}
@@ -186,7 +192,7 @@ func TestRuntimeInventoryFileLimit(t *testing.T) {
 		inv.Runtime.Processes = append(inv.Runtime.Processes, runtimeInventoryProcess(t, i+1, path))
 	}
 	calls := 0
-	inv.enrichRuntimeInventory(context.Background(), func(string) runtimeModules { calls++; return runtimeModules{} })
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules { calls++; return runtimeModules{} })
 	if calls != runtimeExecutableLimit || !strings.Contains(inv.Runtime.Processes[len(inv.Runtime.Processes)-1].InventoryReason, "count limit") {
 		t.Fatalf("calls=%d", calls)
 	}
@@ -207,7 +213,7 @@ func TestRuntimeContainment(t *testing.T) {
 	inv := HostInventory{Paths: map[string]string{"App.app": app, "Helper.app": nested}, FoundIn: map[string][]string{"pkg:npm/not-proven-loaded@1": {"App.app"}}}
 	r := &HostRuntime{Processes: []HostProcess{runtimeInventoryProcess(t, 1, inside), runtimeInventoryProcess(t, 2, outside), runtimeInventoryProcess(t, 3, link)}}
 	inv.Runtime = r
-	inv.RefreshRuntimeMatches(context.Background())
+	inv.matchRuntime(context.Background(), r)
 	if len(r.Processes[0].Installations) != 2 || len(r.Processes[0].Matches) != 0 {
 		t.Fatalf("containment became an exact match: %+v", r.Processes[0])
 	}
@@ -226,7 +232,14 @@ func TestReadRuntimeModules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mods := readRuntimeModules(executable)
+	file, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mods := readRuntimeModules(file)
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if !mods.goBinary || !slices.ContainsFunc(mods.entries, func(s string) bool { return strings.HasPrefix(s, "pkg:golang/stdlib@") }) {
 		t.Fatalf("test executable metadata: %+v", mods)
 	}
@@ -242,5 +255,52 @@ func TestReadRuntimeModules(t *testing.T) {
 	}
 	if len(inv.NotAssessed) != 1 {
 		t.Fatal("script identity guessed")
+	}
+}
+
+func TestRuntimeMetadataUsesVerifiedDescriptor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tool")
+	runtimeInventoryFile(t, path)
+	p := runtimeInventoryProcess(t, 1, path)
+	inv := HostInventory{Runtime: &HostRuntime{Processes: []HostProcess{p}}}
+	inv.enrichRuntimeInventory(context.Background(), func(file *os.File) runtimeModules {
+		if err := os.Rename(path, path+".old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("replacement"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "metadata fixture" {
+			t.Fatal("read replacement instead of verified descriptor")
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+".old", path); err != nil {
+			t.Fatal(err)
+		}
+		return runtimeModules{entries: []string{"pkg:cargo/original@1.0.0"}}
+	})
+	if len(inv.Entries) != 1 || inv.Entries[0] != "pkg:cargo/original@1.0.0" {
+		t.Fatal("original metadata lost")
+	}
+}
+
+func TestRuntimeDoesNotTrustDisplayNameJoins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tool")
+	runtimeInventoryFile(t, path)
+	inv := HostInventory{Paths: map[string]string{"tool": path}, FoundIn: map[string][]string{"pkg:golang/other@v1.0.0": {"tool"}}, Entries: []string{"pkg:golang/other@v1.0.0"}, Runtime: &HostRuntime{Processes: []HostProcess{runtimeInventoryProcess(t, 1, path)}}}
+	inv.matchRuntime(context.Background(), inv.Runtime)
+	if len(inv.Runtime.Processes[0].Matches) != 0 {
+		t.Fatal("display label was treated as evidence")
+	}
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules { return runtimeModules{entries: []string{"pkg:golang/actual@v2.0.0"}} })
+	matches := inv.Runtime.Processes[0].Matches
+	if len(matches) != 1 || len(matches[0].Components) != 1 || matches[0].Components[0] != "pkg:golang/actual@v2.0.0" {
+		t.Fatalf("false exact association: %+v", matches)
 	}
 }

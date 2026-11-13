@@ -276,7 +276,9 @@ listed as not assessed, with a count per source. Only names and versions are sen
 Live host scans also save a passive `host.runtime` snapshot in the local JSON report: TCP listeners, bound UDP
 endpoints, visible owner processes, numeric account IDs and executable paths. Exact executable-path matches link
 back to inventory entries; they do not prove that dependencies are loaded or exploitable. Collection is time-bounded
-and permission-limited, with timestamps, scope and explicit gaps; mounted-root scans skip it. Wildcard and specific
+and permission-limited, with timestamps, scope and explicit gaps; mounted-root scans skip it. The CLI runs runtime
+collection and metadata parsing in a separate worker with a deadline, retaining a completed socket snapshot if later
+enrichment cannot finish. Wildcard and specific
 bind addresses do not establish internet access. No services are contacted, privileges elevated, or process arguments,
 environments or secret contents collected. Runtime observations are not sent to the API or included in shared SBOMs.
 

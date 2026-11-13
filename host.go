@@ -854,7 +854,19 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 // import paths, so an advisory's function names for the replacement cannot be looked up in the binary.
 // main is the binary's main package path, what `go install` names.
 func goModules(path string) (out []string, renamed map[string]bool, main string, ok bool) {
-	bi, err := buildinfo.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, "", false
+	}
+	out, renamed, main, ok = goModulesFrom(f)
+	if err := f.Close(); err != nil {
+		return nil, nil, "", false
+	}
+	return
+}
+
+func goModulesFrom(reader io.ReaderAt) (out []string, renamed map[string]bool, main string, ok bool) {
+	bi, err := buildinfo.Read(reader)
 	if err != nil {
 		return nil, nil, "", false
 	}
@@ -903,7 +915,19 @@ func binaryFix(name, real, main string) HostFix {
 // document in the .dep-v0 section (ELF) or __DATA,__dep_v0 (Mach-O). Only crates from crates.io are sent; git
 // and path dependencies have no registry release to judge.
 func rustCrates(path string) ([]string, bool) {
-	raw := depV0Section(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	entries, ok := rustCratesFrom(f)
+	if err := f.Close(); err != nil {
+		return nil, false
+	}
+	return entries, ok
+}
+
+func rustCratesFrom(reader io.ReaderAt) ([]string, bool) {
+	raw := depV0SectionFrom(reader)
 	if raw == nil {
 		return nil, false
 	}
@@ -911,11 +935,12 @@ func rustCrates(path string) ([]string, bool) {
 	if err != nil {
 		return nil, false
 	}
-	defer func() { _ = zr.Close() }()
 	var doc struct {
 		Packages []struct{ Name, Version, Source string }
 	}
-	if err := json.NewDecoder(io.LimitReader(zr, 64<<20)).Decode(&doc); err != nil {
+	decodeErr := json.NewDecoder(io.LimitReader(zr, 64<<20)).Decode(&doc)
+	closeErr := zr.Close()
+	if decodeErr != nil || closeErr != nil {
 		return nil, false
 	}
 	var out []string
@@ -927,32 +952,32 @@ func rustCrates(path string) ([]string, bool) {
 	return out, true
 }
 
-func depV0Section(path string) []byte {
-	if f, err := elf.Open(path); err == nil {
-		defer func() { _ = f.Close() }()
+func depV0SectionFrom(reader io.ReaderAt) []byte {
+	if f, err := elf.NewFile(reader); err == nil {
 		if s := f.Section(".dep-v0"); s != nil && s.Size <= 64<<20 && s.FileSize <= 64<<20 {
-			b, _ := s.Data() // a truncated section fails to inflate below
-			return b
+			data, err := s.Data()
+			if err == nil {
+				return data
+			}
 		}
 		return nil
 	}
 	var mf *macho.File
-	if ff, err := macho.OpenFat(path); err == nil {
-		defer func() { _ = ff.Close() }()
+	if ff, err := macho.NewFatFile(reader); err == nil {
 		if len(ff.Arches) > 0 {
 			mf = ff.Arches[0].File
 		}
-	} else if f, err := macho.Open(path); err == nil {
-		defer func() { _ = f.Close() }()
+	} else if f, err := macho.NewFile(reader); err == nil {
 		mf = f
 	}
-	if mf == nil {
-		return nil
-	}
-	for _, s := range mf.Sections {
-		if s.Name == "__dep_v0" && s.Seg == "__DATA" && s.Size <= 64<<20 {
-			b, _ := s.Data()
-			return b
+	if mf != nil {
+		for _, s := range mf.Sections {
+			if s.Name == "__dep_v0" && s.Seg == "__DATA" && s.Size <= 64<<20 {
+				data, err := s.Data()
+				if err == nil {
+					return data
+				}
+			}
 		}
 	}
 	return nil

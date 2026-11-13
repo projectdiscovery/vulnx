@@ -3,6 +3,7 @@ package vulnx
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,32 +25,73 @@ type runtimeModules struct {
 type runtimeInventoryResult struct {
 	status, reason string
 	image          os.FileInfo
+	matches        []HostRuntimeMatch
 }
 
-func readRuntimeModules(path string) runtimeModules {
-	if entries, renamed, main, ok := goModules(path); ok {
+func readRuntimeModules(reader io.ReaderAt) runtimeModules {
+	if entries, renamed, main, ok := goModulesFrom(reader); ok {
 		return runtimeModules{entries: entries, renamed: renamed, main: main, goBinary: true}
 	}
-	if entries, ok := rustCrates(path); ok {
+	if entries, ok := rustCratesFrom(reader); ok {
 		return runtimeModules{entries: entries}
 	}
 	return runtimeModules{}
 }
 
+func sameRuntimeFile(actual, expected os.FileInfo) bool {
+	return actual != nil && expected != nil && actual.Mode().IsRegular() && actual.Mode() == expected.Mode() && os.SameFile(actual, expected) && actual.Size() == expected.Size() && actual.ModTime().Equal(expected.ModTime())
+}
+
 func sameRuntimeImage(path string, expected os.FileInfo) bool {
-	if expected == nil {
-		return false
-	}
 	actual, err := os.Stat(path)
-	return err == nil && actual.Mode().IsRegular() && actual.Mode() == expected.Mode() && os.SameFile(actual, expected) && actual.Size() == expected.Size() && actual.ModTime().Equal(expected.ModTime())
+	return err == nil && sameRuntimeFile(actual, expected)
 }
 
-// EnrichRuntimeInventory reads embedded identifiers without starting the observed executable.
+// EnrichRuntimeInventory cooperatively observes cancellation. The CLI isolates this work in a bounded worker.
 func (inv *HostInventory) EnrichRuntimeInventory(ctx context.Context) {
-	inv.enrichRuntimeInventory(ctx, readRuntimeModules)
+	inv.enrichRuntimeInventory(ctx, func(f *os.File) runtimeModules { return readRuntimeModules(f) })
 }
 
-func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(string) runtimeModules) {
+func readObservedModules(ctx context.Context, p HostProcess, read func(*os.File) runtimeModules) (runtimeModules, string) {
+	if ctx.Err() != nil {
+		return runtimeModules{}, "runtime inventory deadline reached"
+	}
+	if p.image == nil || p.image.Size() > runtimeExecutableSize {
+		return runtimeModules{}, "executable identity unavailable or size limit exceeded"
+	}
+	f, err := os.Open(p.Executable)
+	if err != nil {
+		return runtimeModules{}, "executable metadata could not be opened: " + err.Error()
+	}
+	before, statErr := f.Stat()
+	if statErr != nil || !sameRuntimeFile(before, p.image) {
+		if err := f.Close(); err != nil {
+			return runtimeModules{}, "executable handle could not be closed: " + err.Error()
+		}
+		return runtimeModules{}, "opened executable differs from the observed image"
+	}
+	mods := read(f)
+	after, statErr := f.Stat()
+	closeErr := f.Close()
+	if closeErr != nil {
+		return runtimeModules{}, "executable handle could not be closed: " + closeErr.Error()
+	}
+	if ctx.Err() != nil {
+		return runtimeModules{}, "runtime inventory deadline reached"
+	}
+	if statErr != nil || !sameRuntimeFile(after, before) || !sameRuntimeImage(p.Executable, p.image) {
+		return runtimeModules{}, "executable changed while reading embedded metadata"
+	}
+	if len(mods.entries) > 65536 {
+		return runtimeModules{}, "embedded package count exceeds inventory limit"
+	}
+	if len(mods.entries) == 0 {
+		return runtimeModules{}, "no supported embedded package versions; containing installation, if any, is separate evidence"
+	}
+	return mods, ""
+}
+
+func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(*os.File) runtimeModules) {
 	r := inv.Runtime
 	if r == nil || r.Status == "skipped" || r.enriched {
 		return
@@ -80,86 +122,76 @@ func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(
 		h.seen[entry] = true
 	}
 	cache := map[string]runtimeInventoryResult{}
+	labels := runtimeExecutableLabels(*inv)
 	var entries []found
 	var unassessed []HostComponent
 	readCount, identified := 0, 0
 	for i := range r.Processes {
 		p := &r.Processes[i]
-		path := p.Executable
-		if path == "" {
-			p.Inventory, p.InventoryReason = "unassessed", "no verified executable path"
-			unassessed = append(unassessed, HostComponent{Name: fmt.Sprintf("process %d", p.PID), Reason: p.InventoryReason})
-			continue
-		}
-		if !sameRuntimeImage(path, p.image) {
-			p.Inventory, p.InventoryReason = "unassessed", "executable identity changed or could not be revalidated"
-			p.Matches = []HostRuntimeMatch{}
-			p.Installations = nil
-			r.gap("inventory", p.PID, p.InventoryReason)
-			unassessed = append(unassessed, HostComponent{Name: fmt.Sprintf("process %d: %s", p.PID, path), Reason: p.InventoryReason})
-			continue
-		}
-		if prior, ok := cache[path]; ok && sameRuntimeImage(path, prior.image) {
-			p.Inventory, p.InventoryReason = prior.status, prior.reason
-			continue
-		}
+		p.Matches = []HostRuntimeMatch{}
+		p.Installations = nil
 		result := runtimeInventoryResult{status: "unassessed", image: p.image}
 		switch {
+		case p.Executable == "":
+			result.reason = "no verified executable path"
 		case ctx.Err() != nil:
 			result.reason = "runtime inventory deadline reached"
-		case len(p.Matches) > 0:
-			result.status = "inventoried"
-		case readCount >= runtimeExecutableLimit:
-			result.reason = "runtime executable count limit reached"
-		case p.image.Size() > runtimeExecutableSize:
-			result.reason = "executable exceeds metadata-reading size limit"
+		case !sameRuntimeImage(p.Executable, p.image):
+			result.reason = "executable identity changed or could not be revalidated"
 		default:
+			if prior, ok := cache[p.Executable]; ok && sameRuntimeFile(prior.image, p.image) {
+				p.Inventory, p.InventoryReason, p.Matches = prior.status, prior.reason, prior.matches
+				continue
+			}
+			if readCount >= runtimeExecutableLimit {
+				result.reason = "runtime executable count limit reached"
+				break
+			}
 			readCount++
-			file, err := os.Open(path)
-			if err != nil {
-				result.reason = "executable metadata could not be opened: " + err.Error()
+			mods, reason := readObservedModules(ctx, *p, read)
+			result.reason = reason
+			if reason != "" {
 				break
 			}
-			if err := file.Close(); err != nil {
-				result.reason = "executable metadata handle could not be closed: " + err.Error()
+			place := p.Executable
+			if label := labels[p.Executable]; label != "" {
+				place = label
+			}
+			if existing, ok := h.inv.Paths[place]; ok && existing != p.Executable {
+				result.reason = "executable path collides with an existing installation label"
 				break
 			}
-			mods := read(path)
-			if ctx.Err() != nil {
-				result.reason = "runtime inventory deadline reached"
-			} else if !sameRuntimeImage(path, p.image) {
-				result.reason = "executable changed while reading embedded metadata"
-			} else if len(mods.entries) > 65536 {
-				result.reason = "embedded package count exceeds inventory limit"
-			} else if len(mods.entries) == 0 {
-				result.reason = "no supported embedded package versions; containing installation, if any, is separate evidence"
-			} else {
-				result.status = "identified"
-				identified++
-				place := path
-				if existing, ok := h.inv.Paths[place]; ok && existing != path {
-					result.status, result.reason = "unassessed", "executable path collides with an existing installation label"
-					identified--
-				} else {
-					h.at(place, path)
-					h.inv.runtimePlaces[place] = true
-					h.fix(place, binaryFix(filepath.Base(path), path, mods.main))
-					entries = append(entries, foundIn(place, mods.entries)...)
-					if mods.goBinary {
-						for _, entry := range mods.entries {
-							binary := HostBinary{Path: path, Name: place}
-							if !mods.renamed[entry] && !slices.Contains(h.inv.GoBinaries[entry], binary) {
-								h.inv.GoBinaries[entry] = append(h.inv.GoBinaries[entry], binary)
-							}
-						}
+			h.at(place, p.Executable)
+			if place == p.Executable {
+				h.inv.runtimePlaces[place] = true
+			}
+			h.fix(place, binaryFix(filepath.Base(p.Executable), p.Executable, mods.main))
+			entries = append(entries, foundIn(place, mods.entries)...)
+			if mods.goBinary {
+				for _, entry := range mods.entries {
+					binary := HostBinary{Path: p.Executable, Name: place}
+					if !mods.renamed[entry] && !slices.Contains(h.inv.GoBinaries[entry], binary) {
+						h.inv.GoBinaries[entry] = append(h.inv.GoBinaries[entry], binary)
 					}
 				}
 			}
+			result.status = "identified"
+			result.matches = []HostRuntimeMatch{{Place: place, Components: slices.Clone(mods.entries)}}
+			identified++
 		}
-		p.Inventory, p.InventoryReason = result.status, result.reason
-		cache[path] = result
+		p.Inventory, p.InventoryReason, p.Matches = result.status, result.reason, result.matches
+		if p.Matches == nil {
+			p.Matches = []HostRuntimeMatch{}
+		}
+		if p.Executable != "" && sameRuntimeImage(p.Executable, p.image) {
+			cache[p.Executable] = result
+		}
 		if result.status == "unassessed" {
-			unassessed = append(unassessed, HostComponent{Name: path, Reason: result.reason})
+			name := p.Executable
+			if name == "" {
+				name = fmt.Sprintf("process %d", p.PID)
+			}
+			unassessed = append(unassessed, HostComponent{Name: name, Reason: result.reason})
 			if !strings.HasPrefix(result.reason, "no supported") {
 				r.gap("inventory", p.PID, result.reason)
 			}
@@ -170,18 +202,63 @@ func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(
 	}
 	h.inv.Note = h.note()
 	*inv = h.inv
-	inv.RefreshRuntimeMatches(ctx)
+	inv.matchRuntime(ctx, r)
+	r.normalize()
 }
 
-// RefreshRuntimeMatches preserves the original observation times; it does not collect sockets again.
+// RefreshRuntimeMatches filters snapshot associations after inventory resolution without inspecting the host again.
 func (inv *HostInventory) RefreshRuntimeMatches(ctx context.Context) {
 	if inv.Runtime == nil || inv.Runtime.Status == "skipped" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, runtimeBudget)
-	defer cancel()
-	inv.matchRuntime(ctx, inv.Runtime)
-	inv.Runtime.normalize()
+	available := map[string]bool{}
+	for _, e := range inv.Entries {
+		available[e] = true
+	}
+	for i := range inv.Runtime.Processes {
+		if ctx.Err() != nil {
+			inv.Runtime.gap("matching", 0, ctx.Err().Error())
+			return
+		}
+		p := &inv.Runtime.Processes[i]
+		var matches []HostRuntimeMatch
+		for _, m := range p.Matches {
+			components := []string{}
+			for _, e := range m.Components {
+				if available[e] {
+					components = append(components, e)
+				}
+			}
+			if len(components) > 0 {
+				matches = append(matches, HostRuntimeMatch{Place: m.Place, Components: components})
+			}
+		}
+		p.Matches = matches
+		if p.Matches == nil {
+			p.Matches = []HostRuntimeMatch{}
+		}
+	}
+}
+
+// Labels can be reused for display only when every recorded binary with that name has the same path.
+func runtimeExecutableLabels(inv HostInventory) map[string]string {
+	names := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, binaries := range inv.GoBinaries {
+		for _, b := range binaries {
+			if previous, ok := names[b.Name]; ok && previous != b.Path {
+				ambiguous[b.Name] = true
+			}
+			names[b.Name] = b.Path
+		}
+	}
+	labels := map[string]string{}
+	for name, path := range names {
+		if !ambiguous[name] && inv.Paths[name] == path && (labels[path] == "" || name < labels[path]) {
+			labels[path] = name
+		}
+	}
+	return labels
 }
 
 func runtimeWithin(root, path string) bool {

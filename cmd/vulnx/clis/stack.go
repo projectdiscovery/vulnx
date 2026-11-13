@@ -138,8 +138,7 @@ cat versions.txt | vulnx scan`,
 					hostProgress("")
 					gologger.Fatal().Msgf("Failed to read the host: %s", err)
 				}
-				inv.CollectRuntime(ctx, scanRoot)
-				inv.EnrichRuntimeInventory(ctx)
+				inv.CollectRuntimeIsolated(ctx, scanRoot)
 				if repos := inv.PendingRepositories(); len(repos) > 0 {
 					hostProgress("Looking up products by source repository ...")
 					products, _, err := vulnxClient.ProductsByRepository(ctx, repos)

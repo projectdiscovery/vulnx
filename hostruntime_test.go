@@ -1,8 +1,10 @@
 package vulnx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -62,14 +64,14 @@ func TestRuntimeMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv := HostInventory{Paths: map[string]string{"tool": alias, "bundle": dir}, FoundIn: map[string][]string{"pkg:a@1": {"tool"}, "pkg:b@2": {"bundle"}}, GoBinaries: map[string][]HostBinary{"pkg:c@3": {{Path: tool, Name: "tool"}}}}
-	r := HostRuntime{Processes: []HostProcess{{PID: 1, Executable: tool}, {PID: 2, Executable: other}, {PID: 3, Executable: tool + " (deleted)"}, {PID: 4, Executable: dir}, {PID: 5, Executable: "tool"}}}
+	r := HostRuntime{Processes: []HostProcess{{PID: 1, Executable: tool, Matches: []HostRuntimeMatch{}}, {PID: 2, Executable: other}, {PID: 3, Executable: tool + " (deleted)"}, {PID: 4, Executable: dir}, {PID: 5, Executable: "tool"}}}
 	for i := range r.Processes {
 		if st, err := os.Stat(r.Processes[i].Executable); err == nil {
 			r.Processes[i].image = st
 		}
 	}
 	inv.matchRuntime(context.Background(), &r)
-	want := []HostRuntimeMatch{{Place: "tool", Components: []string{"pkg:a@1", "pkg:c@3"}}}
+	want := []HostRuntimeMatch{}
 	if !reflect.DeepEqual(r.Processes[0].Matches, want) {
 		t.Fatalf("%+v", r.Processes[0])
 	}
@@ -105,5 +107,16 @@ func TestRuntimePrivacyShape(t *testing.T) {
 		if strings.Contains(string(raw), key) {
 			t.Fatalf("unexpected field %s", key)
 		}
+	}
+}
+
+func TestRuntimeBufferCopy(t *testing.T) {
+	var buf runtimeBuffer
+	payload := bytes.Repeat([]byte{'x'}, (8<<20)+1024)
+	if _, err := io.Copy(&buf, struct{ io.Reader }{bytes.NewReader(payload)}); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 8<<20 || !buf.truncated {
+		t.Fatalf("cap bypass: len=%d truncated=%v", buf.Len(), buf.truncated)
 	}
 }

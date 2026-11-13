@@ -109,7 +109,7 @@ func parseRuntimeSockets(raw []byte) ([]HostEndpoint, error) {
 		if port == 0 {
 			return
 		}
-		e := HostEndpoint{Protocol: proto, Family: family, Address: ip.String(), Port: uint16(port), State: "bound", Owners: []int{}}
+		e := HostEndpoint{Protocol: proto, Family: family, Address: ip.String(), Port: uint16(port), State: "bound", Owners: []int{}, Socket: fmt.Sprintf("%d:%s", pid, fields['f'])}
 		if proto == "tcp" {
 			e.State = "listening"
 		}
