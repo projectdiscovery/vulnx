@@ -279,6 +279,11 @@ updates itself, AI editor extensions, and the packages MCP servers are started f
 is listed as not assessed. Only the package name and version are read from a configuration, never its environment.
 Python tools installed in their own environment (`uv tool`, `pipx`) are read with the other Python packages.
 
+`--graph` also writes `vulnx-host-<date>.graph.html`: one local page, with no network and nothing uploaded, that
+draws the findings as a graph of where things are installed, the affected components there and the advisories that
+affect them. It lists the advisories that reach the most places and the places with the most findings, and a click
+shows what a node connects to and how to update it.
+
 The harnesses read: Claude Code and Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Qwen Code,
 OpenCode (its `plugin` packages and local plugin files too), Copilot CLI, Goose, Amp, Droid, Kiro, Amazon Q, Zed,
 Crush, Junie, LM Studio, Continue, and the Cline, Roo Code and Kilo Code extensions. One that is not installed

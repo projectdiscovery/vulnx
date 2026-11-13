@@ -33,6 +33,7 @@ var (
 	scanView    string
 	scanSBOM    string
 	scanReport  bool
+	scanGraph   bool
 	scanFailOn  string
 	scanImage   string
 	scanPlat    string
@@ -186,6 +187,13 @@ cat versions.txt | vulnx scan`,
 				fmt.Printf("  Full report: %s\n", jsonPath)
 				if scanView == "grid" && !scanReport {
 					fmt.Println("  Report URL: --report (expires in 24 hours)")
+				}
+				if scanGraph {
+					path, err := writeHostGraph(inv, res)
+					if err != nil {
+						gologger.Fatal().Msgf("Failed to write the graph: %s", err)
+					}
+					fmt.Printf("  Graph: %s\n", path)
 				}
 				if scanSBOM != "" || scanReport {
 					path, err := writeHostSBOM(scanSBOM, inv)
@@ -522,6 +530,7 @@ func init() {
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
+	scanCmd.Flags().BoolVar(&scanGraph, "graph", false, "with --host: also write a local graph page of the findings (opens in a browser, nothing uploaded)")
 	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: print a report URL that auto-expires in 24 hours")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
