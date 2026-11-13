@@ -3,316 +3,453 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; base-uri 'none'; form-action 'none'">
-<title>vulnx host exposure</title>
+<title>vulnx host graph</title>
 <style>
-:root { color-scheme: light; --surface:#fcfcfb; --panel:#f1f3f5; --line:#dce0e4; --text:#20272e; --muted:#56616b; --accent:#2a78d6; --selected:#eaf1f9; --critical:#d03b3b; --high:#ec835a; --medium:#fab219; }
-:root[data-theme=dark] { color-scheme:dark; --surface:#1a1a19; --panel:#242625; --line:#3c4143; --text:#ecefed; --muted:#b4bdbf; --accent:#3987e5; --selected:#233344; }
-* { box-sizing:border-box; }
-body { margin:0; background:var(--surface); color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-button,input,select { font:inherit; color:inherit; }
-button,select,input { border:1px solid var(--line); background:var(--surface); border-radius:6px; padding:7px 11px; }
-button { cursor:pointer; }
-button:hover { background:var(--panel); }
-button:disabled { opacity:.45; cursor:default; }
-:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
-button[aria-pressed=true] { background:var(--selected); border-color:var(--accent); }
-[hidden] { display:none !important; }
-header { padding:26px 32px 18px; display:flex; justify-content:space-between; gap:20px; align-items:flex-start; }
-h1 { font-size:26px; line-height:1.2; letter-spacing:-.6px; margin:0 0 9px; font-weight:650; }
-h2 { font-size:18px; margin:0 0 5px; line-height:1.4; }
-h3 { font-size:14px; margin:0; }
-p { margin:5px 0; }
-.muted,.meta { color:var(--muted); }
-.meta { font-size:12px; }
-.controls { padding:12px 32px; border-block:1px solid var(--line); display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
-.group { display:flex; gap:4px; flex-wrap:wrap; }
-#q { flex:1; min-width:210px; }
-.summary { padding:16px 32px 8px; display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; }
-.summary p { margin:0; }
-.navigation { padding:10px 32px 18px; display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between; }
-.navigation label { display:flex; align-items:center; gap:9px; }
-#explorer { margin:0 32px 28px; }
-.graph-toolbar { display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:16px; }
-.graph-toolbar label { display:flex; align-items:center; gap:10px; min-width:0; }
-#rootChoice { max-width:520px; min-width:200px; width:40vw; }
-.graph-scroll { overflow:auto; border:1px solid var(--line); border-radius:10px; }
-#graph { position:relative; min-width:900px; background:var(--panel); }
-#edges { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-#edges path { fill:none; stroke:var(--muted); stroke-width:1.4; opacity:.45; }
-#edges path.active { stroke:var(--accent); stroke-width:2.5; opacity:1; }
-#edges.emphasis path:not(.active) { opacity:.07; }
-#layers { position:relative; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:72px; padding:20px 24px; }
-.layer { min-width:0; }
-.layer h2 { font-size:15px; display:flex; gap:9px; align-items:center; }
-.layer-head { height:74px; }
-.layer-body { display:flex; flex-direction:column; gap:16px; min-height:96px; }
-.graph-node { width:100%; height:76px; text-align:left; padding:10px 12px; border-radius:8px; position:relative; background:var(--surface); }
-.graph-node .name { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; font-size:13px; font-weight:600; line-height:1.4; }
-.graph-node .badge { margin-top:7px; }
-.graph-node:hover { border-color:var(--accent); background:var(--surface); }
-.graph-node[aria-pressed=true] { border:2px solid var(--accent); background:var(--selected); }
-.shape { display:inline-block; width:10px; height:10px; border:1.5px solid var(--muted); flex:none; }
-.shape.c { border-radius:50%; }
-.shape.a { transform:rotate(45deg); width:9px; height:9px; }
-.graph-detail { border-top:1px solid var(--line); margin-top:20px; padding-top:16px; max-width:1000px; }
-#graphStatus { margin-top:10px; }
-.badge { display:inline-flex; gap:6px; align-items:center; font-size:11px; color:var(--muted); }
-.badge::before { content:""; width:8px; height:8px; border:1px solid currentColor; border-radius:50%; flex:none; }
-.badge.critical::before { background:var(--critical); border-color:var(--critical); }
-.badge.high::before { background:var(--high); border-color:var(--high); }
-.badge.medium::before { background:var(--medium); border-color:var(--medium); }
-.badge.kev::before { border-radius:0; background:var(--text); }
-.detail-title { font-size:23px; letter-spacing:-.35px; overflow-wrap:anywhere; margin-top:4px; }
-.context { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-.context .badge { font-size:12px; }
-.action { background:var(--panel); border-radius:8px; padding:14px 16px; margin:16px 0; }
-.copyline { display:flex; align-items:flex-start; gap:10px; margin:7px 0; }
-.copyline code { flex:1; min-width:0; font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; white-space:pre-wrap; }
-.copyline button { flex:none; font-size:12px; padding:3px 9px; }
-.pager { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 0; }
-.pager button { padding:4px 8px; font-size:12px; }
-.pager span { color:var(--muted); font-size:12px; }
-.empty { padding:28px 12px; color:var(--muted); }
-#tableview { margin:0 32px 32px; overflow:auto; }
-table { width:100%; border-collapse:collapse; font-size:13px; }
-caption { text-align:left; padding:0 0 12px; color:var(--muted); }
-th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--line); padding:12px; overflow-wrap:anywhere; }
-th { background:var(--panel); }
-td { min-width:150px; max-width:340px; }
-td button { text-align:left; font-size:12px; margin-bottom:5px; }
-td small { display:block; overflow-wrap:anywhere; }
-#riskBox { margin:0 32px 28px; border-top:1px solid var(--line); padding-top:16px; }
-#riskBox article { margin-top:12px; max-width:85ch; overflow-wrap:anywhere; }
-footer { padding:0 32px 24px; color:var(--muted); font-size:12px; max-width:100ch; }
-#notice { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); max-width:90vw; background:var(--text); color:var(--surface); border-radius:6px; padding:8px 16px; z-index:2; }
-#notice:empty { display:none; }
-#tip { position:fixed; max-width:340px; padding:8px 12px; background:var(--text); color:var(--surface); border-radius:6px; pointer-events:none; font-size:12px; z-index:3; overflow-wrap:anywhere; }
-@media(max-width:900px) { header,.controls,.summary,.navigation { padding-inline:18px; } #explorer,#tableview,#riskBox { margin-inline:18px; } .graph-toolbar { align-items:flex-start; flex-direction:column; gap:4px; } #rootChoice { max-width:75vw; width:75vw; } }
-@media(max-width:600px) { header { padding-top:20px; } h1 { font-size:22px; } .controls .group { width:100%; } .controls button { flex:1; font-size:12px; } .navigation { align-items:flex-start; } .copyline { flex-wrap:wrap; } }
-@media(forced-colors:active) { #edges path { stroke:CanvasText; opacity:1; } .graph-node[aria-pressed=true] { border-color:Highlight; } }
-@media print { .controls,.navigation,.pager,#theme,.copyline button { display:none; } #edges path { stroke:var(--text); opacity:1; } }
+:root {
+  --surface: #fcfcfb; --panel: #f4f3f0; --line: #e2e1dc; --text: #0b0b0b; --text-2: #52514e; --text-3: #8a8983;
+  --place: #2a78d6; --critical: #d03b3b; --high: #ec835a; --medium: #fab219; --low: #8a8983; --unrated: #b9b8b1;
+  --edge: rgba(82, 81, 78, .22); --edge-strong: rgba(11, 11, 11, .55);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #1a1a19; --panel: #232322; --line: #383835; --text: #f0efec; --text-2: #c3c2b7; --text-3: #8a8983;
+    --place: #3987e5; --low: #8a8983; --unrated: #5e5d58;
+    --edge: rgba(195, 194, 183, .18); --edge-strong: rgba(240, 239, 236, .6);
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--surface); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; display: flex; flex-direction: column; }
+header { padding: 14px 20px 10px; border-bottom: 1px solid var(--line); }
+h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+.sub { color: var(--text-2); }
+.stats { display: flex; gap: 28px; margin-top: 10px; flex-wrap: wrap; }
+.stat b { display: block; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--text-2); font-size: 12px; }
+.filters { display: flex; gap: 10px; align-items: center; padding: 10px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--text-2); padding: 5px 11px; font: inherit; cursor: pointer; border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--text); font-weight: 600; }
+select, input[type=search] { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; }
+input[type=search] { width: 220px; }
+label.check { display: inline-flex; gap: 6px; align-items: center; color: var(--text-2); cursor: pointer; }
+.spacer { flex: 1; }
+.note { color: var(--text-3); font-size: 12px; }
+main { flex: 1; display: flex; min-height: 0; }
+#stage { flex: 1; position: relative; min-width: 0; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+canvas.drag { cursor: grabbing; }
+#legend { position: absolute; left: 16px; bottom: 14px; display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-2); font-size: 12px; background: var(--surface); padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; }
+#legend i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px; }
+#legend .sq { border-radius: 2px; background: var(--place); }
+#legend .ci { border-radius: 50%; }
+#legend .di { transform: rotate(45deg) scale(.82); }
+#legend .ring { border-radius: 50%; border: 2px solid var(--text); background: transparent; }
+#tip { position: absolute; pointer-events: none; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; max-width: 340px; display: none; z-index: 5; }
+#tip small { display: block; opacity: .75; }
+aside { width: 370px; border-left: 1px solid var(--line); overflow-y: auto; padding: 14px 16px 30px; }
+aside h2 { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 8px; }
+aside h2:first-child { margin-top: 0; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+.row:hover, .row:focus { background: var(--panel); outline: none; }
+.row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .n { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.row .bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--place); opacity: .75; }
+.row small { color: var(--text-3); grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--text-2); margin-right: 4px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+#detail .title { font-size: 14px; font-weight: 600; word-break: break-word; }
+#detail .kv { color: var(--text-2); margin: 2px 0 8px; }
+#detail code { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; margin: 6px 0; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; cursor: copy; }
+button.link { border: 0; background: none; color: var(--place); font: inherit; cursor: pointer; padding: 0; }
+table { border-collapse: collapse; width: 100%; }
+#tableview { display: none; flex: 1; overflow: auto; padding: 14px 20px; }
+#tableview th, #tableview td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+#tableview small.path, #detail small.path { display: block; color: var(--text-3); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+#tableview td:nth-child(3) div + div { margin-top: 5px; }
+#tableview th { color: var(--text-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+body.table #stage { display: none; }
+body.table #tableview { display: block; }
 </style>
 </head>
 <body>
-<header><div><h1>Follow the connections. Find what to update.</h1><p class="muted" id="sub"></p></div><button id="theme" aria-label="Switch color theme">Dark mode</button></header>
-<div class="controls">
-  <div class="group" id="preset" role="group" aria-label="Findings to include">
-    <button data-v="kev">Known exploited</button><button data-v="poc">Public exploit</button><button data-v="critical">Critical</button><button data-v="high">Critical + high</button><button data-v="all">Everything</button>
+<header>
+  <h1>What is vulnerable on this machine, and how it connects</h1>
+  <div class="sub" id="sub"></div>
+  <div class="stats" id="stats"></div>
+</header>
+<div class="filters">
+  <div class="seg" id="preset" role="group" aria-label="What to show">
+    <button data-v="kev">Known exploited</button>
+    <button data-v="poc">Public exploit</button>
+    <button data-v="critical">Critical</button>
+    <button data-v="high">Critical + high</button>
+    <button data-v="all">Everything</button>
   </div>
-  <select id="source" aria-label="Component source"></select>
-  <input type="search" id="q" placeholder="Search package, advisory or path" aria-label="Search package, advisory or path">
-  <button id="reset">Reset filters</button>
-</div>
-<div class="summary"><p id="shown" role="status"></p><span class="meta" id="scope"></span></div>
-<div class="navigation">
-  <label>Start with <select id="start"><option value="p">Places to update</option><option value="a">Advisories shared across places</option><option value="c">Components shared across places</option></select></label>
-  <div class="group" id="mode" role="group" aria-label="View"><button data-v="explore" aria-pressed="true">Layered graph</button><button data-v="table" aria-pressed="false">Table</button></div>
+  <select id="source" aria-label="Source"></select>
+  <input type="search" id="q" placeholder="Find a package, CVE or place" aria-label="Find">
+  <label class="check"><input type="checkbox" id="labels" checked> Labels</label>
+  <span class="spacer"></span>
+  <span class="note" id="shown"></span>
+  <div class="seg" id="mode" role="group" aria-label="View">
+    <button data-v="graph" aria-pressed="true">Graph</button>
+    <button data-v="table">Table</button>
+  </div>
 </div>
 <main>
-  <div id="explorer">
-    <div class="graph-toolbar"><label>Focus <select id="rootChoice" aria-label="Graph focus"></select></label><p class="meta">Click a node to follow its connections. Use Tab or arrow keys, then Enter.</p><button id="showDetail">Selected node details</button></div>
-    <div class="graph-scroll" tabindex="0" aria-label="Layered connection graph; scroll horizontally on narrow screens"><div id="graph"><svg id="edges" aria-hidden="true"></svg><div id="layers"></div></div></div>
-    <p id="graphStatus" class="meta"></p>
-    <section class="graph-detail" aria-label="Selected node details"><div id="detail"></div></section>
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="tip"></div>
+    <div id="legend">
+      <span><i class="sq"></i>where it is installed</span>
+      <span><i class="ci" style="background:var(--text-3)"></i>component</span>
+      <span><i class="di" style="background:var(--text-3)"></i>advisory</span>
+      <span><i class="ci" style="background:var(--critical)"></i>critical</span>
+      <span><i class="ci" style="background:var(--high)"></i>high</span>
+      <span><i class="ci" style="background:var(--medium)"></i>medium</span>
+      <span><i class="ci" style="background:var(--low)"></i>low</span>
+      <span><i class="ring"></i>known-exploited advisory</span>
+    </div>
   </div>
-  <div id="tableview" hidden><table><caption>Filtered affected components. Select a place to inspect its update instructions. Advisory lists can be expanded.</caption><thead><tr><th>Component</th><th>Priority</th><th>Installed in</th><th>Advisories</th><th>Fixed version</th></tr></thead><tbody id="tbody"></tbody></table><div id="tablePager"></div></div>
-  <details id="riskBox" hidden><summary id="riskTitle"></summary><div id="risks"></div></details>
+  <div id="tableview"><table><thead><tr><th>Component</th><th>Severity</th><th>Installed in</th><th>Advisories</th><th>Fixed in</th></tr></thead><tbody id="tbody"></tbody></table></div>
+  <aside>
+    <div id="detail"></div>
+    <h2>Advisories that reach the most places</h2><div id="hotAdv"></div>
+    <h2>Places with the most findings</h2><div id="hotPlace"></div>
+    <h2>Components installed in the most places</h2><div id="hotComp"></div>
+    <div id="riskBox"></div>
+  </aside>
 </main>
-<footer>Only affected components are shown. Counts reflect the active filters; shared advisories are counted once per place. A finding is not proof of exploitability. Update instructions are suggestions, never executed here; rescan after updating. This file works offline and makes no network requests.</footer>
-<div id="notice" role="status"></div><div id="tip" role="tooltip" hidden></div>
 <script type="application/json" id="data">/*DATA*/</script>
 <script>
 "use strict";
 const D = JSON.parse(document.getElementById("data").textContent);
-const $ = id => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-const button = (text, run) => { const b = el("button", "", text); b.type = "button"; b.addEventListener("click", run); return b; };
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const SEV = ["critical", "high", "medium", "low", "unrated"];
-const rank = s => { const i = SEV.indexOf(s); return i < 0 ? 4 : i; };
-const fmt = n => n.toLocaleString("en-US");
-const size = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
-const kinds = { p:"Places", c:"Components", a:"Advisories" };
-const state = { preset:"kev", source:"", q:"", kind:"p", root:null, pages:{}, tablePage:0, mode:"explore" };
-let records = [], nodes = new Map(), roots = [], noticeTimer;
-const data = (kind, i) => ({p:D.places, c:D.comps, a:D.advs})[kind][i];
-const label = n => n.kind === "a" ? n.ref.id : n.kind === "c" ? `${n.ref.name} ${n.ref.version}` : n.ref.name;
-const searchable = (kind, ref) => (kind === "p" ? [ref.name,ref.path] : kind === "c" ? [ref.name,ref.version,ref.source] : [ref.id,ref.name]).join(" ").toLowerCase();
-function allowed(a) {
-  if (state.preset === "kev") return a.kev;
-  if (state.preset === "poc") return a.kev || a.poc;
-  if (state.preset === "critical") return a.sev === "critical";
-  if (state.preset === "high") return a.sev === "critical" || a.sev === "high";
+const rank = (s) => { const i = SEV.indexOf(s); return i < 0 ? 4 : i; };
+const fmt = (n) => n.toLocaleString("en-US");
+
+const state = { preset: "kev", source: "", q: "", focus: null, hover: null, labels: true };
+let nodes = [], links = [], byId = new Map(), adj = new Map();
+let view = { x: 0, y: 0, k: 1 }, alpha = 0, raf = 0, W = 0, H = 0, colors = {};
+
+function compShown(c) {
+  if (state.source && c.source !== state.source) return false;
+  switch (state.preset) {
+    case "kev": return c.mark === "KEV";
+    case "poc": return c.mark === "KEV" || c.mark === "POC";
+    case "critical": return c.sev === "critical";
+    case "high": return c.sev === "critical" || c.sev === "high";
+  }
   return true;
 }
-function collect(rows) {
-  const map = new Map();
-  const add = (kind, i) => { const id = kind + i; if (!map.has(id)) map.set(id, {id,kind,i,ref:data(kind,i), p:new Set(),c:new Set(),a:new Set()}); return map.get(id); };
-  for (const r of rows) {
-    const c = add("c",r.c);
-    for (const p of r.p) { c.p.add(p); add("p",p).c.add(r.c); }
-    for (const a of r.a) {
-      c.a.add(a); const adv = add("a",a); adv.c.add(r.c);
-      for (const p of r.p) { adv.p.add(p); add("p",p).a.add(a); }
-    }
+function advShown(a) {
+  switch (state.preset) {
+    case "kev": return a.kev;
+    case "poc": return a.kev || a.poc;
+    case "critical": return a.sev === "critical" || a.kev;
+    case "high": return a.sev === "critical" || a.sev === "high" || a.kev;
   }
-  for (const n of map.values()) {
-    const advs = n.kind === "a" ? [n.ref] : [...n.a].map(i => D.advs[i]);
-    n.kev = advs.filter(a => a.kev).length; n.poc = advs.filter(a => a.poc || a.kev).length;
-    n.sev = advs.length ? SEV[Math.min(...advs.map(a => rank(a.sev)))] : n.kind === "c" ? n.ref.sev : "unrated";
-    n.count = n.kind === "p" ? n.a.size : n.p.size;
-  }
-  return map;
+  return true;
 }
-function sorted(list) {
-  return list.sort((a,b) => Number(b.kev > 0)-Number(a.kev > 0) || Number(b.poc > 0)-Number(a.poc > 0) || rank(a.sev)-rank(b.sev) || b.count-a.count || label(a).localeCompare(label(b)) || a.i-b.i);
-}
-function rebuild() {
-  records = [];
-  D.comps.forEach((c,i) => {
-    if (state.source && c.source !== state.source) return;
-    let a = [...new Set(c.advs)].filter(j => allowed(D.advs[j])), p = [...new Set(c.places)];
-    if (!a.length && state.preset !== "all") return;
-    if (state.q && !searchable("c",c).includes(state.q)) {
-      const mp = p.filter(j => searchable("p",D.places[j]).includes(state.q));
-      const ma = a.filter(j => searchable("a",D.advs[j]).includes(state.q));
-      if (!mp.length && !ma.length) return;
-      if (mp.length) p = mp;
-      if (ma.length) a = ma;
+
+function build() {
+  const old = byId;
+  nodes = []; links = []; byId = new Map(); adj = new Map();
+  const add = (id, o) => {
+    let n = byId.get(id);
+    if (!n) {
+      const p = old.get(id);
+      n = Object.assign({ id, x: p ? p.x : (Math.random() - .5) * 600, y: p ? p.y : (Math.random() - .5) * 600, vx: 0, vy: 0, deg: 0 }, o);
+      byId.set(id, n); nodes.push(n); adj.set(id, new Set());
     }
-    records.push({c:i,p,a});
-  });
-  nodes = collect(records); state.tablePage = 0; state.pages = {};
-  roots = sorted([...nodes.values()].filter(n => n.kind === state.kind));
-  state.root = roots.length ? roots[0].id : null;
-  const counts = k => [...nodes.values()].filter(n => n.kind === k).length;
-  $("shown").textContent = `${size(counts("p"),"place")} to review · ${size(counts("c"),"affected component")} · ${size(counts("a"),"advisory").replace("advisorys","advisories")}`;
-  $("scope").textContent = state.preset === "poc" ? "Public exploit includes known exploited" : "Counts within the current filters";
-  render();
-}
-function subset(rows,n) { return rows.filter(r => n.kind === "c" ? r.c === n.i : r[n.kind].includes(n.i)).map(r => ({c:r.c,p:n.kind === "p" ? [n.i] : r.p,a:n.kind === "a" ? [n.i] : r.a})); }
-function priority(n) { return n.kev ? "Known exploited" : n.poc ? "Public exploit" : n.sev; }
-function badge(n) { return el("span", "badge " + (n.kev ? "kev" : SEV.includes(n.sev) ? n.sev : ""), priority(n) + (n.kev || n.poc ? " · " + n.sev : "")); }
-function description(n) {
-  if (n.kind === "p") return n.ref.path || n.ref.name;
-  if (n.kind === "a") return n.ref.name || n.ref.sev;
-  return `${n.ref.source} · ${n.ref.fixed ? "fixed in " + n.ref.fixed : "no fixed version reported"}`;
-}
-function tooltip(b,n) {
-  const show = () => { const t=$("tip"); t.textContent = `${label(n)} — ${description(n)} — ${n.kind === "p" ? size(n.a.size,"distinct advisory").replace("advisorys","advisories") : size(n.p.size,"place")}`; t.hidden=false; const r=b.getBoundingClientRect(); t.style.left=Math.max(8,Math.min(r.left,innerWidth-t.offsetWidth-8))+"px"; t.style.top=Math.max(8,Math.min(r.bottom+6,innerHeight-t.offsetHeight-8))+"px"; };
-  b.addEventListener("mouseenter",show); b.addEventListener("focus",show);
-  for (const event of ["mouseleave","blur","click"]) b.addEventListener(event,hideTip);
-}
-function hideTip() { $("tip").hidden=true; }
-addEventListener("scroll",hideTip,true);
-function pager(target,total,page,limit,go) {
-  target.replaceChildren(); if (total <= limit) return;
-  const box=el("div","pager"), prev=button("Previous",()=>go(page-1)), next=button("Next",()=>go(page+1));
-  prev.disabled=page===0; next.disabled=(page+1)*limit>=total;
-  box.append(prev,el("span","",`${page*limit+1}–${Math.min(total,(page+1)*limit)} of ${fmt(total)}`),next); target.append(box);
-}
-function selectRoot(id) {
-  state.root=id; state.pages={}; render();
-}
-function renderGraph() {
-  const root=nodes.get(state.root), layers=$("layers"), edges=$("edges"); layers.replaceChildren(); edges.replaceChildren();
-  const choice=$("rootChoice"); choice.replaceChildren();
-  roots.forEach(n=>choice.append(new Option(label(n),n.id))); choice.value=state.root || ""; choice.disabled=!roots.length;
-  const detail=$("detail"); detail.replaceChildren();
-  if(!root) { layers.append(el("p","empty","No matching findings. Reset the filters or try Everything.")); $("graphStatus").textContent="No nodes under these filters."; return; }
-  info(detail,root);
-  const scoped=subset(records,root), map=collect(scoped), visible=new Map();
-  let total=0;
-  for(const kind of ["p","c","a"]) {
-    const list=sorted([...map.values()].filter(n=>n.kind===kind)); total+=list.length;
-    const section=el("section","layer"), head=el("div","layer-head"), title=el("h2");title.append(el("span","shape "+kind),el("span","",kinds[kind]+" ("+list.length+")"));
-    head.append(title,el("p","meta",kind==="p"?"Where it is installed":kind==="c"?"Affected component versions":"Advisories affecting these versions"));section.append(head);
-    const body=el("div","layer-body list"), page=state.pages[kind]||0;
-    for(const n of list.slice(page*6,(page+1)*6)) {
-      const b=button("",()=>{openRoot(n.id);document.querySelector(`#layers [data-id="${n.id}"]`)?.focus({preventScroll:true});}); b.className="graph-node";b.dataset.id=n.id;b.setAttribute("aria-pressed",String(root.id===n.id));
-      b.append(el("span","name",label(n)),badge(n));tooltip(b,n);
-      const highlight=()=>{edges.classList.add("emphasis");for(const path of edges.children) path.classList.toggle("active",path.dataset.from===n.id || path.dataset.to===n.id);};
-      const clear=()=>{edges.classList.remove("emphasis");for(const path of edges.children) path.classList.remove("active");};
-      b.addEventListener("mouseenter",highlight);b.addEventListener("focus",highlight);b.addEventListener("mouseleave",clear);b.addEventListener("blur",clear);
-      visible.set(n.id,b);body.append(b);
-    }
-    section.append(body);const controls=el("div");pager(controls,list.length,page,6,p=>{state.pages[kind]=p;renderGraph();document.querySelectorAll(".layer")[['p','c','a'].indexOf(kind)].querySelector(".graph-node")?.focus({preventScroll:true});});section.append(controls);layers.append(section);
-  }
-  const bodies=[...layers.querySelectorAll('.layer-body')], height=Math.max(...bodies.map(b=>b.children.length))*92-16;
-  bodies.forEach(body=>{body.style.height=height+'px';if(body.children.length===1)body.style.justifyContent='center';});
-  const hidden=total-visible.size;
-  $("graphStatus").textContent=`Focused on ${label(root)}. ${visible.size} of ${total} connected nodes displayed${hidden ? `; ${hidden} more via Previous / Next in each column` : ""}. Lines join displayed nodes only. Hover or focus a node to trace its lines. Scroll horizontally on narrow screens.`;
-  const link=(from,to)=>{
-    if(!visible.has(from)||!visible.has(to))return;
-    const container=$("graph").getBoundingClientRect(),a=visible.get(from).getBoundingClientRect(),b=visible.get(to).getBoundingClientRect();
-    const x1=a.right-container.left,y1=a.top+a.height/2-container.top,x2=b.left-container.left,y2=b.top+b.height/2-container.top;
-    const path=document.createElementNS("http://www.w3.org/2000/svg","path");path.setAttribute("d",`M ${x1} ${y1} C ${x1+36} ${y1}, ${x2-36} ${y2}, ${x2} ${y2}`);path.dataset.from=from;path.dataset.to=to;edges.append(path);
+    return n;
   };
-  for(const r of scoped) {for(const p of r.p)link("p"+p,"c"+r.c);for(const a of r.a)link("c"+r.c,"a"+a);}
-}
-$("rootChoice").addEventListener("change",e=>selectRoot(e.target.value));
-$("showDetail").addEventListener("click",()=>{$("detail").scrollIntoView({block:"start"});$("detail").tabIndex=-1;$("detail").focus({preventScroll:true});});
-addEventListener("resize",()=>{if(state.mode==="explore")renderGraph();});
-function announce(text) { clearTimeout(noticeTimer); $("notice").textContent=text; noticeTimer=setTimeout(()=>$("notice").textContent="",4000); }
-function copyline(target,text,what) {
-  const line=el("div","copyline"), code=el("code","",text), b=button("Copy "+what,async()=>{
-    try { if (!navigator.clipboard) throw new Error("Clipboard unavailable"); await navigator.clipboard.writeText(text); announce("Copied "+what); }
-    catch { const range=document.createRange(); range.selectNodeContents(code); const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range); announce("Clipboard unavailable. Text selected; use your copy shortcut."); }
+  const link = (a, b) => { links.push([a, b]); a.deg++; b.deg++; adj.get(a.id).add(b.id); adj.get(b.id).add(a.id); };
+  D.comps.forEach((c, i) => {
+    if (!compShown(c)) return;
+    const advs = c.advs.filter((j) => advShown(D.advs[j]));
+    if (!advs.length && state.preset !== "all") return;
+    const n = add("c" + i, { type: "comp", ref: c, label: c.name + " " + c.version, sev: c.sev });
+    c.places.forEach((j) => link(add("p" + j, { type: "place", ref: D.places[j], label: D.places[j].name }), n));
+    advs.forEach((j) => { const a = D.advs[j]; link(n, add("a" + j, { type: "adv", ref: a, label: a.id, sev: a.sev, kev: a.kev })); });
   });
-  line.append(code,b); target.append(line);
+  nodes.forEach((n) => { n.r = n.type === "place" ? 5 + Math.sqrt(n.deg) * 1.6 : n.type === "adv" ? 4 + Math.sqrt(n.deg) * 1.5 : 4.5; });
+  if (state.focus && !byId.has(state.focus)) state.focus = null;
+  const comps = nodes.filter((n) => n.type === "comp").length, advs = nodes.filter((n) => n.type === "adv").length, places = nodes.length - comps - advs;
+  $("shown").textContent = nodes.length ? `${fmt(comps)} components, ${fmt(advs)} advisories, ${fmt(places)} places shown` : "Nothing matches this filter";
+  hotspots(); table(); detail();
+  // settle before the first frame: the graph appears laid out, and then only eases
+  alpha = 1; for (let i = 0; i < 260 && alpha > 0.12; i++) step();
+  fit(); kick(0.12);
 }
-function info(target,n) {
-  target.append(el("p","meta",n.kind === "p" ? "Selected place" : n.kind === "c" ? "Selected component" : "Selected advisory"),el("h2","detail-title",label(n)));
-  const context=el("div","context"); context.append(badge(n));
-  context.append(el("span","muted",n.kind === "p" ? `${size(n.c.size,"affected component")} here · ${size(n.a.size,"distinct advisory").replace("advisorys","advisories")}` : n.kind === "a" ? `${n.ref.sev}${n.ref.cvss ? " · CVSS " + n.ref.cvss : ""} · ${size(n.c.size,"component")} in ${size(n.p.size,"place")}` : `${n.ref.source} · ${size(n.p.size,"place")} · ${size(n.a.size,"advisory").replace("advisorys","advisories")}`)); target.append(context);
-  if (n.kind === "p") {
-    const action=el("div","action"); action.append(el("h3","","Where to update"));
-    if (n.ref.path || /^[~/]|^[A-Za-z]:[\\/]/.test(n.ref.name)) copyline(action,n.ref.path || n.ref.name,"path");
-    else action.append(el("p","meta","Disk path not reported for this place."));
-    if (n.ref.fix) copyline(action,n.ref.fix,"update instructions");
-    else action.append(el("p","muted","No update instructions reported. Check the installer or package manager for this place."));
-    action.append(el("p","meta","Bundled dependencies may require updating the containing app or binary.")); target.append(action);
-  } else if (n.kind === "a") target.append(el("p","muted",n.ref.name || "No advisory description reported."));
-  else target.append(el("p","muted",n.ref.fixed ? `Fixed version reported: ${n.ref.fixed}. Update the containing installation, then rescan.` : "No fixed version reported. Check the containing installation for updates or mitigations."));
+// fit puts the whole graph in view, once it has mostly settled after a filter change
+function fit() {
+  if (!nodes.length || !W) return;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const n of nodes) { x0 = Math.min(x0, n.x); x1 = Math.max(x1, n.x); y0 = Math.min(y0, n.y); y1 = Math.max(y1, n.y); }
+  const k = Math.min(2.2, Math.max(.15, Math.min((W - 180) / (x1 - x0 + 1), (H - 120) / (y1 - y0 + 1))));
+  view = { k, x: -(x0 + x1) / 2 * k, y: -(y0 + y1) / 2 * k - 16 };
 }
-function openRoot(id) {
-  state.kind=id[0]; $("start").value=state.kind; roots=sorted([...nodes.values()].filter(n=>n.kind===state.kind));
-  state.mode="explore"; selectRoot(id);
-}
-function renderTable() {
-  const body=$("tbody"); body.replaceChildren(); const comps=sorted([...nodes.values()].filter(n=>n.kind==="c"));
-  for(const n of comps.slice(state.tablePage*40,(state.tablePage+1)*40)) {
-    const tr=el("tr"), name=el("td"), places=el("td"), advs=el("td"), pri=el("td");
-    name.append(button(label(n),()=>openRoot(n.id))); pri.append(badge(n),el("small","meta",n.sev));
-    for(const i of n.p) { const p=D.places[i], line=el("div"); line.append(button(p.name,()=>openRoot("p"+i))); if(p.path) line.append(el("small","meta",p.path)); places.append(line); }
-    const list=sorted([...n.a].map(i=>nodes.get("a"+i))); const details=el("details"); details.append(el("summary","",size(list.length,"advisory").replace("advisorys","advisories")));
-    list.forEach(a=>{const line=el("div");line.append(button(a.ref.id,()=>openRoot(a.id)));details.append(line);});advs.append(details);
-    tr.append(name,pri,places,advs,el("td","",n.ref.fixed || "Not reported")); body.append(tr);
+
+// ---- layout: springs on links, repulsion through a grid, a pull to the centre
+function step() {
+  const cell = 90, grid = new Map();
+  for (const n of nodes) {
+    const k = Math.floor(n.x / cell) + "," + Math.floor(n.y / cell);
+    (grid.get(k) || grid.set(k, []).get(k)).push(n);
   }
-  pager($("tablePager"),comps.length,state.tablePage,40,p=>{state.tablePage=p;renderTable();$("tableview").scrollIntoView({block:"start"});});
-  if(!comps.length) {const tr=el("tr"),td=el("td","empty","No matching components. Reset the filters to start again.");td.colSpan=5;tr.append(td);body.append(tr);}
+  for (const n of nodes) {
+    const gx = Math.floor(n.x / cell), gy = Math.floor(n.y / cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const bucket = grid.get((gx + dx) + "," + (gy + dy));
+      if (!bucket) continue;
+      for (const m of bucket) {
+        if (m === n) continue;
+        let x = n.x - m.x, y = n.y - m.y, d2 = x * x + y * y;
+        if (d2 < 1) { x = Math.random() - .5; y = Math.random() - .5; d2 = 1; }
+        if (d2 > cell * cell) continue;
+        const f = 260 / d2 * alpha;
+        n.vx += x * f; n.vy += y * f;
+      }
+    }
+    n.vx -= n.x * 0.012 * alpha; n.vy -= n.y * 0.012 * alpha;
+  }
+  for (const [a, b] of links) {
+    const x = b.x - a.x, y = b.y - a.y, d = Math.sqrt(x * x + y * y) || 1;
+    const want = 34 + (a.r + b.r), f = (d - want) / d * 0.09 * alpha;
+    const wa = 1 / Math.sqrt(a.deg), wb = 1 / Math.sqrt(b.deg);
+    a.vx += x * f * wa; a.vy += y * f * wa; b.vx -= x * f * wb; b.vy -= y * f * wb;
+  }
+  for (const n of nodes) {
+    if (n === dragNode) { n.vx = n.vy = 0; continue; }
+    n.vx *= 0.82; n.vy *= 0.82; n.x += n.vx; n.y += n.vy;
+  }
+  alpha *= 0.992;
 }
-function pressed(group,value) { for(const b of $(group).querySelectorAll("button")) b.setAttribute("aria-pressed",String(b.dataset.v===value)); }
-function render() { hideTip(); pressed("preset",state.preset);pressed("mode",state.mode);$("explorer").hidden=state.mode!=="explore";$("tableview").hidden=state.mode!=="table";if(state.mode==="table") renderTable();else renderGraph(); }
-$("preset").addEventListener("click",e=>{if(e.target.dataset.v){state.preset=e.target.dataset.v;rebuild();}});
-$("mode").addEventListener("click",e=>{if(e.target.dataset.v){state.mode=e.target.dataset.v;render();}});
-$("source").addEventListener("change",e=>{state.source=e.target.value;rebuild();});
-$("q").addEventListener("input",e=>{state.q=e.target.value.trim().toLowerCase();rebuild();});
-$("start").addEventListener("change",e=>{state.kind=e.target.value;rebuild();});
-$("reset").addEventListener("click",()=>{state.preset=defaultPreset;state.source="";state.q="";$("q").value="";$("source").value="";rebuild();});
-document.addEventListener("keydown",e=>{
-  if(e.key==="Escape") {hideTip();return;}
-  const list=e.target.closest(".list");if(!list || !["ArrowDown","ArrowUp","Home","End"].includes(e.key)) return;
-  const buttons=[...list.querySelectorAll("button")],i=buttons.indexOf(e.target);if(i<0)return;e.preventDefault();
-  const index=e.key==="Home"?0:e.key==="End"?buttons.length-1:Math.max(0,Math.min(buttons.length-1,i+(e.key==="ArrowDown"?1:-1)));buttons[index].focus();
+function kick(a) { alpha = Math.max(alpha, a); if (!raf) raf = requestAnimationFrame(frame); }
+function frame() {
+  raf = 0;
+  if (alpha > 0.02) step();
+  draw();
+  if (alpha > 0.02) raf = requestAnimationFrame(frame);
+}
+
+// ---- drawing
+function palette() {
+  colors = {};
+  for (const k of ["surface", "text", "text-2", "text-3", "place", "critical", "high", "medium", "low", "unrated", "edge", "edge-strong", "line"]) colors[k] = css("--" + k);
+}
+function lit() { // the focused (or hovered) node and what it connects to, two steps out
+  const id = state.focus || (state.hover && state.hover.id);
+  if (!id) return null;
+  const set = new Set([id]);
+  for (const a of adj.get(id) || []) { set.add(a); for (const b of adj.get(a) || []) set.add(b); }
+  if (byId.get(id) && byId.get(id).type === "comp") { // a component: its places and its advisories only
+    set.clear(); set.add(id); for (const a of adj.get(id)) set.add(a);
+  }
+  return set;
+}
+function matches(n) { return state.q && n.label.toLowerCase().includes(state.q); }
+function draw() {
+  const c = $("c"), ctx = c.getContext("2d"), dpr = devicePixelRatio || 1;
+  if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.translate(W / 2 + view.x, H / 2 + view.y); ctx.scale(view.k, view.k);
+  const on = lit(), searching = !!state.q;
+  const dim = (n) => (on && !on.has(n.id)) || (searching && !on && !matches(n));
+  ctx.lineWidth = 1 / view.k;
+  for (const [a, b] of links) {
+    const strong = on && on.has(a.id) && on.has(b.id);
+    if (on && !strong) ctx.globalAlpha = .12;
+    ctx.strokeStyle = strong ? colors["edge-strong"] : colors.edge;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  for (const n of nodes) {
+    ctx.globalAlpha = dim(n) ? .16 : 1;
+    ctx.fillStyle = n.type === "place" ? colors.place : colors[n.sev] || colors.unrated;
+    ctx.beginPath();
+    if (n.type === "place") { const r = n.r; ctx.roundRect(n.x - r, n.y - r, r * 2, r * 2, 3); }
+    else if (n.type === "adv") { const r = n.r * 1.25; ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y); ctx.closePath(); }
+    else ctx.arc(n.x, n.y, n.r, 0, 6.2832);
+    ctx.fill();
+    ctx.lineWidth = 2 / view.k; ctx.strokeStyle = colors.surface; ctx.stroke(); // a surface ring keeps overlapping marks apart
+    if (n.kev) { ctx.lineWidth = 2 / view.k; ctx.strokeStyle = colors.text; ctx.beginPath(); ctx.arc(n.x, n.y, (n.type === "adv" ? n.r * 1.25 : n.r) + 3.5 / view.k, 0, 6.2832); ctx.stroke(); }
+  }
+  ctx.globalAlpha = 1;
+  if (!state.labels) return;
+  ctx.font = `${11 / view.k}px -apple-system, "Segoe UI", sans-serif`; ctx.textBaseline = "middle";
+  const placed = [];
+  const want = nodes.filter((n) => !dim(n) && (on || nodes.length < 140 ? true : matches(n) || n.type === "place" && (n.deg >= 4 || view.k > 1.3) || n.kev && n.type === "adv" || view.k > 2.2))
+    .sort((a, b) => b.deg - a.deg);
+  for (const n of want) {
+    const text = n.label.length > 38 ? n.label.slice(0, 37) + "…" : n.label, w = ctx.measureText(text).width, h = 13 / view.k;
+    const x = n.x + n.r + 5 / view.k, y = n.y;
+    if (placed.some((p) => x < p.x + p.w && x + w > p.x && Math.abs(y - p.y) < h)) continue; // no label on top of another
+    placed.push({ x, y, w });
+    ctx.lineWidth = 3 / view.k; ctx.strokeStyle = colors.surface; ctx.strokeText(text, x, y);
+    ctx.fillStyle = n.type === "place" ? colors.text : colors["text-2"]; ctx.fillText(text, x, y);
+    if (placed.length > 160) break;
+  }
+}
+
+// ---- pointer
+let dragNode = null, panning = null, moved = false;
+function at(ev) {
+  const rect = $("c").getBoundingClientRect();
+  const x = (ev.clientX - rect.left - W / 2 - view.x) / view.k, y = (ev.clientY - rect.top - H / 2 - view.y) / view.k;
+  let best = null, bd = Infinity;
+  for (const n of nodes) { const d = Math.hypot(n.x - x, n.y - y) - n.r; if (d < 7 / view.k && d < bd) { bd = d; best = n; } }
+  return { x, y, node: best };
+}
+$("c").addEventListener("pointerdown", (ev) => {
+  const hit = at(ev); moved = false; $("c").setPointerCapture(ev.pointerId); $("c").classList.add("drag");
+  if (hit.node) dragNode = hit.node; else panning = { x: ev.clientX - view.x, y: ev.clientY - view.y };
 });
-const media=matchMedia("(prefers-color-scheme: dark)");let manualTheme=false;
-function theme(dark) {document.documentElement.dataset.theme=dark?"dark":"light";$("theme").textContent=dark?"Light mode":"Dark mode";$("theme").setAttribute("aria-label",dark?"Switch to light mode":"Switch to dark mode");}
-$("theme").addEventListener("click",()=>{manualTheme=true;theme(document.documentElement.dataset.theme!=="dark");});media.addEventListener("change",e=>{if(!manualTheme)theme(e.matches);});theme(media.matches);
-$("sub").textContent=`${D.os} · scanned ${D.date} · ${fmt(D.checked)} components checked`;
-$("source").append(new Option("All sources",""));[...new Set(D.comps.map(c=>c.source))].sort().forEach(s=>$("source").append(new Option(s,s)));
-if(D.risks && D.risks.length) {$("riskBox").hidden=false;$("riskTitle").textContent=`Agent setup risks (${D.risks.length}) · separate from the findings filters`;D.risks.forEach(r=>{const item=el("article");item.append(el("h3","",`${r.kind}: ${r.name}`),el("p","",r.detail),el("p","meta",r.where));$("risks").append(item);});}
-const defaultPreset=D.advs.some(a=>a.kev)?"kev":D.advs.some(a=>a.sev==="critical")?"critical":"all";state.preset=defaultPreset;rebuild();
+$("c").addEventListener("pointermove", (ev) => {
+  if (dragNode) { const p = at(ev); dragNode.x = p.x; dragNode.y = p.y; moved = true; kick(.3); return; }
+  if (panning) { view.x = ev.clientX - panning.x; view.y = ev.clientY - panning.y; moved = true; kick(0); draw(); return; }
+  const hit = at(ev).node;
+  if (hit !== state.hover) { state.hover = hit; draw(); }
+  tip(hit, ev);
+});
+$("c").addEventListener("pointerup", (ev) => {
+  $("c").classList.remove("drag");
+  if (!moved) { const hit = at(ev).node; focus(hit ? hit.id : null); }
+  dragNode = null; panning = null;
+});
+$("c").addEventListener("pointerleave", () => { state.hover = null; $("tip").style.display = "none"; draw(); });
+$("c").addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const rect = $("c").getBoundingClientRect(), mx = ev.clientX - rect.left - W / 2, my = ev.clientY - rect.top - H / 2;
+  const k = Math.min(6, Math.max(.15, view.k * Math.exp(-ev.deltaY * 0.0015)));
+  view.x = mx - (mx - view.x) * k / view.k; view.y = my - (my - view.y) * k / view.k; view.k = k; draw();
+}, { passive: false });
+
+function describe(n) {
+  if (n.type === "place") return `${n.ref.path ? n.ref.path + " · " : ""}${n.deg} affected component${n.deg === 1 ? "" : "s"} · ${n.ref.source}`;
+  if (n.type === "adv") return `${n.ref.sev}${n.ref.cvss ? " " + n.ref.cvss : ""}${n.ref.kev ? " · known exploited" : n.ref.poc ? " · public exploit" : ""} · ${n.ref.name || "advisory"}`;
+  return `${n.ref.sev} · ${n.ref.source}${n.ref.fixed ? " · fixed in " + n.ref.fixed : ""}`;
+}
+function tip(n, ev) {
+  const t = $("tip");
+  if (!n) { t.style.display = "none"; return; }
+  t.replaceChildren(document.createTextNode(n.label), el("small", "", describe(n)));
+  const rect = $("stage").getBoundingClientRect();
+  t.style.display = "block";
+  t.style.left = Math.min(ev.clientX - rect.left + 14, rect.width - t.offsetWidth - 8) + "px";
+  t.style.top = Math.max(8, ev.clientY - rect.top - t.offsetHeight - 10) + "px";
+}
+
+// ---- side panel
+function focus(id, centre) {
+  state.focus = id;
+  if (id && centre) { const n = byId.get(id); if (n) { view.x = -n.x * view.k; view.y = -n.y * view.k; } }
+  detail(); draw();
+}
+function sevDot(sev) { const d = el("span", "dot"); d.style.background = `var(--${SEV.includes(sev) ? sev : "unrated"})`; return d; }
+function row(target, name, n, max, small, id, sev) {
+  const r = el("div", "row"); r.tabIndex = 0;
+  const nm = el("span", "name"); if (sev) nm.append(sevDot(sev)); nm.append(name); nm.title = name;
+  const bar = el("div", "bar"); bar.style.width = Math.max(3, n / max * 100) + "%";
+  r.append(nm, el("span", "n", fmt(n)));
+  if (small) r.append(el("small", "", small));
+  r.append(bar);
+  const go = () => focus(id, true);
+  r.addEventListener("click", go); r.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  target.append(r);
+}
+function hotspots() {
+  const fill = (id, list, text) => {
+    const t = $(id); t.replaceChildren();
+    if (!list.length) { t.append(el("div", "note", "None under this filter")); return; }
+    const max = list[0].n;
+    list.slice(0, 8).forEach((x) => row(t, x.node.label, x.n, max, text(x), x.node.id, x.node.sev));
+  };
+  const places = (n) => { const s = new Set(); for (const c of adj.get(n.id)) for (const p of adj.get(c)) if (byId.get(p).type === "place") s.add(p); return s.size; };
+  const by = (type, count) => nodes.filter((n) => n.type === type).map((n) => ({ node: n, n: count(n) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n || rank(a.node.sev) - rank(b.node.sev));
+  fill("hotAdv", by("adv", places), (x) => `${x.node.ref.name || x.node.ref.sev} · in ${x.node.deg} component${x.node.deg === 1 ? "" : "s"}`);
+  fill("hotPlace", by("place", (n) => n.deg), (x) => x.node.ref.path || x.node.ref.fix || x.node.ref.source);
+  fill("hotComp", by("comp", (n) => n.ref.places.length).filter((x) => x.n > 1), (x) => x.node.ref.fixed ? "fixed in " + x.node.ref.fixed : "no fixed version known");
+}
+function detail() {
+  const d = $("detail"); d.replaceChildren();
+  const n = state.focus && byId.get(state.focus);
+  if (!n) { d.append(el("div", "note", "Click a node, or a row below, to see what it connects to.")); return; }
+  d.append(el("h2", "", n.type === "place" ? "Where it is installed" : n.type === "adv" ? "Advisory" : "Component"));
+  d.append(el("div", "title", n.label));
+  if (n.type === "place" && n.ref.path) d.append(el("small", "path", n.ref.path));
+  d.append(el("div", "kv", n.type === "place" ? `${n.deg} affected component${n.deg === 1 ? "" : "s"} · ${n.ref.source}` : describe(n)));
+  const list = (title, ids) => {
+    if (!ids.length) return;
+    d.append(el("h2", "", `${title} (${ids.length})`));
+    ids.map((id) => byId.get(id)).sort((a, b) => rank(a.sev) - rank(b.sev) || b.deg - a.deg).slice(0, 40)
+      .forEach((m) => row(d, m.label, m.deg, Math.max(...ids.map((id) => byId.get(id).deg)), describe(m), m.id, m.sev));
+  };
+  const near = [...adj.get(n.id)];
+  if (n.type === "place") {
+    if (n.ref.fix) { const code = el("code", "", n.ref.fix); code.title = "Click to copy"; code.addEventListener("click", () => navigator.clipboard && navigator.clipboard.writeText(n.ref.fix)); d.append(el("div", "note", "How to update what is here"), code); }
+    list("Affected components here", near);
+  } else if (n.type === "comp") {
+    list("Installed in", near.filter((id) => id[0] === "p"));
+    list("Advisories", near.filter((id) => id[0] === "a"));
+  } else {
+    list("Components it affects", near);
+    const places = new Set(); near.forEach((c) => adj.get(c).forEach((p) => p[0] === "p" && places.add(p)));
+    list("Which puts it in", [...places]);
+  }
+  const clear = el("button", "link", "Clear selection"); clear.addEventListener("click", () => focus(null)); d.append(el("div", "", ""), clear);
+}
+function table() {
+  const body = $("tbody"); body.replaceChildren();
+  nodes.filter((n) => n.type === "comp").sort((a, b) => rank(a.sev) - rank(b.sev) || a.label.localeCompare(b.label)).forEach((n) => {
+    const tr = el("tr"), name = el("td"); name.append(sevDot(n.sev), n.label);
+    const advs = [...adj.get(n.id)].filter((id) => id[0] === "a").map((id) => byId.get(id).label);
+    tr.append(name, el("td", "", n.sev + (n.ref.mark === "KEV" ? " · known exploited" : n.ref.mark === "POC" ? " · public exploit" : "")),
+      where(n.ref.places), el("td", "", advs.slice(0, 6).join(", ") + (advs.length > 6 ? ` +${advs.length - 6}` : "")), el("td", "", n.ref.fixed || "—"));
+    body.append(tr);
+  });
+}
+// where lists the places a component is in, each with its path on disk when the name alone does not say it
+function where(places) {
+  const td = el("td");
+  places.forEach((j) => { const p = D.places[j], line = el("div", "", p.name); if (p.path) line.append(el("small", "path", p.path)); td.append(line); });
+  return td;
+}
+function risks() {
+  const box = $("riskBox");
+  if (!D.risks || !D.risks.length) return;
+  box.append(el("h2", "", "Agent setup risks"));
+  D.risks.forEach((r) => { const w = el("div", "row"); w.style.cursor = "default"; w.append(el("span", "name", `${r.kind}: ${r.name}`), el("span", "n", ""), el("small", "", r.detail)); w.title = r.detail + " — " + r.where; box.append(w); });
+}
+
+// ---- controls
+function pressed(group, v) { for (const b of $(group).children) b.setAttribute("aria-pressed", String(b.dataset.v === v)); }
+$("preset").addEventListener("click", (e) => { if (e.target.dataset.v) { state.preset = e.target.dataset.v; pressed("preset", state.preset); build(); } });
+$("mode").addEventListener("click", (e) => { if (e.target.dataset.v) { document.body.classList.toggle("table", e.target.dataset.v === "table"); pressed("mode", e.target.dataset.v); resize(); } });
+$("source").addEventListener("change", (e) => { state.source = e.target.value; build(); });
+$("q").addEventListener("input", (e) => { state.q = e.target.value.trim().toLowerCase(); draw(); });
+$("labels").addEventListener("change", (e) => { state.labels = e.target.checked; draw(); });
+function resize() { const r = $("stage").getBoundingClientRect(); W = r.width; H = r.height; draw(); }
+addEventListener("resize", resize);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { palette(); draw(); });
+
+(function init() {
+  $("sub").textContent = `${D.os} · scanned ${D.date} · ${fmt(D.checked)} components checked`;
+  const count = (f) => D.comps.filter(f).length;
+  [[D.comps.length, "affected components"], [count((c) => c.mark === "KEV"), "with a known-exploited advisory"], [count((c) => c.sev === "critical"), "critical"],
+   [D.advs.length, "distinct advisories"], [D.places.length, "places they are installed in"]].forEach(([n, t]) => { const s = el("div", "stat"); s.append(el("b", "", fmt(n)), el("span", "", t)); $("stats").append(s); });
+  const src = $("source"); src.append(new Option("All sources", ""));
+  [...new Set(D.comps.map((c) => c.source))].sort().forEach((s) => src.append(new Option(s, s)));
+  if (!count((c) => c.mark === "KEV")) state.preset = count((c) => c.sev === "critical") ? "critical" : "all";
+  pressed("preset", state.preset);
+  palette(); risks(); resize(); build();
+})();
 </script>
 </body>
 </html>
