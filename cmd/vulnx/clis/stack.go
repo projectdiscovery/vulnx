@@ -170,6 +170,7 @@ cat versions.txt | vulnx scan`,
 				}
 				hostProgress("Checking which Go programs reach affected code ...")
 				inv.MarkReachability(&res)
+				inv.CollectRuntime(ctx, scanRoot)
 				hostProgress("")
 				elapsed := time.Since(start)
 				if scanFull || scanVEX != "" {

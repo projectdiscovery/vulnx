@@ -49,6 +49,7 @@ import (
 
 // HostInventory is what vulnx found on a machine.
 type HostInventory struct {
+	Runtime     *HostRuntime            `json:"runtime,omitempty"`
 	OS          string                  `json:"os"`                  // "debian 12", "macOS 26.4", ...
 	Source      string                  `json:"os_source,omitempty"` // where the OS packages came from: dpkg, rpm, apk, sw_vers
 	Entries     []string                `json:"-"`                   // purls and CPEs, each once (the result's items)

@@ -305,6 +305,53 @@ func TestWriteHostReportJSON(t *testing.T) {
 	}
 }
 
+func TestHostRuntimeLocalOnly(t *testing.T) {
+	inv, res := hostFixture()
+	before := renderHost("grid", inv, res, time.Second, false, renderer.NoColorConfig())
+	now := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+	graphBefore, err := json.Marshal(buildHostGraph(inv, res, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sbomBefore, err := inv.CycloneDX(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.Runtime = &vulnx.HostRuntime{Status: "partial", Scope: "test-visible sockets", Endpoints: []vulnx.HostEndpoint{{Protocol: "tcp", Family: "ipv4", Address: "127.0.0.1", Port: 1234, State: "listening", Owners: []int{42}}}, Processes: []vulnx.HostProcess{{PID: 42, Executable: "/runtime-only-secret-path"}}, Gaps: []vulnx.HostRuntimeGap{{Stage: "process", PID: 43, Reason: "permission denied"}}}
+	raw, err := hostJSON(inv, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Host struct {
+			Runtime *vulnx.HostRuntime `json:"runtime"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Host.Runtime == nil || doc.Host.Runtime.Status != "partial" || len(doc.Host.Runtime.Endpoints) != 1 || len(doc.Host.Runtime.Gaps) != 1 {
+		t.Fatalf("runtime missing: %s", raw)
+	}
+	if after := renderHost("grid", inv, res, time.Second, false, renderer.NoColorConfig()); after != before {
+		t.Fatal("runtime changed terminal output")
+	}
+	graphAfter, err := json.Marshal(buildHostGraph(inv, res, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(graphAfter) != string(graphBefore) {
+		t.Fatal("runtime leaked into graph")
+	}
+	sbomAfter, err := inv.CycloneDX(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sbomBefore) != string(sbomAfter) {
+		t.Fatal("runtime leaked into shared inventory")
+	}
+}
+
 func TestHostFooter(t *testing.T) {
 	inv, _ := hostFixture()
 	if got := hostFooter(inv, 7*time.Second, renderer.NoColorConfig()); got != "\n  macOS 26.4: 9 components scanned in 7s\n" {

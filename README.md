@@ -273,6 +273,14 @@ binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formu
 formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
 listed as not assessed, with a count per source. Only names and versions are sent.
 
+Live host scans also save a passive `host.runtime` snapshot in the local JSON report: TCP listeners, bound UDP
+endpoints, visible owner processes, numeric account IDs and executable paths. Exact executable-path matches link
+back to inventory entries; they do not prove that dependencies are loaded or exploitable. Collection is time-bounded
+and permission-limited, with timestamps, scope and explicit gaps; mounted-root scans skip it. Wildcard and specific
+bind addresses do not establish internet access. No services are contacted, privileges elevated, or process arguments,
+environments or secret contents collected. Runtime observations are not sent to the API or included in shared SBOMs,
+and do not change the terminal summary or graph. The local JSON contains paths and addresses: review it before sharing.
+
 AI tools are read as a source of their own: assistant and editor applications, an agent command-line tool that
 updates itself, AI editor extensions, and the packages MCP servers are started from (`npx server@1.2.0`,
 `uvx server==1.2.0`) in each agent's configuration. A server with no version pinned, or one that is a local program,
