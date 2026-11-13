@@ -66,6 +66,8 @@ button.link { border: 0; background: none; color: var(--place); font: inherit; c
 table { border-collapse: collapse; width: 100%; }
 #tableview { display: none; flex: 1; overflow: auto; padding: 14px 20px; }
 #tableview th, #tableview td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+#tableview small.path, #detail small.path { display: block; color: var(--text-3); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+#tableview td:nth-child(3) div + div { margin-top: 5px; }
 #tableview th { color: var(--text-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
 body.table #stage { display: none; }
 body.table #tableview { display: block; }
@@ -330,7 +332,7 @@ $("c").addEventListener("wheel", (ev) => {
 }, { passive: false });
 
 function describe(n) {
-  if (n.type === "place") return `${n.deg} affected component${n.deg === 1 ? "" : "s"} · ${n.ref.source}`;
+  if (n.type === "place") return `${n.ref.path ? n.ref.path + " · " : ""}${n.deg} affected component${n.deg === 1 ? "" : "s"} · ${n.ref.source}`;
   if (n.type === "adv") return `${n.ref.sev}${n.ref.cvss ? " " + n.ref.cvss : ""}${n.ref.kev ? " · known exploited" : n.ref.poc ? " · public exploit" : ""} · ${n.ref.name || "advisory"}`;
   return `${n.ref.sev} · ${n.ref.source}${n.ref.fixed ? " · fixed in " + n.ref.fixed : ""}`;
 }
@@ -372,7 +374,7 @@ function hotspots() {
   const places = (n) => { const s = new Set(); for (const c of adj.get(n.id)) for (const p of adj.get(c)) if (byId.get(p).type === "place") s.add(p); return s.size; };
   const by = (type, count) => nodes.filter((n) => n.type === type).map((n) => ({ node: n, n: count(n) })).filter((x) => x.n > 0).sort((a, b) => b.n - a.n || rank(a.node.sev) - rank(b.node.sev));
   fill("hotAdv", by("adv", places), (x) => `${x.node.ref.name || x.node.ref.sev} · in ${x.node.deg} component${x.node.deg === 1 ? "" : "s"}`);
-  fill("hotPlace", by("place", (n) => n.deg), (x) => x.node.ref.fix || x.node.ref.source);
+  fill("hotPlace", by("place", (n) => n.deg), (x) => x.node.ref.path || x.node.ref.fix || x.node.ref.source);
   fill("hotComp", by("comp", (n) => n.ref.places.length).filter((x) => x.n > 1), (x) => x.node.ref.fixed ? "fixed in " + x.node.ref.fixed : "no fixed version known");
 }
 function detail() {
@@ -380,7 +382,9 @@ function detail() {
   const n = state.focus && byId.get(state.focus);
   if (!n) { d.append(el("div", "note", "Click a node, or a row below, to see what it connects to.")); return; }
   d.append(el("h2", "", n.type === "place" ? "Where it is installed" : n.type === "adv" ? "Advisory" : "Component"));
-  d.append(el("div", "title", n.label), el("div", "kv", describe(n)));
+  d.append(el("div", "title", n.label));
+  if (n.type === "place" && n.ref.path) d.append(el("small", "path", n.ref.path));
+  d.append(el("div", "kv", n.type === "place" ? `${n.deg} affected component${n.deg === 1 ? "" : "s"} · ${n.ref.source}` : describe(n)));
   const list = (title, ids) => {
     if (!ids.length) return;
     d.append(el("h2", "", `${title} (${ids.length})`));
@@ -407,9 +411,15 @@ function table() {
     const tr = el("tr"), name = el("td"); name.append(sevDot(n.sev), n.label);
     const advs = [...adj.get(n.id)].filter((id) => id[0] === "a").map((id) => byId.get(id).label);
     tr.append(name, el("td", "", n.sev + (n.ref.mark === "KEV" ? " · known exploited" : n.ref.mark === "POC" ? " · public exploit" : "")),
-      el("td", "", n.ref.places.map((j) => D.places[j].name).join(", ")), el("td", "", advs.slice(0, 6).join(", ") + (advs.length > 6 ? ` +${advs.length - 6}` : "")), el("td", "", n.ref.fixed || "—"));
+      where(n.ref.places), el("td", "", advs.slice(0, 6).join(", ") + (advs.length > 6 ? ` +${advs.length - 6}` : "")), el("td", "", n.ref.fixed || "—"));
     body.append(tr);
   });
+}
+// where lists the places a component is in, each with its path on disk when the name alone does not say it
+function where(places) {
+  const td = el("td");
+  places.forEach((j) => { const p = D.places[j], line = el("div", "", p.name); if (p.path) line.append(el("small", "path", p.path)); td.append(line); });
+  return td;
 }
 function risks() {
   const box = $("riskBox");

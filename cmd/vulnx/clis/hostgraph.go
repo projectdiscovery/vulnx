@@ -28,6 +28,7 @@ type hostGraph struct {
 
 type graphPlace struct {
 	Name   string `json:"name"`
+	Path   string `json:"path,omitempty"` // where on disk, when the name is not already a path
 	Source string `json:"source"`
 	Fix    string `json:"fix,omitempty"` // how to update what is there
 }
@@ -73,7 +74,7 @@ func buildHostGraph(inv vulnx.HostInventory, res vulnx.StackResult, now time.Tim
 				if fix.Command == "" {
 					how = fix.Note
 				}
-				g.Places = append(g.Places, graphPlace{Name: p, Source: f.source, Fix: how})
+				g.Places = append(g.Places, graphPlace{Name: p, Path: inv.Paths[p], Source: f.source, Fix: how})
 			}
 			c.Places = append(c.Places, i)
 		}

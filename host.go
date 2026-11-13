@@ -58,6 +58,7 @@ type HostInventory struct {
 	NotRead     []string                `json:"not_read"`            // what no reader covers
 	GoBinaries  map[string][]HostBinary `json:"-"`                   // Go entry -> the binaries linking it, for MarkReachability
 	Fixes       map[string]HostFix      `json:"fixes"`               // FoundIn label -> how to update what is there
+	Paths       map[string]string       `json:"paths"`               // FoundIn label -> where on disk that is, when the label is a name (a binary, an app, a formula)
 	EntrySource map[string]string       `json:"-"`                   // entry -> the source (HostSource.Name) that counted it
 	DataOnly    []HostComponent         `json:"data_only"`           // installed, but nothing in them runs: nothing to check
 	Pending     []HostPending           `json:"-"`                   // read with a source repository but no product yet: ResolvePending decides
@@ -147,7 +148,7 @@ func HostEntries(root string) (HostInventory, error) {
 
 func newHostReader(root, goos string) *hostReader {
 	return &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
-		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}, Fixes: map[string]HostFix{},
+		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}, Fixes: map[string]HostFix{}, Paths: map[string]string{},
 			EntrySource: map[string]string{}}}
 }
 
@@ -224,6 +225,20 @@ func (h *hostReader) label(dir string) string {
 		}
 	}
 	return p
+}
+
+// at records where on disk a place named by label is (as the machine sees it, without a mounted root's prefix),
+// the first reader's word standing.
+func (h *hostReader) at(label, path string) {
+	if _, ok := h.inv.Paths[label]; ok {
+		return
+	}
+	if h.root != "/" {
+		if rel, err := filepath.Rel(h.root, path); err == nil && !strings.HasPrefix(rel, "..") {
+			path = "/" + filepath.ToSlash(rel)
+		}
+	}
+	h.inv.Paths[label] = path
 }
 
 // fix records how to update a place, the first reader's word standing.
@@ -806,6 +821,7 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 				continue
 			}
 			if mods, renamed, main, ok := goModules(real); ok {
+				h.at(e.Name(), real)
 				h.fix(e.Name(), binaryFix(e.Name(), real, main))
 				b.goBins++
 				b.goEntries = append(b.goEntries, foundIn(e.Name(), mods)...)
@@ -815,6 +831,7 @@ func (h *hostReader) readBinaries(dirs []string) binaryModules {
 					}
 				}
 			} else if crates, ok := rustCrates(real); ok {
+				h.at(e.Name(), real)
 				h.fix(e.Name(), binaryFix(e.Name(), real, ""))
 				b.rustBins++
 				b.rustEntries = append(b.rustEntries, foundIn(e.Name(), crates)...)
@@ -1054,6 +1071,7 @@ func (h *hostReader) homebrew() {
 				contents, read := h.kegContents(keg)
 				entries = append(entries, contents...)
 				in := n.Name() + " (formula)"
+				h.at(in, keg)
 				h.fix(in, HostFix{Kind: "brew", Command: "brew upgrade", Target: n.Name()})
 				base, _, _ := strings.Cut(n.Name(), "@")
 				if products, ok := brewProducts[base]; ok {
@@ -1089,6 +1107,7 @@ func (h *hostReader) homebrew() {
 // nothing (its executables already read from PATH count).
 func (h *hostReader) kegContents(keg string) (out []found, read bool) {
 	in := filepath.Base(filepath.Dir(keg)) + " (formula)"
+	h.at(in, keg)
 	h.fix(in, HostFix{Kind: "brew", Command: "brew upgrade", Target: filepath.Base(filepath.Dir(keg))})
 	for _, d := range globAll(filepath.Join(keg, "lib/python3*/site-packages"), filepath.Join(keg, "libexec/lib/python3*/site-packages"),
 		filepath.Join(keg, "libexec/venv/lib/python3*/site-packages"), filepath.Join(keg, "Frameworks/Python.framework/Versions/*/lib/python3*/site-packages")) {
@@ -1247,6 +1266,7 @@ func (h *hostReader) applications() {
 			ver = info["CFBundleVersion"]
 		}
 		name := strings.TrimSuffix(filepath.Base(b), ".app")
+		h.at(name+".app", b)
 		bundled := electronContents(b)
 		if len(bundled) > 0 {
 			h.fix(name+".app", HostFix{Kind: "app", Target: name, Note: "update " + name})

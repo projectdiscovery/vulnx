@@ -82,6 +82,7 @@ func (h *hostReader) aiTools() {
 				notAssessed = append(notAssessed, HostComponent{Name: name, Version: ver})
 				continue
 			}
+			h.at(name+".app", b)
 			h.fix(name+".app", HostFix{Kind: "app", Target: name, Note: "update " + name})
 			entries = append(entries, found{productCPE(product, ver), name + ".app"})
 		}
