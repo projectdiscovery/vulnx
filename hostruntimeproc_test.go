@@ -80,6 +80,10 @@ func TestParseRuntimeProcSockets(t *testing.T) {
 	if len(got) != 1 || err == nil {
 		t.Fatalf("valid observations lost: %+v %v", got, err)
 	}
+	got, err = parseRuntimeProcSockets(context.Background(), []byte(procSocketHeader+valid+strings.Repeat("x", 64<<10)), "tcp", "ipv4")
+	if len(got) != 1 || err == nil {
+		t.Fatalf("scanner error lost partial observations: %+v %v", got, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := parseRuntimeProcSockets(ctx, []byte(procSocketHeader+valid), "tcp", "ipv4"); !errors.Is(err, context.Canceled) {

@@ -223,7 +223,7 @@ func (h *hostReader) mcpServers() (out []mcpServer) {
 			}
 			var servers []launch
 			for _, s := range tomlMCPServers(string(raw)) {
-				servers = append(servers, launch{name: s.name, command: s.command, url: s.url})
+				servers = append(servers, launch(s))
 			}
 			read(path, servers)
 		}

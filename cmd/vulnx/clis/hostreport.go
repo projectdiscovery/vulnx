@@ -1176,11 +1176,6 @@ func failsOn(level string, inv vulnx.HostInventory, res vulnx.StackResult) bool 
 	return false
 }
 
-// since is a step's duration as the progress lines print it.
-func since(t time.Time) string {
-	return time.Since(t).Round(100 * time.Millisecond).String()
-}
-
 // hostJSON is a host scan's full result: the stack result with the inventory beside it (sources, where each
 // component was found, how each place is updated, what was not assessed or read).
 func hostJSON(inv vulnx.HostInventory, res vulnx.StackResult) ([]byte, error) {
@@ -1303,7 +1298,7 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 			b.WriteString(dim("      "+text) + "\n")
 			continue
 		}
-		b.WriteString(fmt.Sprintf("    %s %s\n", c.Colorize("!", gridColors["high"]), text))
+		b.WriteString("    " + c.Colorize("!", gridColors["high"]) + " " + text + "\n")
 	}
 	return b.String()
 }

@@ -1,7 +1,7 @@
 package vulnx
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	fileutil "github.com/projectdiscovery/utils/file"
 )
 
 const runtimeProcLimit = 8 << 20
@@ -148,18 +150,24 @@ func parseRuntimeProcSockets(ctx context.Context, raw []byte, protocol, family s
 	if protocol != "tcp" && protocol != "udp" || family != "ipv4" && family != "ipv6" {
 		return nil, errors.New("unsupported socket table kind")
 	}
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	if !scanner.Scan() || !strings.Contains(scanner.Text(), "local_address") {
-		return nil, errors.New("socket table header missing")
-	}
 	var out []HostEndpoint
 	var malformed int
 	rows := 0
-	for scanner.Scan() {
+	header := false
+	for line, err := range fileutil.LinesReader(bytes.NewReader(raw), fileutil.WithTrimSpace()) {
+		if err != nil {
+			return out, err
+		}
+		if !header {
+			if !strings.Contains(line, "local_address") {
+				return nil, errors.New("socket table header missing")
+			}
+			header = true
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -199,8 +207,8 @@ func parseRuntimeProcSockets(ctx context.Context, raw []byte, protocol, family s
 		}
 		out = append(out, HostEndpoint{Protocol: protocol, Family: family, Address: address, Port: port, State: stateName, Socket: strconv.FormatUint(inode, 10), Owners: []int{}})
 	}
-	if err := scanner.Err(); err != nil {
-		return out, err
+	if !header {
+		return nil, errors.New("socket table header missing")
 	}
 	if malformed > 0 {
 		return out, fmt.Errorf("%d malformed socket rows", malformed)

@@ -59,10 +59,7 @@ func TestHarnesses(t *testing.T) {
 	h := newHostReader(root, "linux")
 	h.aiTools()
 
-	var entries []string
-	for _, e := range h.inv.Entries {
-		entries = append(entries, e)
-	}
+	entries := append([]string(nil), h.inv.Entries...)
 	sort.Strings(entries)
 	wantEntries := []string{"pkg:npm/cline-srv@2.2.0", "pkg:npm/cx-server@0.9.0", "pkg:npm/oc-server@0.4.0",
 		"pkg:npm/opencode-helper@1.2.0", "pkg:npm/zed-srv@1.0.0", "pkg:pypi/mcp-server-fetch@2025.1.17"}
