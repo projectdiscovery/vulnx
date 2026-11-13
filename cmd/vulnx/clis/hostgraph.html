@@ -32,25 +32,37 @@ p { margin:5px 0; }
 .summary p { margin:0; }
 .navigation { padding:10px 32px 18px; display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between; }
 .navigation label { display:flex; align-items:center; gap:9px; }
-.workspace { display:grid; grid-template-columns:minmax(270px, 29%) minmax(0,1fr); border-top:1px solid var(--line); margin:0 32px 32px; min-height:550px; }
-.queue { padding:18px 22px 0 0; border-right:1px solid var(--line); min-width:0; }
-.queue-head { margin-bottom:14px; }
-#queueList { max-height:570px; overflow:auto; padding:4px; }
-.relations .list { max-height:510px; overflow:auto; padding:4px; }
-.list { display:flex; flex-direction:column; gap:4px; }
-.row { width:100%; text-align:left; padding:11px 12px; border:1px solid transparent; border-radius:6px; position:relative; }
-.row .name { display:block; font-weight:550; overflow-wrap:anywhere; }
-.row .meta { display:block; margin-top:3px; }
-.row .measure { display:flex; gap:8px; align-items:baseline; justify-content:space-between; margin-top:7px; }
-.row .value { font-size:12px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
-.bar { display:block; height:3px; margin-top:7px; border-radius:0 3px 3px 0; background:var(--accent); }
+#explorer { margin:0 32px 28px; }
+.graph-toolbar { display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:16px; }
+.graph-toolbar label { display:flex; align-items:center; gap:10px; min-width:0; }
+#rootChoice { max-width:520px; min-width:200px; width:40vw; }
+.graph-scroll { overflow:auto; border:1px solid var(--line); border-radius:10px; }
+#graph { position:relative; min-width:900px; background:var(--panel); }
+#edges { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+#edges path { fill:none; stroke:var(--muted); stroke-width:1.4; opacity:.45; }
+#edges path.active { stroke:var(--accent); stroke-width:2.5; opacity:1; }
+#edges.emphasis path:not(.active) { opacity:.07; }
+#layers { position:relative; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:72px; padding:20px 24px; }
+.layer { min-width:0; }
+.layer h2 { font-size:15px; display:flex; gap:9px; align-items:center; }
+.layer-head { height:74px; }
+.layer-body { display:flex; flex-direction:column; gap:16px; min-height:96px; }
+.graph-node { width:100%; height:76px; text-align:left; padding:10px 12px; border-radius:8px; position:relative; background:var(--surface); }
+.graph-node .name { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; font-size:13px; font-weight:600; line-height:1.4; }
+.graph-node .badge { margin-top:7px; }
+.graph-node:hover { border-color:var(--accent); background:var(--surface); }
+.graph-node[aria-pressed=true] { border:2px solid var(--accent); background:var(--selected); }
+.shape { display:inline-block; width:10px; height:10px; border:1.5px solid var(--muted); flex:none; }
+.shape.c { border-radius:50%; }
+.shape.a { transform:rotate(45deg); width:9px; height:9px; }
+.graph-detail { border-top:1px solid var(--line); margin-top:20px; padding-top:16px; max-width:1000px; }
+#graphStatus { margin-top:10px; }
 .badge { display:inline-flex; gap:6px; align-items:center; font-size:11px; color:var(--muted); }
 .badge::before { content:""; width:8px; height:8px; border:1px solid currentColor; border-radius:50%; flex:none; }
 .badge.critical::before { background:var(--critical); border-color:var(--critical); }
 .badge.high::before { background:var(--high); border-color:var(--high); }
 .badge.medium::before { background:var(--medium); border-color:var(--medium); }
 .badge.kev::before { border-radius:0; background:var(--text); }
-.detail { min-width:0; padding:22px 0 0 26px; }
 .detail-title { font-size:23px; letter-spacing:-.35px; overflow-wrap:anywhere; margin-top:4px; }
 .context { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .context .badge { font-size:12px; }
@@ -58,12 +70,6 @@ p { margin:5px 0; }
 .copyline { display:flex; align-items:flex-start; gap:10px; margin:7px 0; }
 .copyline code { flex:1; min-width:0; font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; white-space:pre-wrap; }
 .copyline button { flex:none; font-size:12px; padding:3px 9px; }
-.relations { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:22px; }
-.relations section { min-width:0; }
-.relations h3 { margin-bottom:3px; }
-.relations .list { margin-top:10px; }
-.related-detail { margin-top:18px; border-top:1px solid var(--line); padding-top:16px; }
-.related-detail h2 { overflow-wrap:anywhere; }
 .pager { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 0; }
 .pager button { padding:4px 8px; font-size:12px; }
 .pager span { color:var(--muted); font-size:12px; }
@@ -82,14 +88,14 @@ footer { padding:0 32px 24px; color:var(--muted); font-size:12px; max-width:100c
 #notice { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); max-width:90vw; background:var(--text); color:var(--surface); border-radius:6px; padding:8px 16px; z-index:2; }
 #notice:empty { display:none; }
 #tip { position:fixed; max-width:340px; padding:8px 12px; background:var(--text); color:var(--surface); border-radius:6px; pointer-events:none; font-size:12px; z-index:3; overflow-wrap:anywhere; }
-@media(max-width:900px) { header,.controls { padding-inline:18px; } .summary,.navigation { padding-inline:18px; } .workspace { margin-inline:18px; grid-template-columns:240px minmax(0,1fr); } .queue { padding-right:12px; } .detail { padding-left:16px; } .relations { grid-template-columns:1fr; } #tableview,#riskBox { margin-inline:18px; } }
-@media(max-width:600px) { header { padding-top:20px; } h1 { font-size:23px; } .workspace { display:block; } .queue { border-right:0; border-bottom:1px solid var(--line); padding:16px 0; } #queueList { max-height:320px; overflow:auto; padding:4px; } .detail { padding:20px 0 0; } .controls .group { width:100%; } .controls button { flex:1; font-size:12px; } .relations { gap:18px; } .navigation { align-items:flex-start; } .copyline { flex-wrap:wrap; } }
-@media(forced-colors:active) { .bar { background:CanvasText; } .row[aria-pressed=true] { border:2px solid Highlight; } }
-@media print { .controls,.navigation,.pager,#theme,.copyline button { display:none; } .bar { background:transparent; border-bottom:3px solid; } }
+@media(max-width:900px) { header,.controls,.summary,.navigation { padding-inline:18px; } #explorer,#tableview,#riskBox { margin-inline:18px; } .graph-toolbar { align-items:flex-start; flex-direction:column; gap:4px; } #rootChoice { max-width:75vw; width:75vw; } }
+@media(max-width:600px) { header { padding-top:20px; } h1 { font-size:22px; } .controls .group { width:100%; } .controls button { flex:1; font-size:12px; } .navigation { align-items:flex-start; } .copyline { flex-wrap:wrap; } }
+@media(forced-colors:active) { #edges path { stroke:CanvasText; opacity:1; } .graph-node[aria-pressed=true] { border-color:Highlight; } }
+@media print { .controls,.navigation,.pager,#theme,.copyline button { display:none; } #edges path { stroke:var(--text); opacity:1; } }
 </style>
 </head>
 <body>
-<header><div><h1>What to update, and where</h1><p class="muted" id="sub"></p></div><button id="theme" aria-label="Switch color theme">Dark mode</button></header>
+<header><div><h1>Follow the connections. Find what to update.</h1><p class="muted" id="sub"></p></div><button id="theme" aria-label="Switch color theme">Dark mode</button></header>
 <div class="controls">
   <div class="group" id="preset" role="group" aria-label="Findings to include">
     <button data-v="kev">Known exploited</button><button data-v="poc">Public exploit</button><button data-v="critical">Critical</button><button data-v="high">Critical + high</button><button data-v="all">Everything</button>
@@ -101,12 +107,14 @@ footer { padding:0 32px 24px; color:var(--muted); font-size:12px; max-width:100c
 <div class="summary"><p id="shown" role="status"></p><span class="meta" id="scope"></span></div>
 <div class="navigation">
   <label>Start with <select id="start"><option value="p">Places to update</option><option value="a">Advisories shared across places</option><option value="c">Components shared across places</option></select></label>
-  <div class="group" id="mode" role="group" aria-label="View"><button data-v="explore" aria-pressed="true">Explore connections</button><button data-v="table" aria-pressed="false">Table</button></div>
+  <div class="group" id="mode" role="group" aria-label="View"><button data-v="explore" aria-pressed="true">Layered graph</button><button data-v="table" aria-pressed="false">Table</button></div>
 </div>
 <main>
-  <div class="workspace" id="explorer">
-    <section class="queue" aria-labelledby="queueTitle"><div class="queue-head"><h2 id="queueTitle"></h2><p class="meta" id="order"></p></div><div class="list" id="queueList"></div><div id="queuePager"></div></section>
-    <section class="detail" aria-label="Selected item and connections"><div id="detail"></div><div id="relatedDetail" class="related-detail" hidden></div><div class="relations" id="relations"></div></section>
+  <div id="explorer">
+    <div class="graph-toolbar"><label>Focus <select id="rootChoice" aria-label="Graph focus"></select></label><p class="meta">Click a node to follow its connections. Use Tab or arrow keys, then Enter.</p><button id="showDetail">Selected node details</button></div>
+    <div class="graph-scroll" tabindex="0" aria-label="Layered connection graph; scroll horizontally on narrow screens"><div id="graph"><svg id="edges" aria-hidden="true"></svg><div id="layers"></div></div></div>
+    <p id="graphStatus" class="meta"></p>
+    <section class="graph-detail" aria-label="Selected node details"><div id="detail"></div></section>
   </div>
   <div id="tableview" hidden><table><caption>Filtered affected components. Select a place to inspect its update instructions. Advisory lists can be expanded.</caption><thead><tr><th>Component</th><th>Priority</th><th>Installed in</th><th>Advisories</th><th>Fixed version</th></tr></thead><tbody id="tbody"></tbody></table><div id="tablePager"></div></div>
   <details id="riskBox" hidden><summary id="riskTitle"></summary><div id="risks"></div></details>
@@ -125,7 +133,7 @@ const rank = s => { const i = SEV.indexOf(s); return i < 0 ? 4 : i; };
 const fmt = n => n.toLocaleString("en-US");
 const size = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
 const kinds = { p:"Places", c:"Components", a:"Advisories" };
-const state = { preset:"kev", source:"", q:"", kind:"p", root:null, related:null, page:0, pages:{}, tablePage:0, mode:"explore" };
+const state = { preset:"kev", source:"", q:"", kind:"p", root:null, pages:{}, tablePage:0, mode:"explore" };
 let records = [], nodes = new Map(), roots = [], noticeTimer;
 const data = (kind, i) => ({p:D.places, c:D.comps, a:D.advs})[kind][i];
 const label = n => n.kind === "a" ? n.ref.id : n.kind === "c" ? `${n.ref.name} ${n.ref.version}` : n.ref.name;
@@ -174,7 +182,7 @@ function rebuild() {
     }
     records.push({c:i,p,a});
   });
-  nodes = collect(records); state.page = 0; state.tablePage = 0; state.related = null; state.pages = {};
+  nodes = collect(records); state.tablePage = 0; state.pages = {};
   roots = sorted([...nodes.values()].filter(n => n.kind === state.kind));
   state.root = roots.length ? roots[0].id : null;
   const counts = k => [...nodes.values()].filter(n => n.kind === k).length;
@@ -197,14 +205,6 @@ function tooltip(b,n) {
 }
 function hideTip() { $("tip").hidden=true; }
 addEventListener("scroll",hideTip,true);
-function row(n,max,selected,run,chart) {
-  const b=button("",()=>{ const focused=document.activeElement===b, parent=b.parentElement, scroll=parent.scrollTop, selector=parent.id ? "#"+parent.id : `[data-kind="${parent.dataset.kind}"]`; run(); if(focused) { const list=document.querySelector(selector), replacement=list && [...list.querySelectorAll("button")].find(item=>item.dataset.id===n.id); if(replacement) { replacement.focus({preventScroll:true}); list.scrollTop=scroll; hideTip(); } } }); b.className="row"; b.dataset.id=n.id; b.setAttribute("aria-pressed",String(selected));
-  b.append(el("span","name",label(n)));
-  if (n.kind !== "p") b.append(el("span","meta",description(n)));
-  const m=el("span","measure"); m.append(badge(n),el("span","value",n.kind === "p" ? size(n.a.size,"advisory").replace("advisorys","advisories") : size(n.p.size,"place"))); b.append(m);
-  if (chart && max > 0) { const bar=el("span","bar"); bar.style.width=(100*n.count/max)+"%"; bar.setAttribute("aria-hidden","true"); b.append(bar); }
-  tooltip(b,n); return b;
-}
 function pager(target,total,page,limit,go) {
   target.replaceChildren(); if (total <= limit) return;
   const box=el("div","pager"), prev=button("Previous",()=>go(page-1)), next=button("Next",()=>go(page+1));
@@ -212,18 +212,47 @@ function pager(target,total,page,limit,go) {
   box.append(prev,el("span","",`${page*limit+1}–${Math.min(total,(page+1)*limit)} of ${fmt(total)}`),next); target.append(box);
 }
 function selectRoot(id) {
-  state.root=id; state.related=null; state.pages={}; render();
-  if (innerWidth <= 600) $("detail").scrollIntoView({block:"start"});
+  state.root=id; state.pages={}; render();
 }
-function renderQueue() {
-  $("queueTitle").textContent=state.kind === "p" ? "Start here" : kinds[state.kind];
-  $("order").textContent=`Known exploited first, then public exploit, severity and ${state.kind === "p" ? "advisory count" : "number of places"}. Bars compare ${state.kind === "p" ? "distinct advisories" : "places"}.`;
-  const list=$("queueList"); list.replaceChildren();
-  if (!roots.length) list.append(el("p","empty","No matching findings. Try Everything or reset the filters."));
-  const max=Math.max(1,...roots.map(n=>n.count));
-  roots.slice(state.page*20,(state.page+1)*20).forEach(n=>list.append(row(n,max,n.id===state.root,()=>selectRoot(n.id),true)));
-  pager($("queuePager"),roots.length,state.page,20,p=>{state.page=p;renderQueue();$("queueList").scrollTop=0;document.querySelector("#queueList button")?.focus();});
+function renderGraph() {
+  const root=nodes.get(state.root), layers=$("layers"), edges=$("edges"); layers.replaceChildren(); edges.replaceChildren();
+  const choice=$("rootChoice"); choice.replaceChildren();
+  roots.forEach(n=>choice.append(new Option(label(n),n.id))); choice.value=state.root || ""; choice.disabled=!roots.length;
+  const detail=$("detail"); detail.replaceChildren();
+  if(!root) { layers.append(el("p","empty","No matching findings. Reset the filters or try Everything.")); $("graphStatus").textContent="No nodes under these filters."; return; }
+  info(detail,root);
+  const scoped=subset(records,root), map=collect(scoped), visible=new Map();
+  let total=0;
+  for(const kind of ["p","c","a"]) {
+    const list=sorted([...map.values()].filter(n=>n.kind===kind)); total+=list.length;
+    const section=el("section","layer"), head=el("div","layer-head"), title=el("h2");title.append(el("span","shape "+kind),el("span","",kinds[kind]+" ("+list.length+")"));
+    head.append(title,el("p","meta",kind==="p"?"Where it is installed":kind==="c"?"Affected component versions":"Advisories affecting these versions"));section.append(head);
+    const body=el("div","layer-body list"), page=state.pages[kind]||0;
+    for(const n of list.slice(page*6,(page+1)*6)) {
+      const b=button("",()=>{openRoot(n.id);document.querySelector(`#layers [data-id="${n.id}"]`)?.focus({preventScroll:true});}); b.className="graph-node";b.dataset.id=n.id;b.setAttribute("aria-pressed",String(root.id===n.id));
+      b.append(el("span","name",label(n)),badge(n));tooltip(b,n);
+      const highlight=()=>{edges.classList.add("emphasis");for(const path of edges.children) path.classList.toggle("active",path.dataset.from===n.id || path.dataset.to===n.id);};
+      const clear=()=>{edges.classList.remove("emphasis");for(const path of edges.children) path.classList.remove("active");};
+      b.addEventListener("mouseenter",highlight);b.addEventListener("focus",highlight);b.addEventListener("mouseleave",clear);b.addEventListener("blur",clear);
+      visible.set(n.id,b);body.append(b);
+    }
+    section.append(body);const controls=el("div");pager(controls,list.length,page,6,p=>{state.pages[kind]=p;renderGraph();document.querySelectorAll(".layer")[['p','c','a'].indexOf(kind)].querySelector(".graph-node")?.focus({preventScroll:true});});section.append(controls);layers.append(section);
+  }
+  const bodies=[...layers.querySelectorAll('.layer-body')], height=Math.max(...bodies.map(b=>b.children.length))*92-16;
+  bodies.forEach(body=>{body.style.height=height+'px';if(body.children.length===1)body.style.justifyContent='center';});
+  const hidden=total-visible.size;
+  $("graphStatus").textContent=`Focused on ${label(root)}. ${visible.size} of ${total} connected nodes displayed${hidden ? `; ${hidden} more via Previous / Next in each column` : ""}. Lines join displayed nodes only. Hover or focus a node to trace its lines. Scroll horizontally on narrow screens.`;
+  const link=(from,to)=>{
+    if(!visible.has(from)||!visible.has(to))return;
+    const container=$("graph").getBoundingClientRect(),a=visible.get(from).getBoundingClientRect(),b=visible.get(to).getBoundingClientRect();
+    const x1=a.right-container.left,y1=a.top+a.height/2-container.top,x2=b.left-container.left,y2=b.top+b.height/2-container.top;
+    const path=document.createElementNS("http://www.w3.org/2000/svg","path");path.setAttribute("d",`M ${x1} ${y1} C ${x1+36} ${y1}, ${x2-36} ${y2}, ${x2} ${y2}`);path.dataset.from=from;path.dataset.to=to;edges.append(path);
+  };
+  for(const r of scoped) {for(const p of r.p)link("p"+p,"c"+r.c);for(const a of r.a)link("c"+r.c,"a"+a);}
 }
+$("rootChoice").addEventListener("change",e=>selectRoot(e.target.value));
+$("showDetail").addEventListener("click",()=>{$("detail").scrollIntoView({block:"start"});$("detail").tabIndex=-1;$("detail").focus({preventScroll:true});});
+addEventListener("resize",()=>{if(state.mode==="explore")renderGraph();});
 function announce(text) { clearTimeout(noticeTimer); $("notice").textContent=text; noticeTimer=setTimeout(()=>$("notice").textContent="",4000); }
 function copyline(target,text,what) {
   const line=el("div","copyline"), code=el("code","",text), b=button("Copy "+what,async()=>{
@@ -246,30 +275,9 @@ function info(target,n) {
   } else if (n.kind === "a") target.append(el("p","muted",n.ref.name || "No advisory description reported."));
   else target.append(el("p","muted",n.ref.fixed ? `Fixed version reported: ${n.ref.fixed}. Update the containing installation, then rescan.` : "No fixed version reported. Check the containing installation for updates or mitigations."));
 }
-function renderDetail() {
-  const d=$("detail"), related=$("relatedDetail"), relations=$("relations"); d.replaceChildren(); related.replaceChildren(); relations.replaceChildren(); related.hidden=true;
-  const root=nodes.get(state.root); if (!root) { d.append(el("p","empty","No affected items in this view. This does not mean the whole machine is clean.")); return; }
-  info(d,root);
-  const scoped=subset(records,root), map=collect(scoped), selected=state.related && map.get(state.related);
-  if (selected) {
-    related.hidden=false; related.append(button("Clear connection selection",()=>{state.related=null;state.pages={};renderDetail();})); info(related,selected);
-    related.append(button("Start from this "+({p:"place",a:"advisory",c:"component"}[selected.kind]),()=>openRoot(selected.id)));
-  }
-  const order=root.kind === "p" ? ["c","a"] : root.kind === "a" ? ["p","c"] : ["p","a"];
-  for (const kind of order) {
-    const linked=selected && selected.kind !== kind ? collect(subset(scoped,selected)) : map;
-    const list=sorted([...linked.values()].filter(n=>n.kind===kind));
-    const section=el("section"), title=el("h3","",`${kinds[kind]} (${fmt(list.length)})`), note=el("p","meta",selected && selected.kind !== kind ? "Connected to both selected items." : kind === "p" ? "Select a place for its path and update instructions." : "Select an item to narrow the other list.");
-    section.append(title,note); const body=el("div","list"); body.dataset.kind=kind;
-    const page=Math.min(state.pages[kind]||0,Math.max(0,Math.ceil(list.length/12)-1));
-    list.slice(page*12,(page+1)*12).forEach(n=>body.append(row(n,1,n.id===state.related,()=>{state.related=state.related===n.id ? null : n.id;state.pages={};renderDetail();},false)));
-    if (!list.length) body.append(el("p","empty","No linked items reported."));
-    section.append(body); const controls=el("div"); pager(controls,list.length,page,12,p=>{state.pages[kind]=p;renderDetail(); const first=document.querySelector(`[data-kind="${kind}"] button`); if(first) first.focus();}); section.append(controls); relations.append(section);
-  }
-}
 function openRoot(id) {
   state.kind=id[0]; $("start").value=state.kind; roots=sorted([...nodes.values()].filter(n=>n.kind===state.kind));
-  state.page=Math.max(0,Math.floor(roots.findIndex(n=>n.id===id)/20)); state.mode="explore"; selectRoot(id);
+  state.mode="explore"; selectRoot(id);
 }
 function renderTable() {
   const body=$("tbody"); body.replaceChildren(); const comps=sorted([...nodes.values()].filter(n=>n.kind==="c"));
@@ -285,7 +293,7 @@ function renderTable() {
   if(!comps.length) {const tr=el("tr"),td=el("td","empty","No matching components. Reset the filters to start again.");td.colSpan=5;tr.append(td);body.append(tr);}
 }
 function pressed(group,value) { for(const b of $(group).querySelectorAll("button")) b.setAttribute("aria-pressed",String(b.dataset.v===value)); }
-function render() { hideTip(); pressed("preset",state.preset);pressed("mode",state.mode);$("explorer").hidden=state.mode!=="explore";$("tableview").hidden=state.mode!=="table";if(state.mode==="table") renderTable();else {renderQueue();renderDetail();} }
+function render() { hideTip(); pressed("preset",state.preset);pressed("mode",state.mode);$("explorer").hidden=state.mode!=="explore";$("tableview").hidden=state.mode!=="table";if(state.mode==="table") renderTable();else renderGraph(); }
 $("preset").addEventListener("click",e=>{if(e.target.dataset.v){state.preset=e.target.dataset.v;rebuild();}});
 $("mode").addEventListener("click",e=>{if(e.target.dataset.v){state.mode=e.target.dataset.v;render();}});
 $("source").addEventListener("change",e=>{state.source=e.target.value;rebuild();});

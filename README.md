@@ -280,10 +280,11 @@ is listed as not assessed. Only the package name and version are read from a con
 Python tools installed in their own environment (`uv tool`, `pipx`) are read with the other Python packages.
 
 `--graph` also writes `vulnx-host-<date>.graph.html`: one local page, with no network and nothing uploaded, that
-ranks places to update by known exploitation, public exploits, severity and advisory count. Select a place to see
-its path, copy its update instructions and explore the affected components and advisories there. You can also start
-from a shared advisory or component to find its installations. Presets, source and search filters apply to the linked
-lists and table view; light and dark modes are available.
+draws a focused, layered graph: installation places on the left, affected components in the middle and advisories
+on the right. Click a node to explore its connections; large neighbourhoods have per-column pagination with counts.
+The starting choices are ranked by known exploitation, public exploits, severity and reach. Select a place for its
+path and copyable update instructions. Presets, source and search filters apply to the graph and table view;
+light and dark modes are available.
 
 The harnesses read: Claude Code and Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Qwen Code,
 OpenCode (its `plugin` packages and local plugin files too), Copilot CLI, Goose, Amp, Droid, Kiro, Amazon Q, Zed,
