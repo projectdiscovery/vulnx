@@ -19,6 +19,7 @@ type HostRuntime struct {
 	Endpoints  []HostEndpoint   `json:"endpoints"`
 	Processes  []HostProcess    `json:"processes"`
 	Gaps       []HostRuntimeGap `json:"gaps"`
+	enriched   bool
 }
 
 type HostEndpoint struct {
@@ -33,18 +34,29 @@ type HostEndpoint struct {
 }
 
 type HostProcess struct {
-	PID          int                `json:"pid"`
-	UID          *uint32            `json:"uid,omitempty"`
-	EffectiveUID *uint32            `json:"effective_uid,omitempty"`
-	Identity     string             `json:"identity,omitempty"`
-	Executable   string             `json:"executable,omitempty"`
-	Matches      []HostRuntimeMatch `json:"matches"`
+	PID             int                       `json:"pid"`
+	UID             *uint32                   `json:"uid,omitempty"`
+	EffectiveUID    *uint32                   `json:"effective_uid,omitempty"`
+	Identity        string                    `json:"identity,omitempty"`
+	Executable      string                    `json:"executable,omitempty"`
+	Matches         []HostRuntimeMatch        `json:"matches"`
+	Installations   []HostRuntimeInstallation `json:"installations,omitempty"`
+	Inventory       string                    `json:"inventory,omitempty"`
+	InventoryReason string                    `json:"inventory_reason,omitempty"`
+	image           os.FileInfo
 }
 
 // HostRuntimeMatch establishes an executable's inventory identity, not its loaded dependencies.
 type HostRuntimeMatch struct {
 	Place      string   `json:"place"`
 	Components []string `json:"components"`
+}
+
+// HostRuntimeInstallation records directory containment, not loaded components.
+type HostRuntimeInstallation struct {
+	Place    string `json:"place"`
+	Path     string `json:"path"`
+	Relation string `json:"relation"`
 }
 
 type HostRuntimeGap struct {
@@ -127,6 +139,33 @@ func runtimePath(path string) string {
 }
 
 func (inv HostInventory) matchRuntime(ctx context.Context, r *HostRuntime) {
+	for i := range r.Processes {
+		r.Processes[i].Matches = []HostRuntimeMatch{}
+		r.Processes[i].Installations = nil
+	}
+	var roots []HostRuntimeInstallation
+	for place, path := range inv.Paths {
+		if ctx.Err() != nil {
+			r.gap("matching", 0, "installation indexing deadline reached")
+			return
+		}
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			continue
+		}
+		if st, err := os.Stat(resolved); err == nil && st.IsDir() && resolved != string(filepath.Separator) {
+			roots = append(roots, HostRuntimeInstallation{Place: place, Path: resolved, Relation: "contained_in"})
+		}
+	}
+	slices.SortFunc(roots, func(a, b HostRuntimeInstallation) int {
+		if n := strings.Compare(a.Place, b.Place); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Path, b.Path)
+	})
 	byPath := map[string]map[string][]string{}
 	cache := map[string]string{}
 	resolve := func(path string) string {
@@ -178,8 +217,19 @@ func (inv HostInventory) matchRuntime(ctx context.Context, r *HostRuntime) {
 			return
 		}
 		p := &r.Processes[i]
-		p.Matches = []HostRuntimeMatch{}
+		if p.Executable == "" {
+			continue
+		}
+		if !sameRuntimeImage(p.Executable, p.image) {
+			r.gap("matching", p.PID, "observed executable no longer matches on-disk identity")
+			continue
+		}
 		if path := runtimePath(p.Executable); path != "" {
+			for _, root := range roots {
+				if runtimeWithin(root.Path, path) {
+					p.Installations = append(p.Installations, root)
+				}
+			}
 			for place, components := range byPath[path] {
 				slices.Sort(components)
 				p.Matches = append(p.Matches, HostRuntimeMatch{Place: place, Components: components})

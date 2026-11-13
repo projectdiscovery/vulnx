@@ -63,6 +63,11 @@ func TestRuntimeMatches(t *testing.T) {
 	}
 	inv := HostInventory{Paths: map[string]string{"tool": alias, "bundle": dir}, FoundIn: map[string][]string{"pkg:a@1": {"tool"}, "pkg:b@2": {"bundle"}}, GoBinaries: map[string][]HostBinary{"pkg:c@3": {{Path: tool, Name: "tool"}}}}
 	r := HostRuntime{Processes: []HostProcess{{PID: 1, Executable: tool}, {PID: 2, Executable: other}, {PID: 3, Executable: tool + " (deleted)"}, {PID: 4, Executable: dir}, {PID: 5, Executable: "tool"}}}
+	for i := range r.Processes {
+		if st, err := os.Stat(r.Processes[i].Executable); err == nil {
+			r.Processes[i].image = st
+		}
+	}
 	inv.matchRuntime(context.Background(), &r)
 	want := []HostRuntimeMatch{{Place: "tool", Components: []string{"pkg:a@1", "pkg:c@3"}}}
 	if !reflect.DeepEqual(r.Processes[0].Matches, want) {

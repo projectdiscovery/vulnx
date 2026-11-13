@@ -71,6 +71,8 @@ type HostInventory struct {
 	// Extensions are the installed editor extensions as entries (pkg:vscode-extension/publisher/name@version), kept
 	// out of Entries until AddExtensions: an API that does not know the type would refuse the whole list.
 	Extensions []string `json:"-"`
+
+	runtimePlaces map[string]bool
 }
 
 // HostFix is how to update what was found in one place (a FoundIn label): a command the components or Target are
@@ -928,7 +930,7 @@ func rustCrates(path string) ([]string, bool) {
 func depV0Section(path string) []byte {
 	if f, err := elf.Open(path); err == nil {
 		defer func() { _ = f.Close() }()
-		if s := f.Section(".dep-v0"); s != nil {
+		if s := f.Section(".dep-v0"); s != nil && s.Size <= 64<<20 && s.FileSize <= 64<<20 {
 			b, _ := s.Data() // a truncated section fails to inflate below
 			return b
 		}
@@ -948,7 +950,7 @@ func depV0Section(path string) []byte {
 		return nil
 	}
 	for _, s := range mf.Sections {
-		if s.Name == "__dep_v0" && s.Seg == "__DATA" {
+		if s.Name == "__dep_v0" && s.Seg == "__DATA" && s.Size <= 64<<20 {
 			b, _ := s.Data()
 			return b
 		}
@@ -1548,6 +1550,9 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 			c.Properties = append(c.Properties, property{"vulnx:source", src})
 		}
 		for _, in := range inv.FoundIn[e] {
+			if inv.runtimePlaces[in] {
+				continue
+			}
 			c.Properties = append(c.Properties, property{"vulnx:found_in", in})
 		}
 		components = append(components, c)

@@ -345,6 +345,7 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 			r.gap("process_executable", pid, "running executable differs from its current on-disk path")
 		} else {
 			p.Executable = executable
+			p.image = disk
 		}
 	}
 	end, err := fs.readFile(filepath.Join(dir, "stat"))

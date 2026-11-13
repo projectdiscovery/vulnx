@@ -78,7 +78,7 @@ func TestRuntimeImageMatches(t *testing.T) {
 	}
 	native := st.Sys().(*syscall.Stat_t)
 	images := []runtimeImage{{path: path, device: uint64(uint32(native.Dev)), inode: native.Ino}}
-	if !runtimeImageMatches(path, images) {
+	if runtimeImageInfo(path, images) == nil {
 		t.Fatal("exact mapped image rejected")
 	}
 	if err := os.Rename(path, path+".old"); err != nil {
@@ -87,10 +87,10 @@ func TestRuntimeImageMatches(t *testing.T) {
 	if err := os.WriteFile(path, []byte("new"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if runtimeImageMatches(path, images) {
+	if runtimeImageInfo(path, images) != nil {
 		t.Fatal("replaced executable accepted")
 	}
-	if runtimeImageMatches(path, nil) {
+	if runtimeImageInfo(path, nil) != nil {
 		t.Fatal("missing mapped image accepted")
 	}
 }

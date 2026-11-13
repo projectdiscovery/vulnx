@@ -317,7 +317,7 @@ func TestHostRuntimeLocalOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inv.Runtime = &vulnx.HostRuntime{Status: "partial", Scope: "test-visible sockets", Endpoints: []vulnx.HostEndpoint{{Protocol: "tcp", Family: "ipv4", Address: "127.0.0.1", Port: 1234, State: "listening", Owners: []int{42}}}, Processes: []vulnx.HostProcess{{PID: 42, Executable: "/runtime-only-secret-path"}}, Gaps: []vulnx.HostRuntimeGap{{Stage: "process", PID: 43, Reason: "permission denied"}}}
+	inv.Runtime = &vulnx.HostRuntime{Status: "partial", Scope: "test-visible sockets", Endpoints: []vulnx.HostEndpoint{{Protocol: "tcp", Family: "ipv4", Address: "127.0.0.1", Port: 1234, State: "listening", Owners: []int{42}}}, Processes: []vulnx.HostProcess{{PID: 42, Executable: "/runtime-only-secret-path", Inventory: "unassessed", Installations: []vulnx.HostRuntimeInstallation{{Place: "containing app", Path: "/runtime-only-container", Relation: "contained_in"}}}}, Gaps: []vulnx.HostRuntimeGap{{Stage: "process", PID: 43, Reason: "permission denied"}}}
 	raw, err := hostJSON(inv, res)
 	if err != nil {
 		t.Fatal(err)
@@ -332,6 +332,9 @@ func TestHostRuntimeLocalOnly(t *testing.T) {
 	}
 	if doc.Host.Runtime == nil || doc.Host.Runtime.Status != "partial" || len(doc.Host.Runtime.Endpoints) != 1 || len(doc.Host.Runtime.Gaps) != 1 {
 		t.Fatalf("runtime missing: %s", raw)
+	}
+	if len(doc.Host.Runtime.Processes[0].Installations) != 1 || doc.Host.Runtime.Processes[0].Installations[0].Relation != "contained_in" || doc.Host.Runtime.Processes[0].Inventory != "unassessed" {
+		t.Fatal("runtime evidence type lost in JSON")
 	}
 	if after := renderHost("grid", inv, res, time.Second, false, renderer.NoColorConfig()); after != before {
 		t.Fatal("runtime changed terminal output")

@@ -138,6 +138,8 @@ cat versions.txt | vulnx scan`,
 					hostProgress("")
 					gologger.Fatal().Msgf("Failed to read the host: %s", err)
 				}
+				inv.CollectRuntime(ctx, scanRoot)
+				inv.EnrichRuntimeInventory(ctx)
 				if repos := inv.PendingRepositories(); len(repos) > 0 {
 					hostProgress("Looking up products by source repository ...")
 					products, _, err := vulnxClient.ProductsByRepository(ctx, repos)
@@ -170,7 +172,7 @@ cat versions.txt | vulnx scan`,
 				}
 				hostProgress("Checking which Go programs reach affected code ...")
 				inv.MarkReachability(&res)
-				inv.CollectRuntime(ctx, scanRoot)
+				inv.RefreshRuntimeMatches(ctx)
 				hostProgress("")
 				elapsed := time.Since(start)
 				if scanFull || scanVEX != "" {

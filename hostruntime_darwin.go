@@ -141,7 +141,8 @@ func verifyRuntimeImages(ctx context.Context, r *HostRuntime) {
 				birth, birthErr := current.CreateTimeWithContext(ctx)
 				exe, exeErr := current.ExeWithContext(ctx)
 				if birthErr == nil && exeErr == nil && strconv.FormatInt(birth, 10) == p.Identity && exe == p.Executable {
-					valid = runtimeImageMatches(p.Executable, images[p.PID])
+					p.image = runtimeImageInfo(p.Executable, images[p.PID])
+					valid = p.image != nil
 				}
 			}
 			if !valid {
@@ -152,21 +153,21 @@ func verifyRuntimeImages(ctx context.Context, r *HostRuntime) {
 	}
 }
 
-func runtimeImageMatches(path string, images []runtimeImage) bool {
+func runtimeImageInfo(path string, images []runtimeImage) os.FileInfo {
 	st, err := os.Stat(path)
 	if err != nil || !st.Mode().IsRegular() {
-		return false
+		return nil
 	}
 	native, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
-		return false
+		return nil
 	}
 	for _, image := range images {
 		if image.path == path && image.device == uint64(uint32(native.Dev)) && image.inode == native.Ino {
-			return true
+			return st
 		}
 	}
-	return false
+	return nil
 }
 
 func runtimeProcess(ctx context.Context, pid int, started time.Time) (HostProcess, error) {

@@ -278,8 +278,15 @@ endpoints, visible owner processes, numeric account IDs and executable paths. Ex
 back to inventory entries; they do not prove that dependencies are loaded or exploitable. Collection is time-bounded
 and permission-limited, with timestamps, scope and explicit gaps; mounted-root scans skip it. Wildcard and specific
 bind addresses do not establish internet access. No services are contacted, privileges elevated, or process arguments,
-environments or secret contents collected. Runtime observations are not sent to the API or included in shared SBOMs,
-and do not change the terminal summary or graph. The local JSON contains paths and addresses: review it before sharing.
+environments or secret contents collected. Runtime observations are not sent to the API or included in shared SBOMs.
+
+Verified listening executables outside the usual installation paths are also read for embedded Go module or Rust
+crate versions. Their package identifiers join the normal vulnerability checks under `runtime binaries`; unsupported
+or changed executables remain unassessed. Files are never started to discover a version. The JSON distinguishes exact
+component matches from `contained_in` installation relationships: an app helper or language runtime can reside in a
+known installation without proving which packages it loaded. Runtime-discovered executable locations remain local
+when exporting a shared SBOM. Inventory totals and findings can grow; the terminal format and original graph layout
+stay the same. The local JSON contains paths and addresses: review it before sharing.
 
 AI tools are read as a source of their own: assistant and editor applications, an agent command-line tool that
 updates itself, AI editor extensions, and the packages MCP servers are started from (`npx server@1.2.0`,
