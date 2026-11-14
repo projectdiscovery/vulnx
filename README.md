@@ -339,7 +339,7 @@ carrying it link an affected function (LINKED).
 
 The terminal shows one screen: the reachable findings per source and severity. Every scan also writes the full
 result as `vulnx-host-<date>.json` in the current directory: every component with its advisories, where it was
-found, how to update it, Go reachability, and what was not checked.
+found, how to update it, Go reachability, the runtime snapshot and what was not checked.
 ```bash
 vulnx scan --host                       # one screen, and the full result as vulnx-host-<date>.json
 vulnx scan --host --report              # also a report URL that auto-expires in 24 hours
@@ -347,14 +347,14 @@ vulnx scan --host --sbom                # also write what was checked as a Cyclo
 vulnx scan --host --view actions        # in the terminal: what to update, most urgent first
 vulnx scan --host --view details        # per component (also: brief, programs, markdown)
 vulnx scan --host --json                # the full result on stdout (-o names a file)
-vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited (or critical, high)
+vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited, critical or high
 ```
 
 `--report` is the one option that uploads more than a check does: it stores the machine's component names and
 versions on SecurityContext under an unlisted link, which anyone who has the link can read. The link works for a
 day. After that it stops answering; SecurityContext keeps the names and versions for analysis, no longer tied to who
 sent them. Against an API that cannot expire a link, `--report` uploads nothing. The hosted page shows the verdicts;
-where each component was found and Go reachability are in the local JSON. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+where each component was found, Go reachability and the runtime snapshot are in the local JSON. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

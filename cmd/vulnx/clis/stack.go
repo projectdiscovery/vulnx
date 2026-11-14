@@ -68,8 +68,9 @@ Or an operating system:
                                   --root reads a mounted Linux filesystem instead. The terminal shows one
                                   screen: findings per source and severity (--view for other views). --report
                                   prints a report URL that auto-expires in 24 hours; the full result is written
-                                  as vulnx-host-<date>.json;
-                                  --fail-on kev|critical|high exits 2 on a reachable finding.
+                                  as vulnx-host-<date>.json, with a passive snapshot of visible listening
+                                  sockets and owner processes;
+                                  --fail-on kev|critical|high exits 2 on a reachable finding of that level or worse.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
 "affected" / "exploitable" with the fixed version when known, undetermined rows "under_investigation" / "in_triage".`,
@@ -528,13 +529,13 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output (with --host: every affected component and every one not assessed)")
 	scanCmd.Flags().StringVar(&scanImage, "image", "", "scan a public container image by reference (e.g. debian:12-slim, ghcr.io/owner/name:tag)")
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
-	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, AI tools, and on macOS Homebrew and applications")
+	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, AI tools, and on macOS Homebrew and applications; the local JSON report also snapshots visible listening sockets and their owner processes")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
-	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it)")
+	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it); local runtime observations are not included")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
 	scanCmd.Flags().BoolVar(&scanGraph, "graph", false, "with --host: also write a local graph page of the findings (opens in a browser, nothing uploaded)")
-	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: print a report URL that auto-expires in 24 hours")
-	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high (or worse)")
-	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of /")
+	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: print a report URL that auto-expires in 24 hours; local runtime observations are not uploaded")
+	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high; a higher level, such as --fail-on critical, fails only on that level or worse")
+	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of / (no live runtime snapshot is taken)")
 	rootCmd.AddCommand(scanCmd)
 }
