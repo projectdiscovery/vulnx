@@ -350,6 +350,10 @@ vulnx scan --host --json                # the full result on stdout (-o names a 
 vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited, critical or high
 ```
 
+The SBOM names, for each component, how it was installed and the places that hold it, and for each such place where
+it is on disk and how it is updated (`brew upgrade caddy`, `go install ...@latest`, an application to update); home
+directories read `~`. Places seen only through the runtime snapshot stay out of it.
+
 `--report` is the one option that uploads more than a check does: it stores the machine's component names and
 versions on SecurityContext under an unlisted link, which anyone who has the link can read. The link works for a
 day. After that it stops answering; SecurityContext keeps the names and versions for analysis, no longer tied to who

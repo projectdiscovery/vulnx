@@ -1528,8 +1528,29 @@ func pclntab(path string) (tab []byte, text uint64, err error) {
 	return tab, t.Addr, err
 }
 
+// sbomPlace is one place components were found in, as the SBOM names it for a reader of the report: where it is on
+// disk and how it is updated. Home directories read ~.
+type sbomPlace struct {
+	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
+	Kind string `json:"kind,omitempty"` // HostFix.Kind
+	Fix  string `json:"fix,omitempty"`  // the command to run, else what to do in words
+}
+
+var homeAnywhere = regexp.MustCompile(`/(Users|home)/[^/\s)]+|/var/root|/root\b`)
+
+// fixLine is a place's update action as one line: its command with what the command names, else its note.
+func fixLine(f HostFix) string {
+	line := f.Note
+	if f.Command != "" {
+		line = strings.TrimSpace(f.Command + " " + f.Target)
+	}
+	return homeAnywhere.ReplaceAllString(line, "~")
+}
+
 // CycloneDX is the inventory as a CycloneDX 1.5 JSON SBOM: one component per entry, by its purl or CPE, with where
-// it was found as properties. It is what --host checked, in a form other tools read and SecurityContext stores.
+// it was found as properties, and each such place's disk location and update action on the document's subject. It
+// is what --host checked, in a form other tools read and SecurityContext stores.
 func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 	type property struct {
 		Name  string `json:"name"`
@@ -1545,6 +1566,7 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 		Properties []property `json:"properties,omitempty"`
 	}
 	components := make([]component, 0, len(inv.Entries))
+	named := map[string]bool{}
 	for _, e := range inv.Entries {
 		c := component{Type: "library", BOMRef: e}
 		if strings.HasPrefix(e, "cpe:2.3:") {
@@ -1579,8 +1601,33 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 				continue
 			}
 			c.Properties = append(c.Properties, property{"vulnx:found_in", in})
+			named[in] = true
 		}
 		components = append(components, c)
+	}
+	labels := make([]string, 0, len(named))
+	for label := range named {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	subject := map[string]any{"type": "device", "bom-ref": "host", "name": inv.OS}
+	var places []property
+	for _, label := range labels {
+		place := sbomPlace{Name: label, Path: homePrefix.ReplaceAllString(inv.Paths[label], "~")}
+		if fix, ok := inv.Fixes[label]; ok {
+			place.Kind, place.Fix = fix.Kind, fixLine(fix)
+		}
+		if place.Path == "" && place.Fix == "" {
+			continue
+		}
+		value, err := json.Marshal(place)
+		if err != nil {
+			return nil, err
+		}
+		places = append(places, property{"vulnx:place", string(value)})
+	}
+	if len(places) > 0 {
+		subject["properties"] = places
 	}
 	return json.MarshalIndent(map[string]any{
 		"bomFormat":   "CycloneDX",
@@ -1589,7 +1636,7 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 		"metadata": map[string]any{
 			"timestamp": now.UTC().Format(time.RFC3339),
 			"tools":     []map[string]string{{"name": "vulnx"}},
-			"component": map[string]string{"type": "device", "bom-ref": "host", "name": inv.OS},
+			"component": subject,
 		},
 		"components": components,
 	}, "", "  ")

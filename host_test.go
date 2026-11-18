@@ -506,7 +506,11 @@ func TestHostCycloneDX(t *testing.T) {
 	inv := HostInventory{OS: "macOS 26.4",
 		Entries:     []string{"cpe:2.3:o:apple:macos:26.4:*:*:*:*:*:*:*", "pkg:npm/%40scope/tool@1.2.3", "pkg:golang/golang.org/x/net@v0.7.0"},
 		FoundIn:     map[string][]string{"pkg:golang/golang.org/x/net@v0.7.0": {"caddy", "act"}},
-		EntrySource: map[string]string{"pkg:golang/golang.org/x/net@v0.7.0": "go binaries"}}
+		EntrySource: map[string]string{"pkg:golang/golang.org/x/net@v0.7.0": "go binaries"},
+		Paths:       map[string]string{"caddy": "/opt/homebrew/bin/caddy", "act": "/Users/sam/go/bin/act"},
+		Fixes: map[string]HostFix{"caddy": {Kind: "brew", Command: "brew upgrade", Target: "caddy"},
+			"act":    {Kind: "binary", Target: "act", Note: "update act (/Users/sam/go/bin/act)"},
+			"unused": {Kind: "brew", Command: "brew upgrade", Target: "unused"}}}
 	raw, err := inv.CycloneDX(time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -516,9 +520,17 @@ func TestHostCycloneDX(t *testing.T) {
 		t.Errorf("%s %v\n%s", format, ok, strings.Join(entries, "\n"))
 	}
 	for _, want := range []string{`"name": "@scope/tool"`, `"version": "1.2.3"`, `"type": "operating-system"`, `"name": "macos"`,
-		`"name": "golang.org/x/net"`, `"value": "go binaries"`, `"value": "caddy"`, `"name": "macOS 26.4"`} {
+		`"name": "golang.org/x/net"`, `"value": "go binaries"`, `"value": "caddy"`, `"name": "macOS 26.4"`,
+		// each place a component names: where it is and how it is updated, home directories as ~
+		`"value": "{\"name\":\"caddy\",\"path\":\"/opt/homebrew/bin/caddy\",\"kind\":\"brew\",\"fix\":\"brew upgrade caddy\"}"`,
+		`"value": "{\"name\":\"act\",\"path\":\"~/go/bin/act\",\"kind\":\"binary\",\"fix\":\"update act (~/go/bin/act)\"}"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("missing %s", want)
+		}
+	}
+	for _, never := range []string{"/Users/sam", "unused"} {
+		if strings.Contains(string(raw), never) {
+			t.Errorf("the SBOM holds %s", never)
 		}
 	}
 }
