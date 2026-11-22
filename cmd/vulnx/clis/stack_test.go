@@ -108,3 +108,17 @@ func TestCheckScanOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestTextShow lists every CVE with --full unless --show was given, and with --show-all always.
+func TestTextShow(t *testing.T) {
+	t.Cleanup(func() { scanFull, scanShowAll, scanShow = false, false, 10 })
+	for _, c := range []struct {
+		full, all, set bool
+		show, want     int
+	}{{false, false, false, 10, 10}, {true, false, false, 10, 0}, {true, false, true, 5, 5}, {false, true, true, 5, 0}} {
+		scanFull, scanShowAll, scanShow = c.full, c.all, c.show
+		if got := textShow(c.set); got != c.want {
+			t.Errorf("%+v: %d", c, got)
+		}
+	}
+}

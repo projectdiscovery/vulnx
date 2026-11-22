@@ -105,7 +105,7 @@ cat versions.txt | vulnx scan`,
 				}
 				return
 			}
-			err := runStackScan(ctx, args)
+			err := runStackScan(ctx, args, textShow(cmd.Flags().Changed("show")))
 			cancel()
 			if err != nil {
 				fatalScan(err)
@@ -130,11 +130,16 @@ func checkScanOutput() error {
 }
 
 // runStackScan scans an image, a file or package versions and writes the result.
-func runStackScan(ctx context.Context, args []string) error {
-	show := scanShow
-	if scanShowAll {
-		show = 0
+// textShow is how many CVEs per package the text output lists (0: all): --show, all with --show-all, and all
+// with --full unless --show was given, since --full fetched them to be read.
+func textShow(showSet bool) int {
+	if scanShowAll || scanFull && !showSet {
+		return 0
 	}
+	return scanShow
+}
+
+func runStackScan(ctx context.Context, args []string, show int) error {
 	// an image by registry reference: pulled and scanned by SecurityContext
 	if scanImage != "" {
 		id, err := vulnxClient.ScanImage(ctx, scanImage, scanPlat)
