@@ -62,7 +62,7 @@ vulnx id CVE-2024-3400 --json
 **Analyze vulnerability patterns:**
 ```bash
 vulnx analyze --fields severity
-vulnx analyze --fields affected_products.vendor
+vulnx analyze --fields vendor -q "is_kev:true"
 ```
 
 ## Core Commands
@@ -478,6 +478,8 @@ For advanced usage patterns and examples, see [USAGE.md](USAGE.md).
   `--vendor` take one value. `--cvss-score` and `--epss-score` take a minimum (`>=N`).
 - Queries are narrower: `||` only between values of one field, at most 5 keywords and 3 facets, no wildcards,
   score minimums only, and fields SecurityContext does not index are rejected with a message.
+- `vulnx analyze` counts by at most 3 of the fields `vulnx analyze help` lists, and rejects a positional query
+  (it was ignored); filter with `--query`.
 - `vulnx mcp` serves stdio only (`--mode` and `--port` are removed); `vulnx update --disable-update-check` is removed.
 
 ## Development

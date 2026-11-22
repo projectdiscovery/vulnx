@@ -663,6 +663,19 @@ var facetMap = map[string]struct{ facet, kind string }{
 	"is_template":                        {"exploit", "nuclei_template"},
 }
 
+// FacetFields lists the fields search --term-facets and analyze count by, sorted. The dotted aliases
+// (affected_products.vendor, weaknesses.cwe_id, ...) are accepted too but not listed.
+func FacetFields() []string {
+	names := make([]string, 0, len(facetMap))
+	for k := range facetMap {
+		if !strings.Contains(k, ".") {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 type facetReq struct {
 	name, facet, kind string
 	size              int
@@ -688,14 +701,7 @@ func translateFacets(term, rangeFacets []string, defaultSize int) ([]facetReq, s
 		}
 		m, ok := facetMap[strings.ToLower(name)]
 		if !ok {
-			names := make([]string, 0, len(facetMap))
-			for k := range facetMap {
-				if !strings.Contains(k, ".") {
-					names = append(names, k)
-				}
-			}
-			sort.Strings(names)
-			return nil, "", unsupported("SecurityContext cannot facet on %q (it can on %s)", name, strings.Join(names, ", "))
+			return nil, "", unsupported("SecurityContext cannot facet on %q (it can on %s)", name, strings.Join(FacetFields(), ", "))
 		}
 		reqs = append(reqs, facetReq{name: name, facet: m.facet, kind: m.kind, size: size})
 		if !seen[m.facet] {

@@ -26,6 +26,8 @@ var (
 	analyzeCmd = &cobra.Command{
 		Use:   "analyze",
 		Short: "count vulnerabilities by field values (facets)",
+		// main prints the error; the flag list would bury it
+		SilenceUsage: true,
 		Long: `Count CVEs per value of up to 3 fields (term facets), optionally over the CVEs a query matches.
 
 Examples:
@@ -41,10 +43,14 @@ Global flags:
   --json / -j   Output raw JSON
   --output / -o Write output to a .json file (error if file exists)
 `,
-		Args: cobra.ArbitraryArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 || len(args) == 1 && strings.EqualFold(args[0], "help") {
+				return nil
+			}
+			return fmt.Errorf("analyze takes no query argument (got %q); filter with --query, e.g. vulnx analyze -f severity -q 'is_kev:true'", strings.Join(args, " "))
+		},
 		Run: func(cmd *cobra.Command, args []string) {
-			// Support 'vulnx analyze help' by delegating to the dedicated help command.
-			if len(args) > 0 && strings.ToLower(args[0]) == "help" {
+			if len(args) == 1 {
 				analyzeHelpCmd.Run(cmd, args)
 				return
 			}
@@ -131,7 +137,7 @@ func validateAnalyzeInputs() error {
 func init() {
 	analyzeCmd.Flags().StringSliceVarP(&analyzeFields, "fields", "f", nil, "up to 3 fields to count CVEs by, field or field=size (comma-separated)")
 	analyzeCmd.Flags().IntVar(&analyzeFacetSize, "facet-size", 10, "number of buckets per field (1-50)")
-	analyzeCmd.Flags().StringVarP(&analyzeQuery, "query", "q", "", "query to filter results")
+	analyzeCmd.Flags().StringVarP(&analyzeQuery, "query", "q", "", "count only the CVEs this field:value query matches")
 	analyzeCmd.SetHelpFunc(analyzeHelpCmd.Run)
 
 	rootCmd.AddCommand(analyzeCmd)

@@ -64,7 +64,7 @@ func (h *Handler) MCPToolSpec() mcp.Tool {
 	return mcp.NewTool("vulnx_analyze",
 		mcp.WithDescription("Aggregate vulnerabilities (ANALYZE/facets) over selected fields. NOTE: Use this tool ONLY when instructed by `agent_vulnx` or when the user explicitly asks for an analysis; do NOT call it otherwise."),
 		mcp.WithArray("fields",
-			mcp.Description("Up to 3 fields to count CVEs by. Example: ['severity=5', 'vendor=10']. Each entry is a field name or 'field=size' to set its bucket count (max 50)."),
+			mcp.Description("Up to 3 fields to count CVEs by, each a field name or 'field=size' (bucket count, max 50). Fields: "+strings.Join(vulnx.FacetFields(), ", ")+". Example: ['severity', 'vendor=10']."),
 			mcp.Items(map[string]any{"type": "string"}),
 			mcp.Required(),
 		),

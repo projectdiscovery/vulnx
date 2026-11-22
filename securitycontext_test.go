@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -223,5 +224,19 @@ func TestMarshalJSONFields(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"h1":{"rank":7,"reports":3}`) {
 		t.Errorf("h1 with h1.reports should keep the whole object: %s", b)
+	}
+}
+
+func TestFacetFields(t *testing.T) {
+	fields := FacetFields()
+	for _, f := range fields {
+		if _, _, err := translateFacets([]string{f}, nil, 10); err != nil {
+			t.Errorf("listed facet %s rejected: %v", f, err)
+		}
+	}
+	for _, f := range SupportedFilters() {
+		if f.FacetPossible && !slices.Contains(fields, f.Field) {
+			t.Errorf("filter %s says it can be faceted but is not a facet field", f.Field)
+		}
 	}
 }

@@ -241,6 +241,8 @@ func ensureVulnxClientInitialized(_ *cobra.Command) error {
 		}
 		retryOpts := retryablehttp.DefaultOptionsSingle
 		retryOpts.HttpClient = httpClient
+		// retryablehttp sets the client's timeout from its own option
+		retryOpts.Timeout = httpTimeout
 		retryOpts.Verbose = debug
 
 		opts := []vulnx.Option{vulnx.WithRetryableHTTPOptions(retryOpts)}
