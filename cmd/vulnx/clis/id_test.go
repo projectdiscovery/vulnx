@@ -58,3 +58,14 @@ func TestNoVulnsMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractCVEIDs(t *testing.T) {
+	in := "Critical vulnerabilities found: CVE-2021-44228, cve-2023-4966\n# CVE-1999-0001 in a comment\nCVE-2024-3400\nsee CVE-2021-44228.\nCVE-2024-1 is too short; xCVE-2024-12345 is not an id"
+	want := []string{"CVE-2021-44228", "cve-2023-4966", "CVE-2024-3400", "CVE-2021-44228"}
+	if got := extractCVEIDs(in); !slices.Equal(got, want) {
+		t.Errorf("extractCVEIDs = %q, want %q", got, want)
+	}
+	if !isCVEContent("Critical vulnerabilities found: CVE-2021-44228, CVE-2023-4966") {
+		t.Errorf("free text with CVE ids not routed to id")
+	}
+}

@@ -34,7 +34,7 @@ Supports multiple input methods:
 • Command line arguments: vulnx id CVE-2021-44228 CVE-2023-4966
 • Command line (comma-separated): vulnx id CVE-2021-44228,CVE-2023-4966
 • File input: vulnx id --file ids.txt
-• Stdin input: echo "CVE-2021-44228" | vulnx id
+• Stdin input: echo "CVE-2021-44228" | vulnx id (every CVE id in the text is used)
 
 At most 100 ids are fetched per run.
 
@@ -83,7 +83,10 @@ vulnx id --output vuln.json CVE-2021-44228
 				if err != nil {
 					gologger.Fatal().Msgf("Failed to read IDs from stdin: %s", err)
 				}
-				vulnIDs = parseIDs(string(data))
+				vulnIDs = extractCVEIDs(string(data))
+				if len(vulnIDs) == 0 {
+					gologger.Fatal().Msg("No CVE ids found in stdin input")
+				}
 			}
 			if len(vulnIDs) == 0 {
 				gologger.Fatal().Msg("No vulnerability IDs provided. Use command line arguments, --file, or pipe IDs via stdin")
@@ -106,6 +109,19 @@ func parseIDs(content string) []string {
 				ids = append(ids, part)
 			}
 		}
+	}
+	return ids
+}
+
+// extractCVEIDs finds every CVE id in free text (a report, a log, comma-separated lists), skipping # comment
+// lines. runIDs normalises case and removes duplicates.
+func extractCVEIDs(content string) []string {
+	var ids []string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		ids = append(ids, cveIDRegex.FindAllString(line, -1)...)
 	}
 	return ids
 }

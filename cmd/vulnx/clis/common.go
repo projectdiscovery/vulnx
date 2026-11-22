@@ -76,8 +76,8 @@ var (
 	// Track if version has been shown for this invocation
 	versionShown bool
 
-	// CVE ID regex pattern
-	cveIDRegex = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
+	// cveIDRegex finds CVE ids inside free text
+	cveIDRegex = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,}\b`)
 
 	rootCmd = &cobra.Command{
 		Use:   "vulnx",
@@ -400,36 +400,10 @@ func isCVEContent(content string) bool {
 }
 
 func executeIDCommand(content string) error {
-	// Parse CVE IDs from content
-	var cveIDs []string
-
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Handle comma-separated values on a single line
-		if strings.Contains(line, ",") {
-			parts := strings.Split(line, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if cveIDRegex.MatchString(part) {
-					cveIDs = append(cveIDs, part)
-				}
-			}
-		} else {
-			// Single CVE ID per line
-			matches := cveIDRegex.FindAllString(line, -1)
-			cveIDs = append(cveIDs, matches...)
-		}
-	}
-
+	cveIDs := extractCVEIDs(content)
 	if len(cveIDs) == 0 {
-		return fmt.Errorf("no valid CVE IDs found in stdin input")
+		return fmt.Errorf("no CVE ids found in stdin input")
 	}
-
 	runIDs(cveIDs)
 	return nil
 }
