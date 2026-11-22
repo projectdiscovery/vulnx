@@ -111,6 +111,12 @@ type Client struct {
 	userAgent string
 	retryWait time.Duration
 	keyWarn   sync.Once
+	// expiry caches StackExpirySupported's answer once the API has given one: it does not change within a run
+	expiry struct {
+		sync.Mutex
+		known bool
+		err   error
+	}
 	// Optional debug hooks
 	debugRequest  func(*http.Request)
 	debugResponse func(*http.Response)

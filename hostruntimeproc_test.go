@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -260,7 +262,12 @@ func TestRuntimeProcOwnerGaps(t *testing.T) {
 				return stat(path)
 			}
 			r := runtimeProcResult(root, fs)
-			if len(r.Endpoints) != 3 || len(r.Gaps) < 3 {
+			// a process that went away is skipped without a gap of its own
+			minGaps := 3
+			if test == "disappeared" {
+				minGaps = 2
+			}
+			if len(r.Endpoints) != 3 || len(r.Gaps) < minGaps {
 				t.Fatalf("observations or gaps lost: %+v", r)
 			}
 			var process *HostProcess
@@ -332,5 +339,66 @@ func TestRuntimeProcFileBounds(t *testing.T) {
 	cancel()
 	if _, err := runtimeProcReadDir(ctx, filepath.Dir(path)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("directory cancellation %v", err)
+	}
+}
+
+// TestRuntimeProcGoneSilently skips a process or descriptor that went away while it was read (ENOENT, ESRCH): no
+// gap, as for vulnx's own short-lived children. A refusal is still a gap.
+func TestRuntimeProcGoneSilently(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		fail func(root, path string) error
+		gap  bool
+	}{
+		{"process gone", func(root, path string) error {
+			if strings.HasPrefix(path, filepath.Join(root, "124")) {
+				return os.ErrNotExist
+			}
+			return nil
+		}, false},
+		{"fd closed", func(root, path string) error {
+			if path == filepath.Join(root, "124/fd/4") {
+				return &os.PathError{Op: "readlink", Path: path, Err: syscall.ESRCH}
+			}
+			return nil
+		}, false},
+		{"fd refused", func(root, path string) error {
+			if path == filepath.Join(root, "124/fd/4") {
+				return &os.PathError{Op: "readlink", Path: path, Err: syscall.EACCES}
+			}
+			return nil
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root, _ := runtimeProcFixture(t)
+			fs := runtimeProcFiles()
+			readFile, readlink, readDir := fs.readFile, fs.readlink, fs.readDir
+			fs.readFile = func(path string) ([]byte, error) {
+				if err := test.fail(root, path); err != nil {
+					return nil, err
+				}
+				return readFile(path)
+			}
+			fs.readlink = func(path string) (string, error) {
+				if err := test.fail(root, path); err != nil {
+					return "", err
+				}
+				return readlink(path)
+			}
+			fs.readDir = func(ctx context.Context, path string) ([]os.DirEntry, error) {
+				if err := test.fail(root, path); err != nil {
+					return nil, err
+				}
+				return readDir(ctx, path)
+			}
+			r := runtimeProcResult(root, fs)
+			gap := false
+			for _, g := range r.Gaps {
+				gap = gap || g.PID == 124
+			}
+			if gap != test.gap || !slices.ContainsFunc(r.Processes, func(p HostProcess) bool { return p.PID == 123 }) {
+				t.Errorf("gap for 124 %v, want %v: %+v", gap, test.gap, r.Gaps)
+			}
+		})
 	}
 }

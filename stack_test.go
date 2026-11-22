@@ -293,9 +293,10 @@ func TestShareFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, supported := range []bool{true, false} {
-		uploads, field := 0, ""
+		uploads, specs, field := 0, 0, ""
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/v1/openapi.json" {
+				specs++
 				// the JSON body takes expires_in (with save) in both: only the upload's form decides
 				json := `{"paths": {"/v1/stack": {"post": {"requestBody": {"content": {"application/json": {"schema": {"properties": {"expires_in": {}}}}`
 				if supported {
@@ -313,8 +314,15 @@ func TestShareFile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// as the CLI does: asked before the scan, and again by ShareFile before the upload
+		if err := c.StackExpirySupported(context.Background()); (err == nil) != supported {
+			t.Errorf("supported %v: %v", supported, err)
+		}
 		id, expiresAt, err := c.ShareFile(context.Background(), file, 24*time.Hour)
 		srv.Close()
+		if specs != 1 {
+			t.Errorf("the API description was read %d times", specs)
+		}
 		if supported && (err != nil || id != "abc" || expiresAt != "2026-11-12T15:00:00Z" || field != "86400" || uploads != 1) {
 			t.Errorf("supported: id %q expires %q field %q uploads %d err %v", id, expiresAt, field, uploads, err)
 		}

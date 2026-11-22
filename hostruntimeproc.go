@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	fileutil "github.com/projectdiscovery/utils/file"
 )
@@ -295,8 +297,17 @@ func runtimeProcUIDs(raw []byte) (uint32, uint32, error) {
 	return 0, 0, errors.New("process account IDs missing")
 }
 
+// procGone is whether a /proc read failed because the process or its descriptor went away while it was read (a
+// short-lived process, vulnx's own children among them): nothing to report. A refusal (EACCES) is a gap.
+func procGone(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH)
+}
+
 func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pid int, sockets map[string][]int, fs runtimeProcIO) {
 	initial, err := fs.readFile(filepath.Join(dir, "stat"))
+	if procGone(err) {
+		return
+	}
 	if err != nil {
 		r.gap("process_identity", pid, err.Error())
 		return
@@ -307,6 +318,9 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 		return
 	}
 	fds, err := fs.readDir(ctx, filepath.Join(dir, "fd"))
+	if procGone(err) {
+		return
+	}
 	if err != nil {
 		r.gap("process_sockets", pid, err.Error())
 	}
@@ -318,6 +332,9 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 		}
 		path := filepath.Join(dir, "fd", fd.Name())
 		link, err := fs.readlink(path)
+		if procGone(err) { // the descriptor was closed
+			continue
+		}
 		if err != nil {
 			r.gap("process_sockets", pid, err.Error())
 			continue
@@ -335,6 +352,9 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 	}
 	p := HostProcess{PID: pid, Identity: identity, Matches: []HostRuntimeMatch{}}
 	status, err := fs.readFile(filepath.Join(dir, "status"))
+	if procGone(err) {
+		return
+	}
 	if err != nil {
 		r.gap("process_account", pid, err.Error())
 	} else if uid, effective, err := runtimeProcUIDs(status); err != nil {
@@ -344,6 +364,9 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 	}
 	exeLink := filepath.Join(dir, "exe")
 	executable, err := fs.readlink(exeLink)
+	if procGone(err) {
+		return
+	}
 	if err != nil {
 		r.gap("process_executable", pid, err.Error())
 	} else if !filepath.IsAbs(executable) || strings.HasSuffix(executable, " (deleted)") {
@@ -361,8 +384,11 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 		}
 	}
 	end, err := fs.readFile(filepath.Join(dir, "stat"))
+	if procGone(err) {
+		return
+	}
 	if err != nil {
-		r.gap("process_identity", pid, "process disappeared before ownership could be confirmed")
+		r.gap("process_identity", pid, err.Error())
 		return
 	}
 	after, err := runtimeProcIdentity(end, pid)
@@ -380,6 +406,9 @@ func collectRuntimeProcOwner(ctx context.Context, r *HostRuntime, dir string, pi
 	confirmed := false
 	for path, inode := range owned {
 		link, err := fs.readlink(path)
+		if procGone(err) {
+			continue
+		}
 		if err != nil || link != "socket:["+inode+"]" {
 			r.gap("process_sockets", pid, "socket ownership changed during collection")
 			continue

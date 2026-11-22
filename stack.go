@@ -485,7 +485,21 @@ func (c *Client) ShareFile(ctx context.Context, path string, expires time.Durati
 
 // StackExpirySupported is nil when the API can expire a stored stack: its description of an upload
 // (POST /v1/stack as multipart/form-data) has an expires_in field. ErrExpiryUnsupported when it does not.
+// The API is asked once per client: a request that fails is not an answer and is asked again.
 func (c *Client) StackExpirySupported(ctx context.Context) error {
+	c.expiry.Lock()
+	defer c.expiry.Unlock()
+	if c.expiry.known {
+		return c.expiry.err
+	}
+	err := c.stackExpirySupported(ctx)
+	if err == nil || errors.Is(err, ErrExpiryUnsupported) {
+		c.expiry.known, c.expiry.err = true, err
+	}
+	return err
+}
+
+func (c *Client) stackExpirySupported(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/openapi.json", nil, nil)
 	if err != nil {
 		return wrapErr(ErrRequestBuildFailure, err)
