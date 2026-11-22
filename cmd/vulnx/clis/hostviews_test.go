@@ -129,12 +129,8 @@ func TestHostReports(t *testing.T) {
 	}
 }
 
-// TestTermClean keeps a name from moving the cursor, recolouring the terminal or reordering what is shown.
-func TestTermClean(t *testing.T) {
-	in := "evil\x1b[2J\x1b]8;;http://x\x07name\u202e\u200b\U000E0041\x00ok\tend\n"
-	if got := termClean(in); got != "evil[2J]8;;http://xnameok\tend\n" {
-		t.Errorf("%q", got)
-	}
+// TestFit cleans a name for the terminal before cutting it, so a control or bidi character counts for nothing.
+func TestFit(t *testing.T) {
 	if got := fit("a\u202eb\x1bcdef", 4); got != "abc…" {
 		t.Errorf("fit %q", got)
 	}

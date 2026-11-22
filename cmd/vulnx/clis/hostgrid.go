@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/projectdiscovery/vulnx/v2"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 )
 
@@ -82,7 +83,7 @@ func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, t
 
 // hostFooter is the last line of the grid view, after any report links: what was scanned and how long it took.
 func hostFooter(inv vulnx.HostInventory, elapsed time.Duration, c *renderer.ColorConfig) string {
-	line := fmt.Sprintf("%s: %s components scanned", termClean(inv.OS), formatNumber(len(inv.Entries)))
+	line := fmt.Sprintf("%s: %s components scanned", termtext.Clean(inv.OS), formatNumber(len(inv.Entries)))
 	if elapsed > 0 {
 		line += " in " + elapsed.Round(time.Second).String()
 	}
@@ -216,7 +217,7 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 		for _, r := range inv.Risks {
 			if r.Risk == risk {
 				kind = r.Kind
-				if name := termClean(r.Name); !slices.Contains(names, name) {
+				if name := termtext.Clean(r.Name); !slices.Contains(names, name) {
 					names = append(names, name)
 				}
 			}

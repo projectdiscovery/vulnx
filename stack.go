@@ -14,6 +14,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -25,8 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 // StackAdvisory is one advisory row of a stack item.
@@ -211,10 +210,10 @@ func isEcosystem(s string) bool {
 func (c *Client) checkPackages(ctx context.Context, entries []string, mode checkMode) (StackResult, error) {
 	var res StackResult
 	if len(entries) == 0 {
-		return res, errkit.Append(ErrBadRequest, fmt.Errorf("nothing to check"))
+		return res, wrapErr(ErrBadRequest, fmt.Errorf("nothing to check"))
 	}
 	if len(entries) > mode.maxEntries() {
-		return res, errkit.Append(ErrBadRequest, fmt.Errorf("at most %d entries per check (got %d)", mode.maxEntries(), len(entries)))
+		return res, wrapErr(ErrBadRequest, fmt.Errorf("at most %d entries per check (got %d)", mode.maxEntries(), len(entries)))
 	}
 	norm := make([]string, len(entries))
 	for i, e := range entries {
@@ -259,11 +258,11 @@ func (c *Client) checkPages(ctx context.Context, entries []string, mode checkMod
 			err = gzipBody(req, body)
 		}
 		if err != nil {
-			return res, errkit.Append(ErrRequestBuildFailure, err)
+			return res, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var page stackPage
 		if err := c.do(req, &page); err != nil {
-			return res, errkit.Append(ErrRequestFailed, err)
+			return res, wrapErr(ErrRequestFailed, err)
 		}
 		expandRefs(page.Items, page.Advisories)
 		if n == 0 {
@@ -275,13 +274,13 @@ func (c *Client) checkPages(ctx context.Context, entries []string, mode checkMod
 		}
 		if page.Cursor == "" {
 			if n > 0 || len(entries) < 2 {
-				return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the answer was cut with no cursor after %d of %d items", len(res.Items), res.Total))
+				return res, wrapErr(ErrRequestFailed, fmt.Errorf("the answer was cut with no cursor after %d of %d items", len(res.Items), res.Total))
 			}
 			return c.checkHalves(ctx, entries, mode)
 		}
 		cursor = page.Cursor
 	}
-	return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the answer took more than %d pages", maxCheckPages))
+	return res, wrapErr(ErrRequestFailed, fmt.Errorf("the answer took more than %d pages", maxCheckPages))
 }
 
 // checkHalves checks a list in two halves, for an API that cuts an answer without a cursor.
@@ -341,7 +340,7 @@ func expandRefs(items []StackItem, advisories map[string]StackAdvisory) {
 
 // staleCursor is the API's 400 for a cursor of another list or dataset.
 func staleCursor(err error) bool {
-	return errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "invalid cursor")
+	return refusedFor(err, "invalid cursor")
 }
 
 // mergeStack adds b's items and counts to a.
@@ -389,7 +388,7 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 		}
 		req, err := c.newRequest(ctx, http.MethodGet, path, q, nil)
 		if err != nil {
-			return out, errkit.Append(ErrRequestBuildFailure, err)
+			return out, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var resp struct {
 			Advisories []struct {
@@ -404,7 +403,7 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 			Cursor string `json:"cursor"`
 		}
 		if err := c.do(req, &resp); err != nil {
-			return out, errkit.Append(ErrRequestFailed, err)
+			return out, wrapErr(ErrRequestFailed, err)
 		}
 		for _, a := range resp.Advisories {
 			out = append(out, StackAdvisory{AdvisoryID: a.CVE, CVE: a.CVE, Name: a.Name, Severity: a.Severity,
@@ -426,7 +425,7 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 }
 
 // ErrExpiryUnsupported: the API cannot expire a stored stack, so nothing was uploaded.
-var ErrExpiryUnsupported = errkit.New("this SecurityContext API cannot expire a stored report's link, so nothing was uploaded")
+var ErrExpiryUnsupported = errors.New("this SecurityContext API cannot expire a stored report's link, so nothing was uploaded")
 
 // ShareFile uploads a file as a stored stack whose link expires: after expires it stops answering (SecurityContext
 // keeps the names and versions for analysis, no longer tied to who sent them). It returns the stack's id and when
@@ -448,7 +447,7 @@ func (c *Client) ShareFile(ctx context.Context, path string, expires time.Durati
 func (c *Client) StackExpirySupported(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/openapi.json", nil, nil)
 	if err != nil {
-		return errkit.Append(ErrRequestBuildFailure, err)
+		return wrapErr(ErrRequestBuildFailure, err)
 	}
 	var spec struct {
 		Paths map[string]map[string]struct {
@@ -462,7 +461,7 @@ func (c *Client) StackExpirySupported(ctx context.Context) error {
 		} `json:"paths"`
 	}
 	if err := c.do(req, &spec); err != nil {
-		return errkit.Append(ErrRequestFailed, err)
+		return wrapErr(ErrRequestFailed, err)
 	}
 	if _, ok := spec.Paths["/v1/stack"]["post"].RequestBody.Content["multipart/form-data"].Schema.Properties["expires_in"]; !ok {
 		return ErrExpiryUnsupported
@@ -502,7 +501,7 @@ func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/stack", bytes.NewReader(body.Bytes()))
 	if err != nil {
-		return "", errkit.Append(ErrCreateHTTPRequest, err)
+		return "", wrapErr(ErrCreateHTTPRequest, err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("User-Agent", c.userAgent)
@@ -512,14 +511,14 @@ func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]
 	// a body that can be sent again, for do()'s one retry after a 429
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body.Bytes())), nil }
 	if err := c.do(req, page); err != nil {
-		return "", errkit.Append(ErrRequestFailed, err)
+		return "", wrapErr(ErrRequestFailed, err)
 	}
 	id := page.ID
 	if id == "" && page.Stack != nil {
 		id = page.Stack.ID
 	}
 	if id == "" {
-		return "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("the upload was accepted but no stack id came back"))
+		return "", wrapErr(ErrUnknownAPIError, fmt.Errorf("the upload was accepted but no stack id came back"))
 	}
 	return id, nil
 }
@@ -542,7 +541,7 @@ func (c *Client) ProductsByRepository(ctx context.Context, repositories []string
 			}
 			req, err := c.newRequest(ctx, http.MethodGet, "/v1/products", q, nil)
 			if err != nil {
-				return nil, true, errkit.Append(ErrRequestBuildFailure, err)
+				return nil, true, wrapErr(ErrRequestBuildFailure, err)
 			}
 			var resp struct {
 				Items []struct {
@@ -553,10 +552,10 @@ func (c *Client) ProductsByRepository(ctx context.Context, repositories []string
 				Cursor string `json:"cursor"`
 			}
 			if err := c.do(req, &resp); err != nil {
-				if errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "repository") {
+				if refusedFor(err, "repository") {
 					return nil, false, nil
 				}
-				return nil, true, errkit.Append(ErrRequestFailed, err)
+				return nil, true, wrapErr(ErrRequestFailed, err)
 			}
 			for _, it := range resp.Items {
 				if it.Total != 1 {
@@ -594,7 +593,7 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 	for {
 		req, err := c.newRequest(ctx, http.MethodGet, "/v1/stack/"+url.PathEscape(id), url.Values{"limit": {"1"}}, nil)
 		if err != nil {
-			return res, errkit.Append(ErrRequestBuildFailure, err)
+			return res, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var p stackPage
 		err = c.do(req, &p)
@@ -606,7 +605,7 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 			continue
 		}
 		if err != nil {
-			return res, errkit.Append(ErrRequestFailed, err)
+			return res, wrapErr(ErrRequestFailed, err)
 		}
 		failures = 0
 		res.Stack, res.Summary, res.Total = p.Stack, p.Summary, p.Total
@@ -617,7 +616,7 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 		case "", "ready":
 			return res, nil
 		case "failed":
-			return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the stack could not be read: %s", res.Stack.Error))
+			return res, wrapErr(ErrRequestFailed, fmt.Errorf("the stack could not be read: %s", res.Stack.Error))
 		}
 		if err := sleepCtx(ctx, stackReadyPoll); err != nil {
 			return res, err
@@ -636,7 +635,8 @@ const maxPollFailures = 3
 // refuses the request (400, 401, 404, a rate limit do() could not wait out) is the same on every poll.
 func transientPollError(ctx context.Context, err error) bool {
 	return err != nil && ctx.Err() == nil &&
-		!errkit.Is(err, ErrBadRequest, ErrUnauthorized, ErrNotFound, ErrTooManyRequests, ErrRequestBuildFailure, ErrDecodeResponse)
+		!errors.Is(err, ErrBadRequest) && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotFound) &&
+		!errors.Is(err, ErrTooManyRequests) && !errors.Is(err, ErrRequestBuildFailure) && !errors.Is(err, ErrDecodeResponse)
 }
 
 // sleepCtx waits d, or until ctx ends.
@@ -664,11 +664,11 @@ func (c *Client) getStack(ctx context.Context, id string) (StackResult, error) {
 		}
 		req, err := c.newRequest(ctx, http.MethodGet, "/v1/stack/"+url.PathEscape(id), q, nil)
 		if err != nil {
-			return res, errkit.Append(ErrRequestBuildFailure, err)
+			return res, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var p stackPage
 		if err := c.do(req, &p); err != nil {
-			return res, errkit.Append(ErrRequestFailed, err)
+			return res, wrapErr(ErrRequestFailed, err)
 		}
 		if page == 0 {
 			res.Stack = p.Stack
@@ -720,7 +720,7 @@ func (c *Client) WaitStack(ctx context.Context, id string, progress func(status 
 			if res.Stack != nil && res.Stack.Error != "" {
 				msg = res.Stack.Error
 			}
-			return res, errkit.Append(ErrUnknownAPIError, fmt.Errorf("%s", msg))
+			return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s", msg))
 		}
 		if err := sleepCtx(ctx, delay); err != nil {
 			return res, err
@@ -743,18 +743,18 @@ type ChangeEntry struct {
 // GetCVEHistory returns the changes SecurityContext recorded for a CVE (oldest first).
 func (c *Client) GetCVEHistory(ctx context.Context, id string) ([]ChangeEntry, error) {
 	if !IsCVEID(id) {
-		return nil, errkit.Append(ErrNotFound, fmt.Errorf("%s is not a CVE id", id))
+		return nil, wrapErr(ErrNotFound, fmt.Errorf("%s is not a CVE id", id))
 	}
 	q := url.Values{"include": {"history"}}
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves/"+url.PathEscape(strings.ToUpper(strings.TrimSpace(id))), q, nil)
 	if err != nil {
-		return nil, errkit.Append(ErrRequestBuildFailure, err)
+		return nil, wrapErr(ErrRequestBuildFailure, err)
 	}
 	var resp struct {
 		History []ChangeEntry `json:"history"`
 	}
 	if err := c.do(req, &resp); err != nil {
-		return nil, errkit.Append(ErrRequestFailed, err)
+		return nil, wrapErr(ErrRequestFailed, err)
 	}
 	return resp.History, nil
 }
@@ -908,7 +908,7 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 			res, err = c.checkPackages(ctx, entries[start:end], mode)
 		}
 		// an API without compact answers refuses the field, the gzip body or the batch size: the plain way instead
-		if err != nil && mode.compact && start == 0 && errkit.Is(err, ErrBadRequest) {
+		if err != nil && mode.compact && start == 0 && errors.Is(err, ErrBadRequest) {
 			opts.Compact, opts.Functions = false, mode.functions
 			retry, err := c.CheckManyWith(ctx, entries, opts)
 			retry.FunctionsUnavailable = retry.FunctionsUnavailable || all.FunctionsUnavailable
@@ -933,7 +933,7 @@ func (c *Client) CheckExtensions(ctx context.Context, entries []string) (res Sta
 		return res, true, nil
 	}
 	res, err = c.CheckManyWith(ctx, entries, CheckOptions{})
-	if err != nil && errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "unknown purl type") {
+	if refusedFor(err, "unknown purl type") {
 		return StackResult{}, false, nil
 	}
 	if err != nil {
@@ -949,7 +949,14 @@ func (c *Client) CheckExtensions(ctx context.Context, entries []string) (res Sta
 
 // functionsRejected is an API's 400 for a body field it does not know: one deployed before function lists.
 func functionsRejected(err error) bool {
-	return errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "functions")
+	return refusedFor(err, "functions")
+}
+
+// refusedFor is whether err is the API's 400 and its message names text: a field, type or parameter it does not
+// know, or a cursor it no longer takes.
+func refusedFor(err error, text string) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.StatusCode == http.StatusBadRequest && strings.Contains(ae.Message, text)
 }
 
 // ScanImage queues a scan of a container image by registry reference (POST /v1/stack {"image", "platform"}):
@@ -962,17 +969,17 @@ func (c *Client) ScanImage(ctx context.Context, ref, platform string) (string, e
 	}
 	req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", nil, body)
 	if err != nil {
-		return "", errkit.Append(ErrRequestBuildFailure, err)
+		return "", wrapErr(ErrRequestBuildFailure, err)
 	}
 	var page stackPage
 	if err := c.do(req, &page); err != nil {
-		return "", errkit.Append(ErrRequestFailed, err)
+		return "", wrapErr(ErrRequestFailed, err)
 	}
 	if page.ID == "" && page.Stack != nil {
 		page.ID = page.Stack.ID
 	}
 	if page.ID == "" {
-		return "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("the image scan was accepted but no stack id came back"))
+		return "", wrapErr(ErrUnknownAPIError, fmt.Errorf("the image scan was accepted but no stack id came back"))
 	}
 	return page.ID, nil
 }

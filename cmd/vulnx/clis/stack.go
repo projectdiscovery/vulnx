@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/projectdiscovery/gologger"
-	"github.com/projectdiscovery/utils/errkit"
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/projectdiscovery/vulnx/v2"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	"github.com/spf13/cobra"
 )
 
@@ -194,7 +194,7 @@ func writeChecked(ctx context.Context, res vulnx.StackResult, show int) error {
 
 // fatalScan ends a scan that failed; a rate limit says when to retry.
 func fatalScan(err error) {
-	if errkit.Is(err, vulnx.ErrTooManyRequests) {
+	if errors.Is(err, vulnx.ErrTooManyRequests) {
 		handleRateLimitError()
 	}
 	gologger.Fatal().Msgf("%s", err)
@@ -268,7 +268,7 @@ func fillProductCVEs(ctx context.Context, res *vulnx.StackResult, strict bool) e
 			return fmt.Errorf("failed to read every CVE of %s %s: %w", key, it.Version, err)
 		}
 		if err != nil {
-			gologger.Warning().Msgf("full CVE list for %s %s: %s", key, it.Version, err)
+			gologger.Info().Msgf("Could not read the full CVE list of %s %s (its 10 most urgent are listed): %s", key, it.Version, err)
 			continue
 		}
 		it.AdvisoryRows = rows
@@ -344,15 +344,15 @@ func renderStackText(res vulnx.StackResult, show int) string {
 		if name == "" {
 			name = strings.TrimPrefix(it.Package, "cpe/") + "@" + it.Version
 		}
-		line := fmt.Sprintf("[%s] %s", strings.ToUpper(termClean(it.Status)), termClean(name))
+		line := fmt.Sprintf("[%s] %s", strings.ToUpper(termtext.Clean(it.Status)), termtext.Clean(name))
 		if it.Status == "affected" {
 			n := it.AdvisoryRowsTotal
 			if n == 0 {
 				n = it.Advisories
 			}
-			line += fmt.Sprintf("  %s, %d advisories", termClean(it.WorstSeverity), n)
+			line += fmt.Sprintf("  %s, %d advisories", termtext.Clean(it.WorstSeverity), n)
 			if it.FixedVersion != "" {
-				line += "  fix: " + termClean(it.FixedVersion)
+				line += "  fix: " + termtext.Clean(it.FixedVersion)
 			}
 		}
 		b.WriteString(line + "\n")
@@ -381,7 +381,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 			if a.CvssScore > 0 {
 				score = fmt.Sprintf(" %.1f", a.CvssScore)
 			}
-			fmt.Fprintf(&b, "  ↳ %-16s %-8s%s%s  %s\n", termClean(id), termClean(a.Severity), score, marks, termClean(a.Name))
+			fmt.Fprintf(&b, "  ↳ %-16s %-8s%s%s  %s\n", termtext.Clean(id), termtext.Clean(a.Severity), score, marks, termtext.Clean(a.Name))
 		}
 		total := len(it.AdvisoryRows)
 		if it.AdvisoryRowsTotal > total {
@@ -402,7 +402,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 				reason = it.Undetermined[0].Reason
 			}
 			if reason != "" {
-				fmt.Fprintf(&b, "  ↳ undetermined: %s\n", termClean(reason))
+				fmt.Fprintf(&b, "  ↳ undetermined: %s\n", termtext.Clean(reason))
 			}
 		}
 	}
@@ -430,7 +430,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 	}
 	b.WriteString("\n")
 	for _, r := range s.UndeterminedReasons {
-		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", termClean(r.Reason), r.Count, termClean(r.Why))
+		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", termtext.Clean(r.Reason), r.Count, termtext.Clean(r.Why))
 	}
 	return b.String()
 }

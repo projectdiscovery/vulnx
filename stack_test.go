@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,8 +17,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 func TestNormalizeCheckEntry(t *testing.T) {
@@ -319,7 +318,7 @@ func TestShareFile(t *testing.T) {
 		if supported && (err != nil || id != "abc" || expiresAt != "2026-11-12T15:00:00Z" || field != "86400" || uploads != 1) {
 			t.Errorf("supported: id %q expires %q field %q uploads %d err %v", id, expiresAt, field, uploads, err)
 		}
-		if !supported && (!errkit.Is(err, ErrExpiryUnsupported) || uploads != 0) {
+		if !supported && (!errors.Is(err, ErrExpiryUnsupported) || uploads != 0) {
 			t.Errorf("unsupported: uploads %d err %v", uploads, err)
 		}
 	}
@@ -438,7 +437,7 @@ func TestWaitStackTransient(t *testing.T) {
 	mu.Lock()
 	refuse, calls = true, 0
 	mu.Unlock()
-	if _, err := c.WaitStack(ctx, "abc", nil); !errkit.Is(err, ErrBadRequest) || calls != 1 {
+	if _, err := c.WaitStack(ctx, "abc", nil); !errors.Is(err, ErrBadRequest) || calls != 1 {
 		t.Fatalf("a refusal is not retried: err %v, calls %d", err, calls)
 	}
 }

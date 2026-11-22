@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/projectdiscovery/utils/errkit"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 	"github.com/spf13/pflag"
@@ -51,7 +50,7 @@ func runHostScan(ctx context.Context) (failed bool, err error) {
 		}
 	}
 	if scanReport { // before the scan: a report whose link could not expire is never uploaded
-		if err := vulnxClient.StackExpirySupported(ctx); errkit.Is(err, vulnx.ErrExpiryUnsupported) {
+		if err := vulnxClient.StackExpirySupported(ctx); errors.Is(err, vulnx.ErrExpiryUnsupported) {
 			return false, errors.New("--report: this SecurityContext API cannot expire a report's link yet, so nothing was scanned or uploaded")
 		} else if err != nil {
 			return false, fmt.Errorf("--report: %w", err)
@@ -166,7 +165,7 @@ func shareHostReport(ctx context.Context, path string) error {
 		_, err = vulnxClient.WaitStackReady(ctx, id)
 	}
 	hostProgress("")
-	if errkit.Is(err, vulnx.ErrExpiryUnsupported) {
+	if errors.Is(err, vulnx.ErrExpiryUnsupported) {
 		return errors.New("--report: this SecurityContext API cannot expire a report's link yet, so nothing was uploaded")
 	}
 	if err != nil {
