@@ -10,7 +10,7 @@ import (
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
-// Handler wraps the vulnx.Client for faceted vulnerability analysis operations.
+// Handler counts CVEs by field values (facets).
 type Handler struct {
 	client *vulnx.Client
 }
@@ -20,78 +20,43 @@ func NewHandler(client *vulnx.Client) *Handler {
 	return &Handler{client: client}
 }
 
-// Example Usage:
-//	h := analyze.NewHandler(client)
-//	resp, err := h.Analyze(analyze.Params{
-//		Fields: []string{"severity", "is_kev"},
-//	})
-//
-//	if err != nil {
-//		log.Fatal(err)
-//	}
-//	fmt.Printf("Found %d total vulnerabilities\n", resp.Total)
+// MaxFacetSize is the most buckets a facet returns: SecurityContext answers at most 50 per facet.
+const MaxFacetSize = 50
 
-// Params groups the parameters for faceted vulnerability analysis
+// Params groups the parameters for faceted vulnerability analysis.
 type Params struct {
-	// Fields represents the list of facet expressions the caller wishes to
-	// compute. Each expression can optionally set a custom size using the
-	// "field=size" syntax (e.g. "severity=5").
+	// Fields are the facets to compute, each a field name or "field=size" (e.g. "severity=5"); at most 3.
 	Fields []string
-
-	// Query is an optional Bleve query expression that filters the documents
-	// before the facet aggregation is executed.
+	// Query is an optional field:value query that filters the CVEs counted.
 	Query *string
-
-	// FacetSize sets the default number of buckets to return for any facet
-	// expression that does not explicitly override its size via the
-	// "field=size" form. If nil the server default is used.
+	// FacetSize is the number of buckets for a field given without a size; 10 when nil.
 	FacetSize *int
 }
 
-// Analyze performs a facet-based aggregation over vulnerabilities. Callers must
-// provide at least one term facet via Params.Fields. The function sets
-// Fields to ["doc_id"] and Limit to 1 to minimise response size as we are only
-// interested in the aggregation buckets.
+// Analyze counts CVEs per value of each field in params.Fields. Sizes above MaxFacetSize are capped.
 func (h *Handler) Analyze(params Params) (vulnx.SearchResponse, error) {
-	// Enforce maximum facet size of 200 across all inputs to avoid abuse.
-
-	// 1. Clamp FacetSize if provided.
-	if params.FacetSize != nil && *params.FacetSize > 200 {
-		capped := 200
-		params.FacetSize = &capped
-	}
-
-	// 2. Inspect each field expression for explicit size overrides (field=size).
-	//    If present and size > 200, cap it.
-	cappedFields := make([]string, len(params.Fields))
+	facets := make([]string, len(params.Fields))
 	for i, f := range params.Fields {
-		if strings.Contains(f, "=") {
-			parts := strings.SplitN(f, "=", 2)
-			if len(parts) == 2 {
-				if sz, err := strconv.Atoi(parts[1]); err == nil {
-					if sz > 200 {
-						sz = 200
-					}
-					f = parts[0] + "=" + strconv.Itoa(sz)
-				}
-			}
+		name, size, ok := strings.Cut(strings.ReplaceAll(f, "=", ":"), ":")
+		if n, err := strconv.Atoi(strings.TrimSpace(size)); ok && err == nil && n > MaxFacetSize {
+			size = strconv.Itoa(MaxFacetSize)
 		}
-		cappedFields[i] = strings.ReplaceAll(f, "=", ":")
+		facets[i] = name
+		if ok {
+			facets[i] += ":" + size
+		}
 	}
-
-	sp := vulnx.SearchParams{
-		TermFacets: cappedFields,
-		Fields:     []string{"doc_id"},
-		Limit:      vulnx.Ptr(1),
-	}
-	if params.Query != nil {
-		sp.Query = params.Query
-	}
+	facetSize := 10
 	if params.FacetSize != nil {
-		sp.FacetSize = params.FacetSize
+		facetSize = min(*params.FacetSize, MaxFacetSize)
 	}
-
-	return h.client.SearchVulnerabilities(context.Background(), sp)
+	return h.client.SearchVulnerabilities(context.Background(), vulnx.SearchParams{
+		Query:      params.Query,
+		TermFacets: facets,
+		FacetSize:  &facetSize,
+		Fields:     []string{"cve_id"},
+		Limit:      vulnx.Ptr(1),
+	})
 }
 
 // MCPToolSpec returns the MCP tool specification for vulnerability analysis
@@ -99,15 +64,15 @@ func (h *Handler) MCPToolSpec() mcp.Tool {
 	return mcp.NewTool("vulnx_analyze",
 		mcp.WithDescription("Aggregate vulnerabilities (ANALYZE/facets) over selected fields. NOTE: Use this tool ONLY when instructed by `agent_vulnx` or when the user explicitly asks for an analysis; do NOT call it otherwise."),
 		mcp.WithArray("fields",
-			mcp.Description("Facet/analyze expressions. Example: ['severity=5', 'vendor=10']. Each entry is either just the field name or 'field=size' to override bucket count (max 200)."),
+			mcp.Description("Up to 3 fields to count CVEs by. Example: ['severity=5', 'vendor=10']. Each entry is a field name or 'field=size' to set its bucket count (max 50)."),
 			mcp.Items(map[string]any{"type": "string"}),
 			mcp.Required(),
 		),
 		mcp.WithString("query",
-			mcp.Description("Optional Bleve-inspired query filter (use '&&', '||' for logical operations) applied before aggregation. Combine field names and operators to narrow the data set (see 'vulnx_fields_list' for valid fields)."),
+			mcp.Description("Optional field:value query (terms joined by '&&'; '||' only between values of one field) that filters the CVEs counted. See 'vulnx_fields_list' for valid fields."),
 		),
 		mcp.WithNumber("facet_size",
-			mcp.Description("Default bucket count when 'field=size' is not provided. Max 200."),
+			mcp.Description("Bucket count for fields given without '=size' (default 10, max 50)."),
 		),
 	)
 }
@@ -118,12 +83,6 @@ func (h *Handler) MCPHandler(client *vulnx.Client) func(ctx context.Context, req
 		fields, err := request.RequireStringSlice("fields")
 		if err != nil || len(fields) == 0 {
 			return mcp.NewToolResultError("ProjectDiscovery vulnx: 'fields' is required and must be a string array."), nil
-		}
-		// fix request fields format
-		for i, f := range fields {
-			if strings.Contains(f, "=") {
-				fields[i] = strings.ReplaceAll(f, "=", ":")
-			}
 		}
 		query := request.GetString("query", "")
 		var queryPtr *string

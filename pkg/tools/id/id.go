@@ -19,7 +19,7 @@ func NewHandler(client *vulnx.Client) *Handler {
 	}
 }
 
-// Get fetches a single vulnerability document by its ID.
+// Get fetches one CVE record by id.
 func (h *Handler) Get(id string) (*vulnx.Vulnerability, error) {
 	resp, err := h.client.GetVulnerabilityByID(context.Background(), id, nil)
 	if err != nil {
@@ -31,10 +31,10 @@ func (h *Handler) Get(id string) (*vulnx.Vulnerability, error) {
 // MCPToolSpec returns the MCP tool spec for registration.
 func (h *Handler) MCPToolSpec() mcp.Tool {
 	return mcp.NewTool("vulnx_get_by_id",
-		mcp.WithDescription("Retrieve a full vulnerability or template record by ID (CVE or Nuclei). NOTE: Invoke only when `agent_vulnx` instructs or the user explicitly requests it; otherwise do not call this tool."),
+		mcp.WithDescription("Retrieve a full CVE record by its CVE id (only CVE records are supported). NOTE: Invoke only when `agent_vulnx` instructs or the user explicitly requests it; otherwise do not call this tool."),
 		mcp.WithString("id",
 			mcp.Required(),
-			mcp.Description("The CVE ID or Nuclei Template ID to retrieve (e.g. 'CVE-2024-1234' or 'php-xdebug-rce')."),
+			mcp.Description("The CVE id to retrieve (e.g. 'CVE-2021-44228')."),
 		),
 	)
 }
@@ -46,11 +46,11 @@ func (h *Handler) MCPHandler(client *vulnx.Client) func(ctx context.Context, req
 		if err != nil || id == "" {
 			return mcp.NewToolResultError("ProjectDiscovery vulnx: 'id' is required and must be a string."), nil
 		}
-		vuln, err := h.Get(id)
+		resp, err := h.client.GetVulnerabilityByID(ctx, id, nil)
 		if err != nil {
 			return mcp.NewToolResultError("ProjectDiscovery vulnx: " + err.Error()), nil
 		}
-		b, err := json.MarshalIndent(vuln, "", "  ")
+		b, err := json.MarshalIndent(resp.Data, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError("ProjectDiscovery vulnx: failed to marshal vulnerability: " + err.Error()), nil
 		}

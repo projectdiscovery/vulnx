@@ -3,58 +3,22 @@ package search
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
-// MaxResultWindow is the deepest hit the search API serves: it rejects
-// offset + limit beyond this with a generic 500 instead of a clear error.
-const MaxResultWindow = 10000
-
-// ValidateResultWindow reports whether offset and limit stay within
-// MaxResultWindow. A limit of 0 means the server default, so only the
-// offset itself is checked.
-func ValidateResultWindow(offset, limit int) error {
-	if offset < 0 || limit < 0 {
-		return fmt.Errorf("offset and limit must be non-negative")
-	}
-	if offset >= MaxResultWindow || offset+limit > MaxResultWindow {
-		return fmt.Errorf("offset + limit must not exceed %d (API result window); narrow the query to reach older results", MaxResultWindow)
-	}
-	return nil
-}
-
-// Handler provides high-level helpers around the vulnerability search
-// endpoint. It mirrors the design of pkg/tools/id.Handler for
-// consistency across tools.
-//
-// All methods are thin wrappers over the corresponding vulnx.Client
-// helpers so that business logic remains decoupled from CLI concerns.
-// The type is intentionally small to keep instantiation and use
-// lightweight.
-//
-// Example:
-//
-//	h := search.NewHandler(client)
-//	resp, err := h.Search(vulnx.SearchParams{Query: vulnx.Ptr("severity:critical")})
-//
-// The zero value of Handler is not valid; always use NewHandler.
+// Handler runs searches for the CLI and the vulnx_search MCP tool.
 type Handler struct {
 	client *vulnx.Client
 }
 
-// NewHandler returns a new Handler instance that uses the provided
-// vulnx.Client for all network operations.
+// NewHandler returns a Handler that searches with client.
 func NewHandler(client *vulnx.Client) *Handler {
 	return &Handler{client: client}
 }
 
-// Search performs a full-text search across vulnerabilities using the
-// supplied parameters. It delegates the heavy-lifting to
-// vulnx.Client.SearchVulnerabilities and simply forwards the request
-// context.
+// Search runs one search with params.
 func (h *Handler) Search(params vulnx.SearchParams) (vulnx.SearchResponse, error) {
 	return h.client.SearchVulnerabilities(context.Background(), params)
 }
@@ -65,13 +29,13 @@ func (h *Handler) MCPToolSpec() mcp.Tool {
 		mcp.WithDescription("Search CVEs (SecurityContext) with field:value terms joined by '&&'; '||' only between values of one field (severity:critical || severity:high); up to 5 keywords; one vendor or product. NOTE: Use this tool ONLY when `agent_vulnx` explicitly instructs you or when the user directly asks for a search; otherwise do not invoke it."),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Bleve-inspired query expression (e.g. 'severity:critical && vendor:atlassian && is_kev:true'). Use only fields from 'vulnx_fields_list'."),
+			mcp.Description("field:value query (e.g. 'severity:critical && vendor:atlassian && is_kev:true'). Use only fields from 'vulnx_fields_list'."),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum results per call (default 5, cap 100)."),
+			mcp.Description("Results per call (default 5, 1-100)."),
 		),
 		mcp.WithNumber("offset",
-			mcp.Description("Starting index for pagination (default 0)."),
+			mcp.Description("Starting index for pagination (default 0); offset + limit can be at most 1000."),
 		),
 		mcp.WithArray("fields",
 			mcp.Description("Optional list of fields to include in the response. Omit for defaults, [] for full payload."),
@@ -93,13 +57,10 @@ func (h *Handler) MCPHandler(client *vulnx.Client) func(ctx context.Context, req
 		if err != nil || query == "" {
 			return mcp.NewToolResultError("ProjectDiscovery vulnx: 'query' is required and must be a string."), nil
 		}
-		limit := request.GetInt("limit", 5)
-		if limit > 100 {
-			limit = 100
-		}
+		limit := min(request.GetInt("limit", 5), 100)
 		offset := request.GetInt("offset", 0)
-		if err := ValidateResultWindow(offset, limit); err != nil {
-			return mcp.NewToolResultError("ProjectDiscovery vulnx: " + err.Error()), nil
+		if limit < 1 || offset < 0 {
+			return mcp.NewToolResultError("ProjectDiscovery vulnx: 'limit' must be 1-100 and 'offset' must not be negative."), nil
 		}
 
 		// Prepare base search parameters
@@ -111,7 +72,7 @@ func (h *Handler) MCPHandler(client *vulnx.Client) func(ctx context.Context, req
 
 		// Handle optional 'fields' array
 		fields := request.GetStringSlice("fields", nil)
-		defaultFields := []string{"cve_id", "name", "remediation", "cve_created_at", "poc_count", "doc_type", "updated_at", "impact", "description", "severity", "cvss_score", "epss_score", "is_kev", "is_vkev", "is_oss", "is_patch_available", "is_poc", "is_remote"}
+		defaultFields := []string{"cve_id", "name", "remediation", "cve_created_at", "poc_count", "updated_at", "impact", "description", "severity", "cvss_score", "epss_score", "is_kev", "is_vkev", "is_oss", "is_patch_available", "is_poc", "is_remote"}
 		switch {
 		case fields == nil:
 			// No parameter provided – apply defaults to reduce payload size
@@ -132,7 +93,7 @@ func (h *Handler) MCPHandler(client *vulnx.Client) func(ctx context.Context, req
 			params.SortDesc = &sortDesc
 		}
 
-		resp, err := h.Search(params)
+		resp, err := h.client.SearchVulnerabilities(ctx, params)
 		if err != nil {
 			return mcp.NewToolResultError("ProjectDiscovery vulnx: " + err.Error()), nil
 		}

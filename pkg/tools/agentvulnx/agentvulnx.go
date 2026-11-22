@@ -12,8 +12,7 @@ import (
 // The tool converts a natural-language vulnerability task into a structured
 // execution plan (Markdown) that guides an LLM or user through the optimal
 // sequence of ProjectDiscovery vulnerability.sh MCP tools. It is analogous to
-// the generic "sequential thinking" tool but specialised for vulnerability,
-// CVE, and Nuclei-template analysis workflows.
+// the generic "sequential thinking" tool but specialised for CVE analysis workflows.
 //
 // Typical usage:
 //   1. The user (or another tool) calls agent_vulnx with a free-form task such
@@ -52,7 +51,7 @@ func (h *Handler) MCPToolSpec() mcp.Tool {
 		mcp.WithDescription(`Convert a natural-language vulnerability task into a structured execution plan. The plan follows a "sequential thinking" style tailored to ProjectDiscovery vulnerability.sh MCP tools.
 
 When to use this tool:
-- Any time a user poses an open-ended vulnerability, CVE, exploit, or template-related request.
+- Any time a user poses an open-ended vulnerability, CVE or exploit question.
 - When another tool or the system needs an explicit, step-by-step plan before invoking vulnx_* tools.
 
 Key features:
@@ -65,7 +64,7 @@ Parameters:
 - task (string, required): Plain-language description of the vulnerability task.`),
 		mcp.WithString("task",
 			mcp.Required(),
-			mcp.Description("Plain-language vulnerability or CVE-related task description (e.g. 'Analyze CVE-2024-1234')"),
+			mcp.Description("Plain-language vulnerability or CVE-related task description (e.g. 'Analyze CVE-2021-44228')"),
 		),
 	)
 }
@@ -73,7 +72,7 @@ Parameters:
 var prompt = `
 Execute a vulnerability analysis using the LOOP framework, systematically progressing through each stage and utilizing the specified tools at the appropriate steps. Document each iteration and ensure queries are refined for optimal results.
 
-Start with Field Discovery to identify all available fields and examples. Use insights from this stage to design effective Bleve-inspired queries. If queries fail, revisit and iterate with improvements. Use optional tools for deeper insights and summarize the findings upon completion.
+Start with Field Discovery to identify all available fields and examples. Use insights from this stage to design field:value queries. If queries fail, revisit and iterate with improvements. Use optional tools for deeper insights and summarize the findings upon completion.
 
 # Steps
 
@@ -81,7 +80,7 @@ Start with Field Discovery to identify all available fields and examples. Use in
    - Use *vulnx_fields_list* to enumerate available fields and example values.
 
 2. **Query Design**:
-   - Draft Bleve-inspired queries based on the insights from Field Discovery.
+   - Draft field:value queries based on the insights from Field Discovery: terms joined by &&, || only between values of one field (severity:critical || severity:high), at most 5 keywords, one vendor or product, and score filters as minimums (cvss_score:>=7).
 
 3. **vulnx_search Execution**:
    - Run the designed queries and analyze the results. Aim to refine queries if errors or irrelevant results occur.
@@ -109,16 +108,16 @@ The output should summarize key findings in a clear and structured format, captu
    - "Using *vulnx_fields_list*, identified fields: severity, cvss_score, cwe. Constructed initial query: 'severity:critical && cwe:CWE-94'."
 
 - **vulnx_search Execution & Result Analysis**:
-   - "Executed query and observed 50 relevant results indicating high-risk vulnerabilities. Refined query by adjusting filters to: 'severity:critical && cvss_score:>7'."
+   - "Executed query and observed 50 relevant results indicating high-risk vulnerabilities. Refined query by adjusting filters to: 'severity:critical && cvss_score:>=9.5 && is_kev:true'."
 
 - **Completion Summary**:
-   - "Summarized findings: Detected 10 critical vulnerabilities in 30 days window. Suggested remediation: Patch updates and increased monitoring of domains."
+   - "Summarized findings: 10 critical CVEs published in the last 30 days (age_in_days:<30). Suggested remediation: apply vendor patches and monitor affected hosts."
 
 # Notes
 
-- Ensure valid field names in queries, use valid operators (&&, ||).
+- Use only fields from vulnx_fields_list; join terms with && and use || only between values of one field.
 - If queries return errors or zero results, revisit Field Discovery or modify conditions to improve relevance.
-- Explore advanced options like 'description:<keyword>' as a contingency for detailed search needs.
+- Plain keywords (up to 5) search the CVE text, e.g. 'log4j rce'.
 - Loosen filters when necessary and consider synonyms or alternate keywords for broader results.
 - Document each step in the iteration log systematically for tracking and evaluations.
 

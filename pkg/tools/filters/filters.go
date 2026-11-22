@@ -8,26 +8,17 @@ import (
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
-// Handler provides a thin wrapper around vulnx.Client.GetVulnerabilityFilters so
-// that CLI tooling can remain decoupled from the API client. The design mirrors
-// pkg/tools/id.Handler and pkg/tools/search.Handler for consistency.
-//
-// The zero value of Handler is not valid; always instantiate the type via
-// NewHandler.
+// Handler lists the query fields vulnx supports, for the CLI and the vulnx_fields_list MCP tool.
 type Handler struct {
 	client *vulnx.Client
 }
 
-// NewHandler returns a new Handler that will use the supplied *vulnx.Client
-// for all network operations. The provided client must be fully configured and
-// ready for use.
+// NewHandler returns a Handler for client.
 func NewHandler(client *vulnx.Client) *Handler {
 	return &Handler{client: client}
 }
 
-// List retrieves the full list of vulnerability filter definitions from the
-// Vulnx API. It forwards the call to vulnx.Client.GetVulnerabilityFilters
-// using a background context.
+// List returns the query fields vulnx translates for SecurityContext.
 func (h *Handler) List() ([]vulnx.VulnerabilityFilter, error) {
 	return h.client.GetVulnerabilityFilters(context.Background())
 }
@@ -35,7 +26,7 @@ func (h *Handler) List() ([]vulnx.VulnerabilityFilter, error) {
 // MCPToolSpec returns the MCP tool spec for registration.
 func (h *Handler) MCPToolSpec() mcp.Tool {
 	return mcp.NewTool("vulnx_fields_list",
-		mcp.WithDescription("List all available fields in the ProjectDiscovery vulnerability.sh API. NOTE: Call this tool ONLY when the `agent_vulnx` tool explicitly instructs you to do so, or when the user directly requests it; otherwise do not invoke it."),
+		mcp.WithDescription("List the fields vulnx_search and vulnx_analyze accept, with examples. NOTE: Call this tool ONLY when the `agent_vulnx` tool explicitly instructs you to do so, or when the user directly requests it; otherwise do not invoke it."),
 	)
 }
 

@@ -31,9 +31,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	fileutil "github.com/projectdiscovery/utils/file"
 	updateutils "github.com/projectdiscovery/utils/update"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/analyze"
-	"github.com/projectdiscovery/vulnx/v2/pkg/tools/id"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 )
 
@@ -67,6 +67,9 @@ var (
 	// Global disable update check flag
 	globalDisableUpdateCheck bool
 
+	// updateSelf is the root --update flag
+	updateSelf bool
+
 	// Track if the banner has already been shown for this invocation
 	bannerShown bool
 
@@ -80,9 +83,7 @@ var (
 		Use:   "vulnx",
 		Short: "vulnx — the swiss army knife for vulnerability intel",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// Check for update flag
-			update, _ := cmd.Flags().GetBool("update")
-			if update {
+			if updateSelf {
 				GetUpdateCallback()()
 				return nil
 			}
@@ -121,13 +122,10 @@ var (
 
 	mcpCmd = &cobra.Command{
 		Use:   "mcp",
-		Short: "start mcp server for vulnx (projectdiscovery vulnerability.sh) tools",
-		Run: func(cmd *cobra.Command, args []string) {
-			mode, _ := cmd.Flags().GetString("mode")
-			port, _ := cmd.Flags().GetInt("port")
-			if debug {
-				fmt.Fprintln(os.Stderr, "\nProjectDiscovery vulnerability.sh (vulnx) MCP server mode\n----------------------------------------------")
-			}
+		Short: "start an mcp server (stdio) with the vulnx tools",
+		// stdout carries the protocol
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			s := server.NewMCPServer(
 				"ProjectDiscovery vulnerability.sh (vulnx)",
 				strings.TrimPrefix(Version, "v"),
@@ -137,32 +135,7 @@ var (
 			for _, tool := range tools.AllMCPTools(vulnxClient) {
 				s.AddTool(tool.MCPToolSpec(), tool.MCPHandler(vulnxClient))
 			}
-			switch mode {
-			case "stdio":
-				if err := server.ServeStdio(s); err != nil {
-					fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-				}
-			case "sse":
-				addr := fmt.Sprintf(":%d", port)
-				if debug {
-					fmt.Fprintf(os.Stderr, "Starting MCP SSE server on %s...\n", addr)
-				}
-				// TODO: Integrate proper SSE handler from MCP server package when available
-				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusNotImplemented)
-					if _, err := w.Write([]byte("SSE mode is not yet implemented in this build. Please update the MCP server package or implement SSE handler.")); err != nil {
-						gologger.Error().Msgf("Failed to write SSE not implemented message: %s", err)
-					}
-				})
-				if err := http.ListenAndServe(addr, handler); err != nil {
-					fmt.Fprintf(os.Stderr, "SSE server error: %v\n", err)
-				}
-			case "http":
-				fmt.Fprintln(os.Stderr, "HTTP mode is not supported in this build. Use --mode stdio or --mode sse.")
-				os.Exit(1)
-			default:
-				fmt.Fprintf(os.Stderr, "Unknown mode: %s\n", mode)
-			}
+			return server.ServeStdio(s)
 		},
 	}
 )
@@ -176,11 +149,11 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&httpProxy, "proxy", "", "http proxy to use (e.g. http://127.0.0.1:8080)")
 	rootCmd.PersistentFlags().DurationVar(&httpTimeout, "timeout", 30*time.Second, "http request timeout (e.g. 30s, 1m)")
 
-	rootCmd.PersistentFlags().BoolVar(&debugReq, "debug-req", false, "dump http requests to stdout")
-	rootCmd.PersistentFlags().BoolVar(&debugResp, "debug-resp", false, "dump http responses to stdout")
+	rootCmd.PersistentFlags().BoolVar(&debugReq, "debug-req", false, "dump http requests to stderr (api key redacted)")
+	rootCmd.PersistentFlags().BoolVar(&debugResp, "debug-resp", false, "dump http responses to stderr")
 
 	// Add persistent json and output flags
-	rootCmd.PersistentFlags().BoolVarP(&jsonOutput, "json", "j", false, "output raw json (for piping, disables yaml output)")
+	rootCmd.PersistentFlags().BoolVarP(&jsonOutput, "json", "j", false, "output raw json (for piping)")
 	rootCmd.PersistentFlags().StringVarP(&outputFile, "output", "o", "", "write output to file, json or csv by extension (error if file exists)")
 
 	// Add persistent silent flag
@@ -192,8 +165,11 @@ func init() {
 	// Add persistent disable update check flag
 	rootCmd.PersistentFlags().BoolVar(&globalDisableUpdateCheck, "disable-update-check", false, "disable automatic vulnx update check")
 
+	// main reports the error once
+	rootCmd.SilenceErrors = true
+
 	// Update flag
-	rootCmd.Flags().Bool("update", false, "update vulnx to latest version")
+	rootCmd.Flags().BoolVar(&updateSelf, "update", false, "update vulnx to latest version")
 
 	// Custom help and usage to always show banner
 	defaultHelpFunc := rootCmd.HelpFunc()
@@ -219,8 +195,6 @@ func init() {
 		return defaultUsageFunc(cmd)
 	})
 
-	mcpCmd.Flags().String("mode", "stdio", "mcp server mode: stdio or sse")
-	mcpCmd.Flags().Int("port", 8080, "port to listen on for sse mode (default 8080)")
 	rootCmd.AddCommand(mcpCmd)
 }
 
@@ -269,30 +243,17 @@ func ensureVulnxClientInitialized(_ *cobra.Command) error {
 		retryOpts.HttpClient = httpClient
 		retryOpts.Verbose = debug
 
-		var opts []vulnx.Option
-		opts = append(opts, vulnx.WithKeyFromEnv(), vulnx.WithRetryableHTTPOptions(retryOpts))
+		opts := []vulnx.Option{vulnx.WithRetryableHTTPOptions(retryOpts)}
 		if debugReq {
 			opts = append(opts, vulnx.WithDebugRequest(func(req *http.Request) {
 				dump, err := httputil.DumpRequestOut(req, true)
-				if err == nil {
-					var sb strings.Builder
-					sb.WriteString("--- HTTP REQUEST ---\n")
-					sb.WriteString(redactSensitiveHeaders(dump))
-					sb.WriteString("--------------------\n")
-					gologger.Debug().MsgFunc(sb.String)
-				}
+				printDump("HTTP REQUEST", dump, err)
 			}))
 		}
 		if debugResp {
 			opts = append(opts, vulnx.WithDebugResponse(func(resp *http.Response) {
 				dump, err := httputil.DumpResponse(resp, true)
-				if err == nil {
-					var sb strings.Builder
-					sb.WriteString("--- HTTP RESPONSE ---\n")
-					sb.WriteString(redactSensitiveHeaders(dump))
-					sb.WriteString("---------------------\n")
-					gologger.Debug().MsgFunc(sb.String)
-				}
+				printDump("HTTP RESPONSE", dump, err)
 			}))
 		}
 		client, err := vulnx.New(opts...)
@@ -331,7 +292,7 @@ func showDashboard() error {
 
 	handler := analyze.NewHandler(vulnxClient)
 
-	// one request for severity, vendors and exploit signals (anonymous callers have 10 requests a minute)
+	// one request for severity, vendors and exploit signals: anonymous callers are rate limited
 	overallResp, err := handler.Analyze(analyze.Params{
 		Fields:    []string{"severity=8", "affected_products.vendor=5", "exploit=10"},
 		FacetSize: vulnx.Ptr(10),
@@ -371,11 +332,7 @@ func showDashboardJSON() error {
 	if err != nil {
 		if errors.Is(err, vulnx.ErrTooManyRequests) {
 			// Return minimal JSON for rate limited requests
-			dashboardData := map[string]interface{}{
-				"error": "Dashboard unavailable: rate limited; try again shortly.",
-			}
-			jsonBytes, _ := json.MarshalIndent(dashboardData, "", "  ")
-			fmt.Printf("%s\n", jsonBytes)
+			fmt.Println(`{"error": "Dashboard unavailable: rate limited; try again shortly."}`)
 			return nil
 		}
 		return fmt.Errorf("failed to fetch dashboard data: %v", err)
@@ -471,25 +428,8 @@ func executeIDCommand(content string) error {
 		return fmt.Errorf("no valid CVE IDs found in stdin input")
 	}
 
-	// Remove duplicates
-	cveIDs = removeDuplicateStrings(cveIDs)
-
-	// Execute id command with the parsed CVE IDs
-	return executeIDWithIDs(cveIDs)
-}
-
-func removeDuplicateStrings(ids []string) []string {
-	seen := make(map[string]bool)
-	var result []string
-
-	for _, id := range ids {
-		if !seen[id] {
-			seen[id] = true
-			result = append(result, id)
-		}
-	}
-
-	return result
+	runIDs(cveIDs)
+	return nil
 }
 
 // isCSVOutput reports whether --output asks for CSV. Any other extension keeps the JSON default.
@@ -552,161 +492,25 @@ func writeNewFile(path string, data []byte) error {
 	return f.Close()
 }
 
-func executeIDWithIDs(cveIDs []string) error {
-	// Call the id command logic directly
-	return runIDCommandWithIDs(cveIDs)
-}
-
-func runIDCommandWithIDs(cveIDs []string) error {
-	// Limit to 100 IDs for performance
-	if len(cveIDs) > 100 {
-		gologger.Warning().Msgf("Processing %d IDs. Limiting to first 100 for performance.", len(cveIDs))
-		cveIDs = cveIDs[:100]
-	}
-
-	// Use the global vulnxClient
-	handler := id.NewHandler(vulnxClient)
-
-	// Handle JSON output for multiple IDs
-	if jsonOutput || outputFile != "" {
-		var allVulns []*vulnx.Vulnerability
-		for _, vulnID := range cveIDs {
-			vuln, err := handler.Get(vulnID)
-			if err != nil {
-				if err.Error() == "not found" {
-					gologger.Warning().Msgf("Vulnerability not found: %s", vulnID)
-					continue
-				}
-				gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
-				continue
-			}
-			allVulns = append(allVulns, vuln)
-		}
-
-		if len(allVulns) == 0 {
-			gologger.Fatal().Msg("No vulnerabilities were successfully retrieved")
-		}
-
-		writeVulnsOutput(allVulns, len(cveIDs) == 1 && len(allVulns) == 1)
-		return nil
-	}
-
-	// CLI output for multiple vulnerabilities
-	// Determine color configuration
-	var colors *renderer.ColorConfig
-	if noColor || !renderer.IsTerminal() {
-		colors = renderer.NoColorConfig()
-	} else {
-		colors = renderer.DefaultColorConfig()
-	}
-
-	successCount := 0
-	for i, vulnID := range cveIDs {
-		vuln, err := handler.Get(vulnID)
-		if err != nil {
-			if err.Error() == "not found" {
-				gologger.Warning().Msgf("Vulnerability not found: %s", vulnID)
-				continue
-			}
-			gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
-			continue
-		}
-
-		// Convert to renderer entry
-		entry := renderer.FromVulnerability(vuln)
-		if entry == nil {
-			gologger.Error().Msgf("Failed to convert vulnerability data for %s", vulnID)
-			continue
-		}
-
-		// Add separator between multiple results
-		if i > 0 && successCount > 0 {
-			separator := strings.Repeat("─", 65)
-			if colors != nil {
-				fmt.Println(colors.ColorResultSeparator(separator))
-			} else {
-				fmt.Println(separator)
-			}
-			fmt.Println()
-		}
-
-		// Render detailed output
-		result := renderer.RenderDetailed(entry, colors)
-		fmt.Println(result)
-		successCount++
-	}
-
-	if successCount == 0 {
-		gologger.Fatal().Msg("No vulnerabilities were successfully retrieved")
-	} else if successCount < len(cveIDs) {
-		gologger.Info().Msgf("Successfully retrieved %d out of %d vulnerabilities", successCount, len(cveIDs))
-	}
-
-	return nil
-}
-
-// extractBuckets extracts and sorts bucket data from facet response
-func extractBuckets(facets map[string]any, fieldName string) []struct {
+type bucket struct {
 	key   string
 	count int
-} {
-	var buckets []struct {
-		key   string
-		count int
-	}
+}
 
-	facetAny, exists := facets[fieldName]
-	if !exists {
-		return buckets
-	}
-
-	facetMap, ok := facetAny.(map[string]any)
-	if !ok {
-		return buckets
-	}
-
-	bucketsAny, ok := facetMap["buckets"]
-	if !ok {
-		return buckets
-	}
-
-	switch b := bucketsAny.(type) {
-	case map[string]any:
-		for k, v := range b {
-			count := 0
-			switch vv := v.(type) {
-			case float64:
-				count = int(vv)
-			case int:
-				count = vv
-			}
-			if count > 0 {
-				buckets = append(buckets, struct {
-					key   string
-					count int
-				}{k, count})
-			}
-		}
-	case []any:
-		for _, item := range b {
-			if m, ok := item.(map[string]any); ok {
-				key, _ := m["key"].(string)
-				count, _ := m["count"].(float64)
-				if count > 0 {
-					buckets = append(buckets, struct {
-						key   string
-						count int
-					}{key, int(count)})
-				}
-			}
+// extractBuckets reads a facet's buckets, largest first.
+func extractBuckets(facets map[string]any, fieldName string) []bucket {
+	facet, _ := facets[fieldName].(map[string]any)
+	items, _ := facet["buckets"].([]any)
+	var buckets []bucket
+	for _, item := range items {
+		m, _ := item.(map[string]any)
+		key, _ := m["key"].(string)
+		count, _ := m["count"].(float64)
+		if count > 0 {
+			buckets = append(buckets, bucket{key, int(count)})
 		}
 	}
-
-	// Sort by count descending
-	sort.Slice(buckets, func(i, j int) bool {
-		return buckets[i].count > buckets[j].count
-	})
-
+	sort.SliceStable(buckets, func(i, j int) bool { return buckets[i].count > buckets[j].count })
 	return buckets
 }
 
@@ -812,12 +616,11 @@ func renderVendorBreakdown(facets map[string]any) {
 		spaces := strings.Repeat(" ", 40-barLength)
 
 		fmt.Printf("%2d. %-12s │%s%s│ %s CVEs\n",
-			i+1, vendor.key, bar, spaces, formatNumber(vendor.count))
+			i+1, termtext.Clean(vendor.key), bar, spaces, formatNumber(vendor.count))
 	}
 	fmt.Printf("\n")
 }
 
-// renderVulnerabilityTypes displays top vulnerability types
 // cweNames names the weaknesses that lead the CVE list (CWE Top 25 and other frequent ones).
 var cweNames = map[string]string{
 	"CWE-79": "cross-site scripting", "CWE-787": "out-of-bounds write", "CWE-89": "sql injection",
@@ -843,10 +646,7 @@ func renderWeaknesses(handler *analyze.Handler) {
 		}
 		return
 	}
-	var buckets []struct {
-		key   string
-		count int
-	}
+	var buckets []bucket
 	for _, b := range extractBuckets(resp.Facets, "cwe") {
 		if strings.HasPrefix(b.key, "CWE-") && b.key != "CWE-Other" && b.key != "CWE-noinfo" {
 			buckets = append(buckets, b)
@@ -874,7 +674,6 @@ func renderWeaknesses(handler *analyze.Handler) {
 	fmt.Printf("\n")
 }
 
-// renderEPSSDistribution displays EPSS score distribution
 // renderEPSSDistribution counts CVEs per EPSS band (three count queries: EPSS at least 0.7, 0.3 and 0.1).
 func renderEPSSDistribution(totalCount int) {
 	atLeast := func(score string) (int, error) {
@@ -920,7 +719,6 @@ func renderEPSSDistribution(totalCount int) {
 	fmt.Printf("\n")
 }
 
-// renderKEVAndThreats displays KEV statistics and recent threats
 // renderExploitSignals shows how many CVEs carry each exploitation signal (from the exploit facet).
 func renderExploitSignals(facets map[string]any, totalCount int) {
 	counts := map[string]int{}
@@ -971,7 +769,7 @@ func renderQuickStartCommands() {
 		{"vulnx --help", "show help menu"},
 		{"vulnx search \"is_template:true\"", "cves with nuclei templates"},
 		{"vulnx search \"is_kev:true\"", "known exploited vulns"},
-		{"vulnx id CVE-2024-1234", "fetch metadata for CVE"},
+		{"vulnx id CVE-2021-44228", "fetch metadata for a CVE"},
 		{"vulnx search --cpe <cpe>", "cves affecting a product version"},
 		{"vulnx scan package-lock.json", "scan a lockfile or sbom (--vex)"},
 		{"vulnx analyze -f severity", "analyze by severity"},
@@ -1020,4 +818,13 @@ var sensitiveHeaderRe = regexp.MustCompile(`(?i)(X-Api-Key:\s*).*`)
 
 func redactSensitiveHeaders(dump []byte) string {
 	return sensitiveHeaderRe.ReplaceAllString(string(dump), "${1}[REDACTED]")
+}
+
+// printDump writes a request or response dump to stderr, so it never mixes with --json output.
+func printDump(title string, dump []byte, err error) {
+	if err != nil {
+		gologger.Error().Msgf("%s dump: %s", title, err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "--- %s ---\n%s\n---\n", title, termtext.Clean(redactSensitiveHeaders(dump)))
 }

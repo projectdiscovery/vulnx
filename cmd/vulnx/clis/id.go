@@ -13,222 +13,203 @@ import (
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/spf13/cobra"
 
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/id"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 )
 
-var ( //nolint
-	// ID command flags
+// maxIDs bounds one id invocation: each id is one request.
+const maxIDs = 100
+
+var (
 	idFile    string
 	idHistory bool
 
 	idCmd = &cobra.Command{
-		Use:   "id [vulnID...]",
-		Short: "get vulnerability details by id",
-		Long: `Get vulnerability details by ID.
+		Use:   "id [CVE-ID...]",
+		Short: "get vulnerability details by CVE id",
+		Long: `Get CVE details by id. Only CVE records are supported.
 
 Supports multiple input methods:
-• Command line arguments: vulnx id CVE-2024-1234 CVE-2024-5678
-• Command line (comma-separated): vulnx id CVE-2024-1234,CVE-2024-5678
+• Command line arguments: vulnx id CVE-2021-44228 CVE-2023-4966
+• Command line (comma-separated): vulnx id CVE-2021-44228,CVE-2023-4966
 • File input: vulnx id --file ids.txt
-• Stdin input: echo "CVE-2024-1234" | vulnx id
+• Stdin input: echo "CVE-2021-44228" | vulnx id
+
+At most 100 ids are fetched per run.
 
 Global flags:
   --json     Output raw JSON (for piping, disables CLI output)
-  --output   Write output to file in JSON format (error if file exists)
+  --output   Write output to a .json or .csv file (error if file exists)
   --no-color Disable colored output (colors are auto-disabled for non-terminal output)
 `,
 		Example: `
 # Get details for a specific vulnerability
-vulnx id CVE-2024-1234
+vulnx id CVE-2021-44228
 
 # Get details for multiple vulnerabilities
-vulnx id CVE-2024-1234 CVE-2024-5678
+vulnx id CVE-2021-44228 CVE-2023-4966
 
 # Comma-separated IDs
-vulnx id CVE-2024-1234,CVE-2024-5678,CVE-2023-9999
+vulnx id CVE-2021-44228,CVE-2023-4966,CVE-2024-3400
 
-# Read IDs from file (one per line or comma-separated)
+# Read IDs from file (one per line or comma-separated; # starts a comment)
 vulnx id --file ids.txt
 
 # Read from stdin
-echo "CVE-2024-1234" | vulnx id
-cat ids.txt | vulnx id
+echo "CVE-2021-44228" | vulnx id
+
+# Show what changed on the record
+vulnx id --history CVE-2024-3400
 
 # Output as JSON for piping
-vulnx id --json CVE-2024-1234
+vulnx id --json CVE-2021-44228
 
 # Write output to a file (JSON)
-vulnx id --output vuln.json CVE-2024-1234
-
-# Disable colors
-vulnx id --no-color CVE-2024-1234
+vulnx id --output vuln.json CVE-2021-44228
 `,
 		Args: cobra.ArbitraryArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			var vulnIDs []string
-
-			// Collect IDs from various sources
-			// 1. Command line arguments (including comma-separated)
-			for _, arg := range args {
-				// Handle comma-separated values in arguments
-				if strings.Contains(arg, ",") {
-					ids := strings.Split(arg, ",")
-					for _, id := range ids {
-						id = strings.TrimSpace(id)
-						if id != "" {
-							vulnIDs = append(vulnIDs, id)
-						}
-					}
-				} else {
-					vulnIDs = append(vulnIDs, arg)
-				}
-			}
-
-			// 2. File input
+			vulnIDs := parseIDs(strings.Join(args, "\n"))
 			if idFile != "" {
-				fileIDs, err := readIDsFromFile(idFile)
+				data, err := os.ReadFile(idFile)
 				if err != nil {
 					gologger.Fatal().Msgf("Failed to read IDs from file: %s", err)
 				}
-				vulnIDs = append(vulnIDs, fileIDs...)
+				vulnIDs = append(vulnIDs, parseIDs(string(data))...)
 			}
-
-			// 3. Stdin input (if available and no other input provided)
 			if len(vulnIDs) == 0 && fileutil.HasStdin() {
-				stdinIDs, err := readIDsFromStdin()
+				data, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					gologger.Fatal().Msgf("Failed to read IDs from stdin: %s", err)
 				}
-				vulnIDs = append(vulnIDs, stdinIDs...)
+				vulnIDs = parseIDs(string(data))
 			}
-
-			// Input validation
 			if len(vulnIDs) == 0 {
 				gologger.Fatal().Msg("No vulnerability IDs provided. Use command line arguments, --file, or pipe IDs via stdin")
 			}
-
-			// Remove duplicates and validate IDs
-			vulnIDs = removeDuplicates(vulnIDs)
-			for _, vulnID := range vulnIDs {
-				if err := validateSingleID(vulnID); err != nil {
-					gologger.Fatal().Msgf("Invalid vulnerability ID '%s': %s", vulnID, err)
-				}
-			}
-
-			if len(vulnIDs) > 100 {
-				gologger.Warning().Msgf("Processing %d IDs. Limiting to first 100 for performance.", len(vulnIDs))
-				vulnIDs = vulnIDs[:100]
-			}
-
-			// Use the global vulnxClient
-			handler := id.NewHandler(vulnxClient)
-
-			// Handle JSON output for multiple IDs
-			if jsonOutput || outputFile != "" {
-				var allVulns []*vulnx.Vulnerability
-				for _, vulnID := range vulnIDs {
-					vuln, err := handler.Get(vulnID)
-					if err != nil {
-						if errors.Is(err, vulnx.ErrNotFound) {
-							if !vulnx.IsCVEID(vulnID) {
-								gologger.Error().Msgf("%s is not a CVE id: only CVE records are served (nuclei template ids without a CVE are not)", vulnID)
-								continue
-							}
-							gologger.Warning().Msgf("Vulnerability not found: %s", vulnID)
-							continue
-						}
-						if errors.Is(err, vulnx.ErrTooManyRequests) {
-							handleRateLimitError()
-						}
-						gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
-						continue
-					}
-					attachHistory(vuln)
-					allVulns = append(allVulns, vuln)
-				}
-
-				if len(allVulns) == 0 {
-					gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
-				}
-
-				writeVulnsOutput(allVulns, len(vulnIDs) == 1 && len(allVulns) == 1)
-				return
-			}
-
-			// CLI output for multiple vulnerabilities
-			// Determine color configuration
-			var colors *renderer.ColorConfig
-			if noColor || !renderer.IsTerminal() {
-				colors = renderer.NoColorConfig()
-			} else {
-				colors = renderer.DefaultColorConfig()
-			}
-
-			successCount := 0
-			for i, vulnID := range vulnIDs {
-				vuln, err := handler.Get(vulnID)
-				if err != nil {
-					if errors.Is(err, vulnx.ErrNotFound) {
-						if !vulnx.IsCVEID(vulnID) {
-							gologger.Error().Msgf("%s is not a CVE id: only CVE records are served (nuclei template ids without a CVE are not)", vulnID)
-							continue
-						}
-						gologger.Warning().Msgf("Vulnerability not found: %s", vulnID)
-						continue
-					}
-					if errors.Is(err, vulnx.ErrTooManyRequests) {
-						handleRateLimitError()
-					}
-					gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
-					continue
-				}
-
-				// Convert to renderer entry
-				entry := renderer.FromVulnerability(vuln)
-				if entry == nil {
-					gologger.Error().Msgf("Failed to convert vulnerability data for %s", vulnID)
-					continue
-				}
-
-				// Add separator between multiple results
-				if i > 0 && successCount > 0 {
-					separator := strings.Repeat("─", 65)
-					if colors != nil {
-						fmt.Println(colors.ColorResultSeparator(separator))
-					} else {
-						fmt.Println(separator)
-					}
-					fmt.Println()
-				}
-
-				// Render detailed output
-				result := renderer.RenderDetailed(entry, colors)
-				fmt.Println(result)
-				if idHistory {
-					attachHistory(vuln)
-					fmt.Println(renderHistory(vuln.History))
-				}
-				successCount++
-			}
-
-			if successCount == 0 {
-				gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
-			} else if successCount < len(vulnIDs) {
-				gologger.Info().Msgf("Successfully retrieved %d out of %d vulnerabilities", successCount, len(vulnIDs))
-			}
+			runIDs(vulnIDs)
 		},
 	}
 )
 
+// parseIDs reads ids separated by newlines or commas, skipping blank lines and # comments.
+func parseIDs(content string) []string {
+	var ids []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, part := range strings.Split(line, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				ids = append(ids, part)
+			}
+		}
+	}
+	return ids
+}
+
+// runIDs fetches and prints each id once, in order; it exits non-zero when none could be fetched.
+func runIDs(vulnIDs []string) {
+	for i, v := range vulnIDs {
+		if vulnx.IsCVEID(v) {
+			vulnIDs[i] = strings.ToUpper(v)
+		}
+	}
+	vulnIDs = removeDuplicates(vulnIDs)
+	if len(vulnIDs) > maxIDs {
+		gologger.Info().Msgf("Processing %d IDs. Limiting to the first %d.", len(vulnIDs), maxIDs)
+		vulnIDs = vulnIDs[:maxIDs]
+	}
+	handler := id.NewHandler(vulnxClient)
+
+	if jsonOutput || outputFile != "" {
+		var vulns []*vulnx.Vulnerability
+		for _, vulnID := range vulnIDs {
+			if vuln := fetchVuln(handler, vulnID); vuln != nil {
+				attachHistory(vuln)
+				vulns = append(vulns, vuln)
+			}
+		}
+		if len(vulns) == 0 {
+			gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
+		}
+		writeVulnsOutput(vulns, len(vulnIDs) == 1)
+		return
+	}
+
+	colors := renderer.DefaultColorConfig()
+	if noColor || !renderer.IsTerminal() {
+		colors = renderer.NoColorConfig()
+	}
+	printed := 0
+	for _, vulnID := range vulnIDs {
+		vuln := fetchVuln(handler, vulnID)
+		if vuln == nil {
+			continue
+		}
+		if printed > 0 {
+			fmt.Println(colors.ColorResultSeparator(strings.Repeat("─", 65)))
+			fmt.Println()
+		}
+		fmt.Println(renderer.RenderDetailed(renderer.FromVulnerability(vuln), colors))
+		if idHistory {
+			attachHistory(vuln)
+			fmt.Println(renderHistory(vuln.History))
+		}
+		printed++
+	}
+	switch {
+	case printed == 0:
+		gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
+	case printed < len(vulnIDs):
+		gologger.Info().Msgf("Retrieved %d of %d vulnerabilities", printed, len(vulnIDs))
+	}
+}
+
+// fetchVuln fetches one id, logging why it could not be; a rate limit ends the run.
+func fetchVuln(h *id.Handler, vulnID string) *vulnx.Vulnerability {
+	vuln, err := h.Get(vulnID)
+	switch {
+	case err == nil:
+		return vuln
+	case !vulnx.IsCVEID(vulnID):
+		gologger.Error().Msg(notCVEMessage(vulnID))
+	case errors.Is(err, vulnx.ErrNotFound):
+		gologger.Error().Msgf("Vulnerability not found: %s", vulnID)
+	case errors.Is(err, vulnx.ErrTooManyRequests):
+		handleRateLimitError()
+	default:
+		gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
+	}
+	return nil
+}
+
+func notCVEMessage(id string) string {
+	return fmt.Sprintf("%s is not a CVE id; only CVE records are supported", id)
+}
+
+// noVulnsMessage says nothing was retrieved, repeating why for ids that are not CVE ids (the per-id error is
+// hidden by --silent).
+func noVulnsMessage(ids []string) string {
+	msg := "No vulnerabilities were retrieved"
+	for _, id := range ids {
+		if !vulnx.IsCVEID(id) {
+			msg += "; " + notCVEMessage(id)
+		}
+	}
+	return msg
+}
+
 // attachHistory adds the CVE's recorded changes when --history is set.
 func attachHistory(v *vulnx.Vulnerability) {
-	if !idHistory || v == nil {
+	if !idHistory {
 		return
 	}
 	h, err := vulnxClient.GetCVEHistory(context.Background(), v.CVEID)
 	if err != nil {
-		gologger.Warning().Msgf("history for %s: %s", v.CVEID, err)
+		gologger.Error().Msgf("history for %s: %s", v.CVEID, err)
 		return
 	}
 	v.History = h
@@ -239,154 +220,45 @@ func renderHistory(h []vulnx.ChangeEntry) string {
 	var b strings.Builder
 	b.WriteString("Changes 🕒\n")
 	if len(h) == 0 {
-		b.WriteString("  ↳ none recorded (SecurityContext records changes since 2026-10-02)\n")
+		b.WriteString("  ↳ none recorded\n")
 		return b.String()
 	}
 	val := func(v any) string {
 		if v == nil {
 			return "∅"
 		}
-		s := fmt.Sprint(v)
+		s := []rune(termtext.Clean(fmt.Sprint(v)))
 		if len(s) > 60 {
-			s = s[:57] + "..."
+			return string(s[:57]) + "..."
 		}
-		return s
+		return string(s)
 	}
 	for i := len(h) - 1; i >= 0; i-- {
 		c := h[i]
 		src := ""
 		if c.Source != "" {
-			src = " (" + c.Source + ")"
+			src = " (" + termtext.Clean(c.Source) + ")"
 		}
-		fmt.Fprintf(&b, "  ↳ %s  %s: %s → %s%s\n", c.ChangedDate, c.Field, val(c.OldValue), val(c.NewValue), src)
+		fmt.Fprintf(&b, "  ↳ %s  %s: %s → %s%s\n", termtext.Clean(c.ChangedDate), termtext.Clean(c.Field), val(c.OldValue), val(c.NewValue), src)
 	}
 	return b.String()
 }
 
-// noVulnsMessage says why nothing came back, naming ids that are not CVE ids (only CVE records are served).
-func noVulnsMessage(ids []string) string {
-	var notCVE []string
-	for _, id := range ids {
-		if !vulnx.IsCVEID(id) {
-			notCVE = append(notCVE, id)
-		}
-	}
-	if len(notCVE) > 0 {
-		return fmt.Sprintf("No vulnerabilities were successfully retrieved: %s is not a CVE id (only CVE records are served; nuclei template ids without a CVE are not)", strings.Join(notCVE, ", "))
-	}
-	return "No vulnerabilities were successfully retrieved"
-}
-
-// readIDsFromFile reads vulnerability IDs from a file
-func readIDsFromFile(filename string) ([]string, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
-	}
-
-	content := strings.TrimSpace(string(data))
-	if content == "" {
-		return nil, fmt.Errorf("file is empty")
-	}
-
-	var ids []string
-
-	// Try line-by-line first
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue // Skip empty lines and comments
-		}
-
-		// Check if line contains commas (comma-separated format)
-		if strings.Contains(line, ",") {
-			parts := strings.Split(line, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					ids = append(ids, part)
-				}
-			}
-		} else {
-			ids = append(ids, line)
-		}
-	}
-
-	return ids, nil
-}
-
-// readIDsFromStdin reads vulnerability IDs from stdin
-func readIDsFromStdin() ([]string, error) {
-	data, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read from stdin: %w", err)
-	}
-
-	content := strings.TrimSpace(string(data))
-	if content == "" {
-		return nil, fmt.Errorf("no input provided via stdin")
-	}
-
-	var ids []string
-
-	// Split by newlines first
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// Check if line contains commas
-		if strings.Contains(line, ",") {
-			parts := strings.Split(line, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					ids = append(ids, part)
-				}
-			}
-		} else {
-			ids = append(ids, line)
-		}
-	}
-
-	return ids, nil
-}
-
-// removeDuplicates removes duplicate IDs while preserving order
+// removeDuplicates removes duplicate strings, keeping the first of each in order.
 func removeDuplicates(ids []string) []string {
-	seen := make(map[string]bool)
+	seen := make(map[string]bool, len(ids))
 	var result []string
-
 	for _, id := range ids {
 		if !seen[id] {
 			seen[id] = true
 			result = append(result, id)
 		}
 	}
-
 	return result
-}
-
-// validateSingleID performs input validation for a single vulnerability ID
-func validateSingleID(vulnID string) error {
-	// Basic CVE ID format validation
-	if vulnID == "" {
-		return fmt.Errorf("vulnerability ID cannot be empty")
-	}
-
-	// Check for reasonable length
-	if len(vulnID) < 3 || len(vulnID) > 50 {
-		return fmt.Errorf("vulnerability ID length must be between 3 and 50 characters")
-	}
-
-	return nil
 }
 
 func init() {
 	idCmd.Flags().StringVar(&idFile, "file", "", "read vulnerability ids from file (one per line or comma-separated)")
-	idCmd.Flags().BoolVar(&idHistory, "history", false, "show what changed on each CVE (SecurityContext records changes since 2026-10-02)")
+	idCmd.Flags().BoolVar(&idHistory, "history", false, "show what changed on each CVE record")
 	rootCmd.AddCommand(idCmd)
 }

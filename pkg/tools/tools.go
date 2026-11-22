@@ -30,8 +30,3 @@ func AllMCPTools(client *vulnx.Client) []MCPTool {
 		agentvulnx.NewHandler(client),
 	}
 }
-
-// // AllMCPPrompts returns all prompt templates for ProjectDiscovery vulnerability.sh (vulnx) MCP integration.
-// func AllMCPPrompts(client *vulnx.Client) []templates.PromptTemplate {
-// 	return templates.AllPromptTemplates(client)
-// }
