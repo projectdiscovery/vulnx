@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -181,12 +182,17 @@ func unverifiedSource(command []string) string {
 	return ""
 }
 
+// hostOf is the host a source names, and nothing else of it: a URL's user, password, path or query can carry a
+// token. An scp-style address (git@host:path) gives its host, a shorthand (github:owner/repo) its service.
 func hostOf(source string) string {
-	if u, err := url.Parse(strings.TrimPrefix(source, "git+")); err == nil && u.Host != "" {
-		return u.Host
+	if u, err := url.Parse(strings.TrimPrefix(source, "git+")); err == nil && u.Hostname() != "" {
+		return u.Hostname()
 	}
-	if scheme, rest, ok := strings.Cut(source, ":"); ok && !strings.Contains(scheme, "/") {
-		return scheme + ":" + strings.SplitN(rest, "#", 2)[0]
+	if before, _, ok := strings.Cut(source, ":"); ok && !strings.Contains(before, "/") {
+		if _, host, scp := strings.Cut(before, "@"); scp {
+			return host
+		}
+		return before
 	}
 	return "another source"
 }
@@ -200,8 +206,6 @@ var (
 	// characters a reader does not see and a model does: zero-width, direction overrides, tag characters
 	hiddenText = regexp.MustCompile(`[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{2066}-\x{2069}\x{E0000}-\x{E007F}]{2,}|[\x{202A}-\x{202E}\x{E0000}-\x{E007F}]`)
 )
-
-const skillFileCap = 256 << 10
 
 // skills lists each harness's skills and plugins, and reads a skill's instructions and the scripts beside them.
 func (h *hostReader) skills() {
@@ -256,28 +260,41 @@ func (h *hostReader) skills() {
 
 var codexPlugin = regexp.MustCompile(`(?m)^\[plugins\."([^"]+)"\]`)
 
+// A skill or plugin directory is read up to these bounds: a skill is a few files, and one that holds a project
+// (node_modules, a git history) would otherwise be read whole.
+const (
+	skillFileCap  = 256 << 10
+	skillFilesCap = 500
+	skillBytesCap = 16 << 20
+)
+
 // scan reads the files under a path (a skill's directory, a plugin file) for a download handed to a shell and,
 // in its Markdown, for characters a reader does not see.
 func (h *hostReader) scan(root, kind, name, where string) {
 	found := map[string]string{}
+	files, total := 0, int64(0)
 	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		switch {
+		case err != nil:
 			return nil
-		}
-		info, err := d.Info()
-		if err != nil || !info.Mode().IsRegular() || info.Size() > skillFileCap {
+		case d.IsDir() && (d.Name() == "node_modules" || d.Name() == ".git"):
+			return filepath.SkipDir
+		case d.IsDir():
 			return nil
+		case files >= skillFilesCap || total >= skillBytesCap:
+			return filepath.SkipAll
 		}
-		raw, err := readCapped(p, maxConfigFile)
+		raw, err := readCapped(p, skillFileCap)
 		if err != nil {
 			return nil
 		}
+		files, total = files+1, total+int64(len(raw))
 		rel, err := filepath.Rel(root, p)
 		if err != nil || rel == "." {
 			rel = d.Name()
 		}
 		if m := pipeToShell.Find(raw); m != nil && found["pipe_to_shell"] == "" {
-			found["pipe_to_shell"] = rel + ": " + clip(string(m))
+			found["pipe_to_shell"] = rel + ": " + pipeSummary(string(m))
 		}
 		if strings.HasSuffix(p, ".md") && hiddenText.Match(raw) && found["hidden_text"] == "" {
 			found["hidden_text"] = rel + " has characters a reader does not see and the agent does"
@@ -294,12 +311,31 @@ func (h *hostReader) scan(root, kind, name, where string) {
 	}
 }
 
-func clip(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 80 {
-		return s[:80] + "..."
+var (
+	urlHost     = regexp.MustCompile(`[a-z]+://(?:[^/\s@'"]*@)?([A-Za-z0-9.-]+)`)
+	devTCPHost  = regexp.MustCompile(`/dev/tcp/([0-9A-Za-z.-]+)/`)
+	interpreter = regexp.MustCompile(`\|\s*(?:(?:env|sudo)\s+)?([a-z0-9]+)`)
+)
+
+// pipeSummary says what a download handed to a shell does in a few words: the command, the host it fetches from
+// and what it is piped to (curl example.com | sh). The rest of the line is left out: a header, a URL's user or
+// query, or an argument can carry a token.
+func pipeSummary(match string) string {
+	if m := devTCPHost.FindStringSubmatch(match); m != nil {
+		return "a shell connected to " + m[1]
 	}
-	return s
+	fields := strings.Fields(match)
+	if len(fields) == 0 {
+		return ""
+	}
+	out := path.Base(fields[0])
+	if m := urlHost.FindStringSubmatch(match); m != nil {
+		out += " " + m[1]
+	}
+	if m := interpreter.FindStringSubmatch(match); m != nil {
+		out += " | " + m[1]
+	}
+	return out
 }
 
 // hooks lists the commands a harness runs by itself on its own events, from the user's settings and each plugin.
@@ -343,7 +379,7 @@ func (h *hostReader) hooks() {
 					name := filepath.Base(strings.Fields(c)[0])
 					h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "hook", Name: name, Where: where, Detail: "on " + event})
 					if m := pipeToShell.FindString(c); m != "" {
-						h.risk(HostRisk{"pipe_to_shell", "hook", name, where, "on " + event + ": " + clip(m)})
+						h.risk(HostRisk{"pipe_to_shell", "hook", name, where, "on " + event + ": " + pipeSummary(m)})
 					}
 				}
 			}

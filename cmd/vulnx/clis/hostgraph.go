@@ -3,8 +3,6 @@ package clis
 import (
 	_ "embed"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -69,11 +67,7 @@ func buildHostGraph(inv vulnx.HostInventory, res vulnx.StackResult, now time.Tim
 			if !ok {
 				i = len(g.Places)
 				places[p] = i
-				fix := inv.Fixes[p]
-				how := strings.TrimSpace(fix.Command + " " + fix.Target)
-				if fix.Command == "" {
-					how = fix.Note
-				}
+				how := inv.Fixes[p].Line()
 				g.Places = append(g.Places, graphPlace{Name: p, Path: inv.Paths[p], Source: f.source, Fix: how})
 			}
 			c.Places = append(c.Places, i)
@@ -113,15 +107,10 @@ func buildHostGraph(inv vulnx.HostInventory, res vulnx.StackResult, now time.Tim
 // writeHostGraph writes the scan as one self-contained page (no network, nothing uploaded) named
 // vulnx-host-<date>.graph.html in the working directory, replacing the same day's, and returns its absolute path.
 func writeHostGraph(inv vulnx.HostInventory, res vulnx.StackResult) (string, error) {
-	now := time.Now()
-	abs, err := filepath.Abs("vulnx-host-" + now.Format("2006-01-02") + ".graph.html")
-	if err != nil {
-		return "", err
-	}
 	// json.Marshal writes < > and & as \u escapes, so the data cannot close its script element
-	data, err := json.Marshal(buildHostGraph(inv, res, now))
+	data, err := json.Marshal(buildHostGraph(inv, res, time.Now()))
 	if err != nil {
 		return "", err
 	}
-	return abs, os.WriteFile(abs, []byte(strings.Replace(hostGraphPage, "/*DATA*/", string(data), 1)), 0o644)
+	return writeDated(".graph.html", []byte(strings.Replace(hostGraphPage, "/*DATA*/", string(data), 1)))
 }

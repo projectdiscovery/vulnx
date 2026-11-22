@@ -48,3 +48,22 @@ func TestBuildHostGraph(t *testing.T) {
 		t.Fatal("the data is embedded, and cannot close its script element")
 	}
 }
+
+// TestWriteHostGraph writes one page that loads nothing: its policy allows only its own inline style and script.
+func TestWriteHostGraph(t *testing.T) {
+	t.Chdir(t.TempDir())
+	inv, res := hostFixture()
+	path, err := writeHostGraph(inv, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(raw)
+	if !strings.Contains(page, `content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:"`) ||
+		strings.Contains(page, "/*DATA*/") || strings.Contains(page, "http://") || strings.Contains(page, "https://") {
+		t.Errorf("%s: no policy, data missing or a remote load", path)
+	}
+}

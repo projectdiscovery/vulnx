@@ -183,63 +183,74 @@ var (
 	builtinName    = regexp.MustCompile(`^(?:` + builtinNames + `)$`)
 )
 
-const pickleReadCap = 8 << 20
+// A pickle is read up to pickleReadCap bytes, an archive's pickles together; an archive is read up to
+// pickleEntriesCap pickles (PyTorch's holds one).
+const (
+	pickleReadCap    = 8 << 20
+	pickleEntriesCap = 16
+)
 
 // pickleImports reports whether a file is a pickle (a raw one, or the archive PyTorch saves, whose data.pkl is one)
 // and, when its pickle imports something that runs commands, what ("os.system").
 func pickleImports(path string) (isPickle bool, imports string) {
-	file, err := os.Open(path)
+	file, err := openRegular(path)
 	if err != nil {
 		return false, ""
 	}
-	defer func() {
-		if cerr := file.Close(); cerr != nil && imports == "" {
-			isPickle = false
-		}
-	}()
-	head := make([]byte, 2)
-	if _, err := io.ReadFull(file, head); err != nil {
-		return false, ""
-	}
-	var data []byte
-	switch {
-	case head[0] == 'P' && head[1] == 'K':
-		info, err := file.Stat()
-		if err != nil {
-			return false, ""
-		}
-		archive, err := zip.NewReader(file, info.Size())
-		if err != nil {
-			return false, ""
-		}
-		for _, entry := range archive.File {
-			if !strings.HasSuffix(entry.Name, ".pkl") {
-				continue
-			}
-			isPickle = true
-			r, err := entry.Open()
-			if err != nil {
-				continue
-			}
-			part, err := io.ReadAll(io.LimitReader(r, pickleReadCap))
-			if cerr := r.Close(); err == nil && cerr == nil {
-				data = append(data, part...)
-			}
-		}
-	case head[0] == 0x80 && head[1] >= 2 && head[1] <= 5:
-		isPickle = true
-		rest, err := io.ReadAll(io.LimitReader(file, pickleReadCap))
-		if err != nil {
-			return true, ""
-		}
-		data = rest
-	default:
+	isPickle, data := pickleData(file)
+	if file.Close() != nil || !isPickle {
 		return false, ""
 	}
 	if m := pickleGlobal.FindSubmatch(data); m != nil {
 		return true, strings.ReplaceAll(string(m[1]), "\n", ".")
 	}
-	return isPickle, stackGlobal(data)
+	return true, stackGlobal(data)
+}
+
+// pickleData is a file's pickle bytes, when it is a pickle or an archive of them.
+func pickleData(file *os.File) (bool, []byte) {
+	head := make([]byte, 2)
+	if _, err := io.ReadFull(file, head); err != nil {
+		return false, nil
+	}
+	switch {
+	case head[0] == 0x80 && head[1] >= 2 && head[1] <= 5:
+		rest, err := io.ReadAll(io.LimitReader(file, pickleReadCap))
+		if err != nil {
+			return true, nil
+		}
+		return true, rest
+	case head[0] != 'P' || head[1] != 'K':
+		return false, nil
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false, nil
+	}
+	archive, err := zip.NewReader(file, info.Size())
+	if err != nil {
+		return false, nil
+	}
+	var data []byte
+	isPickle, entries := false, 0
+	for _, entry := range archive.File {
+		if !strings.HasSuffix(entry.Name, ".pkl") {
+			continue
+		}
+		isPickle = true
+		if entries++; entries > pickleEntriesCap || len(data) >= pickleReadCap {
+			break
+		}
+		r, err := entry.Open()
+		if err != nil {
+			continue
+		}
+		part, err := io.ReadAll(io.LimitReader(r, int64(pickleReadCap-len(data))))
+		if closeErr := r.Close(); err == nil && closeErr == nil {
+			data = append(data, part...)
+		}
+	}
+	return isPickle, data
 }
 
 // stackGlobal finds the import newer pickles write as two short strings and STACK_GLOBAL (each string followed

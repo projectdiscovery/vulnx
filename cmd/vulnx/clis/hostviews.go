@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
@@ -37,7 +38,24 @@ const hostFixFirst = 25
 // hostNotAssessedNames is how many not-assessed names per source a host report lists before --show-all.
 const hostNotAssessedNames = 12
 
+// termClean drops control characters (newline and tab kept) and Unicode format characters (bidi overrides,
+// zero-width marks, tag characters) from text read from disk or the API, so a name cannot move the cursor,
+// recolour the terminal or reorder what the reader sees. Every such text passes it before it is printed.
+func termClean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == unicode.ReplacementChar {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// fit cleans s for the terminal and cuts it to n runes, an ellipsis last.
 func fit(s string, n int) string {
+	s = termClean(s)
 	if len([]rune(s)) <= n {
 		return s
 	}
@@ -52,7 +70,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
 
 	notAssessed := len(inv.NotAssessed)
-	title(fmt.Sprintf("%s · %s components checked · %s not assessed", inv.OS, thousands(len(inv.Entries)), thousands(notAssessed)))
+	title(fmt.Sprintf("%s · %s components checked · %s not assessed", termClean(inv.OS), thousands(len(inv.Entries)), thousands(notAssessed)))
 	b.WriteString("  " + dim(fmt.Sprintf("%-14s %8s %13s  %s", "SOURCE", "CHECKED", "NOT ASSESSED", "READ FROM")) + "\n")
 	for _, s := range inv.Sources {
 		na := "-"
@@ -63,10 +81,10 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 		if detail == "" {
 			detail = s.Name
 		}
-		fmt.Fprintf(&b, "  %-14s %8s %13s  %s\n", s.Name, thousands(s.Sent), na, detail)
+		fmt.Fprintf(&b, "  %-14s %8s %13s  %s\n", s.Name, thousands(s.Sent), na, termClean(detail))
 	}
 	if len(inv.NotRead) > 0 {
-		b.WriteString(dim("  Not read: "+strings.Join(inv.NotRead, "; ")) + "\n")
+		b.WriteString(dim("  Not read: "+termClean(strings.Join(inv.NotRead, "; "))) + "\n")
 	}
 
 	// counted from the rows: the API's summary counts these for packages, not for products (CPE entries)
@@ -303,7 +321,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 			why[r.Reason] = r.Why
 		}
 		for _, r := range reasons {
-			fmt.Fprintf(&b, "  %d %s: %s\n", counts[r], r, dim(why[r]))
+			fmt.Fprintf(&b, "  %d %s: %s\n", counts[r], termClean(r), dim(termClean(why[r])))
 		}
 	}
 	if notAssessed > 0 {
@@ -323,7 +341,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 				more = fmt.Sprintf(" +%d more", len(names)-hostNotAssessedNames)
 				names = names[:hostNotAssessedNames]
 			}
-			fmt.Fprintf(&b, "  %s (%d): %s%s\n", src, len(bySource[src]), strings.Join(names, ", "), dim(more))
+			fmt.Fprintf(&b, "  %s (%d): %s%s\n", src, len(bySource[src]), termClean(strings.Join(names, ", ")), dim(more))
 		}
 	}
 	b.WriteString(dim("\n  --json writes every component with its CVEs; --show-all lists everything here") + "\n")
@@ -396,7 +414,7 @@ func headline(inv vulnx.HostInventory, res vulnx.StackResult, fs []finding) stri
 	if len(fs) != res.Summary.Affected {
 		reach = fmt.Sprintf(" (%s a program can reach)", thousands(len(fs)))
 	}
-	return fmt.Sprintf("%s · %s components · %s affected%s · %s known exploited", inv.OS, thousands(len(inv.Entries)),
+	return fmt.Sprintf("%s · %s components · %s affected%s · %s known exploited", termClean(inv.OS), thousands(len(inv.Entries)),
 		thousands(res.Summary.Affected), reach, thousands(kev))
 }
 
@@ -594,17 +612,10 @@ func renderHostPrograms(inv vulnx.HostInventory, res vulnx.StackResult, all bool
 		shown = shown[:30]
 	}
 	for _, p := range shown {
-		fix := inv.Fixes[p.name]
-		how := fix.Note
-		if fix.Command != "" {
-			how = fix.Command
-			if fix.Target != "" {
-				how += " " + fix.Target
-			}
-		}
+		how := inv.Fixes[p.name].Line()
 		mark := map[int]string{tierKEV: c.Colorize(" KEV", renderer.Bold+renderer.BrightRed)}[p.tier]
-		fmt.Fprintf(&b, "%s %s%s  %s\n", c.ColorSeverity(fmt.Sprintf("%-8s", p.worst)), c.Colorize(p.name, renderer.Bold),
-			mark, dim(how))
+		fmt.Fprintf(&b, "%s %s%s  %s\n", c.ColorSeverity(fmt.Sprintf("%-8s", p.worst)), c.Colorize(termClean(p.name), renderer.Bold),
+			mark, dim(termClean(how)))
 		items := p.items
 		if !all && len(items) > 5 {
 			items = items[:5]

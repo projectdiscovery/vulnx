@@ -82,7 +82,7 @@ func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, t
 
 // hostFooter is the last line of the grid view, after any report links: what was scanned and how long it took.
 func hostFooter(inv vulnx.HostInventory, elapsed time.Duration, c *renderer.ColorConfig) string {
-	line := fmt.Sprintf("%s: %s components scanned", inv.OS, thousands(len(inv.Entries)))
+	line := fmt.Sprintf("%s: %s components scanned", termClean(inv.OS), thousands(len(inv.Entries)))
 	if elapsed > 0 {
 		line += " in " + elapsed.Round(time.Second).String()
 	}
@@ -216,8 +216,8 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 		for _, r := range inv.Risks {
 			if r.Risk == risk {
 				kind = r.Kind
-				if !slices.Contains(names, r.Name) {
-					names = append(names, r.Name)
+				if name := termClean(r.Name); !slices.Contains(names, name) {
+					names = append(names, name)
 				}
 			}
 		}

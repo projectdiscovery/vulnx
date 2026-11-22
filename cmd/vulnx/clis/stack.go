@@ -352,15 +352,15 @@ func renderStackText(res vulnx.StackResult, show int) string {
 		if name == "" {
 			name = strings.TrimPrefix(it.Package, "cpe/") + "@" + it.Version
 		}
-		line := fmt.Sprintf("[%s] %s", strings.ToUpper(it.Status), name)
+		line := fmt.Sprintf("[%s] %s", strings.ToUpper(termClean(it.Status)), termClean(name))
 		if it.Status == "affected" {
 			n := it.AdvisoryRowsTotal
 			if n == 0 {
 				n = it.Advisories
 			}
-			line += fmt.Sprintf("  %s, %d advisories", it.WorstSeverity, n)
+			line += fmt.Sprintf("  %s, %d advisories", termClean(it.WorstSeverity), n)
 			if it.FixedVersion != "" {
-				line += "  fix: " + it.FixedVersion
+				line += "  fix: " + termClean(it.FixedVersion)
 			}
 		}
 		b.WriteString(line + "\n")
@@ -389,7 +389,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 			if a.CvssScore > 0 {
 				score = fmt.Sprintf(" %.1f", a.CvssScore)
 			}
-			fmt.Fprintf(&b, "  ↳ %-16s %-8s%s%s  %s\n", id, a.Severity, score, marks, a.Name)
+			fmt.Fprintf(&b, "  ↳ %-16s %-8s%s%s  %s\n", termClean(id), termClean(a.Severity), score, marks, termClean(a.Name))
 		}
 		total := len(it.AdvisoryRows)
 		if it.AdvisoryRowsTotal > total {
@@ -408,7 +408,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 				reason = it.Undetermined[0].Reason
 			}
 			if reason != "" {
-				fmt.Fprintf(&b, "  ↳ undetermined: %s\n", reason)
+				fmt.Fprintf(&b, "  ↳ undetermined: %s\n", termClean(reason))
 			}
 		}
 	}
@@ -436,7 +436,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 	}
 	b.WriteString("\n")
 	for _, r := range s.UndeterminedReasons {
-		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", r.Reason, r.Count, r.Why)
+		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", termClean(r.Reason), r.Count, termClean(r.Why))
 	}
 	return b.String()
 }

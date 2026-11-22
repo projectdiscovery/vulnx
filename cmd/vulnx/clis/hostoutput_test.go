@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -101,5 +102,59 @@ func TestHostRuntimeLocalOnly(t *testing.T) {
 	}
 	if string(sbomBefore) != string(sbomAfter) {
 		t.Fatal("runtime leaked into shared inventory")
+	}
+}
+
+// TestWriteHostSBOM names the day's SBOM when no path is given, replacing it, and refuses to overwrite a path
+// given, as -o does.
+func TestWriteHostSBOM(t *testing.T) {
+	t.Chdir(t.TempDir())
+	inv, _ := hostFixture()
+	auto, err := writeHostSBOM("auto", inv)
+	if err != nil || !strings.HasPrefix(filepath.Base(auto), "vulnx-host-") || !strings.HasSuffix(auto, ".cdx.json") {
+		t.Fatalf("%s %v", auto, err)
+	}
+	if again, err := writeHostSBOM("auto", inv); err != nil || again != auto {
+		t.Errorf("the day's SBOM is replaced: %s %v", again, err)
+	}
+	named := filepath.Join(t.TempDir(), "host.cdx.json")
+	if got, err := writeHostSBOM(named, inv); err != nil || got != named {
+		t.Fatalf("%s %v", got, err)
+	}
+	if _, err := writeHostSBOM(named, inv); err == nil {
+		t.Error("an existing --sbom path was overwritten")
+	}
+	raw, err := os.ReadFile(named)
+	if err != nil || !strings.Contains(string(raw), `"bomFormat": "CycloneDX"`) {
+		t.Errorf("%v\n%s", err, raw)
+	}
+}
+
+// TestWriteDated writes the day's file for its owner only and replaces a symlink planted at its name instead of
+// writing through it.
+func TestWriteDated(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name := "vulnx-host-" + time.Now().Format("2006-01-02") + ".json"
+	if err := os.Symlink(target, name); err != nil {
+		t.Fatal(err)
+	}
+	path, err := writeDated(".json", []byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Lstat(path)
+	if err != nil || !st.Mode().IsRegular() || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
+		t.Errorf("%v %v", st.Mode(), err)
+	}
+	if raw, err := os.ReadFile(target); err != nil || string(raw) != "keep" {
+		t.Errorf("wrote through the symlink: %q %v", raw, err)
+	}
+	if left, err := filepath.Glob(filepath.Join(dir, ".vulnx-host-*")); err != nil || len(left) > 0 {
+		t.Errorf("temporary files left: %v %v", left, err)
 	}
 }

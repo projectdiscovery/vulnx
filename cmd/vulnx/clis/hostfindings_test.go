@@ -114,3 +114,15 @@ func TestHostActions(t *testing.T) {
 		t.Errorf("actions:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
+
+// TestHostActionLine quotes what a command names, so a name read from disk is one word to the shell.
+func TestHostActionLine(t *testing.T) {
+	a := hostAction{fix: vulnx.HostFix{Kind: "brew", Command: "brew upgrade"}, targets: []string{"php", "x; rm -rf ~", "it's"}}
+	if got := a.line(); got != `brew upgrade php 'x; rm -rf ~' 'it'\''s'` {
+		t.Errorf("%s", got)
+	}
+	note := hostAction{fix: vulnx.HostFix{Kind: "app", Note: "update Evil\x1b[31m"}}
+	if got := note.line(); got != "update Evil[31m" {
+		t.Errorf("%q", got)
+	}
+}

@@ -14,8 +14,13 @@ import (
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
-// componentParts splits a check entry into a kind, a name and a version for display.
+// componentParts splits a check entry into a kind, a name and a version for display, cleaned for the terminal.
 func componentParts(entry string) (kind, name, version string) {
+	kind, name, version = entryParts(entry)
+	return termClean(kind), termClean(name), termClean(version)
+}
+
+func entryParts(entry string) (kind, name, version string) {
 	if strings.HasPrefix(entry, "cpe:2.3:") {
 		f := strings.Split(entry, ":")
 		if len(f) > 5 {
@@ -212,22 +217,26 @@ type hostAction struct {
 func (a hostAction) program(target string) string {
 	switch a.fix.Kind {
 	case "brew", "cargo":
-		return target
+		return termClean(target)
 	case "go-install":
-		return path.Base(strings.TrimSuffix(target, "@latest"))
+		return termClean(path.Base(strings.TrimSuffix(target, "@latest")))
 	}
 	return ""
 }
 
-// line is the action as typed or read: the command with its names, or the note.
+// line is the action as typed or read: the command with its names, each quoted for the shell, or the note.
 func (a hostAction) line() string {
 	if a.fix.Command == "" {
-		return a.fix.Note
+		return termClean(a.fix.Note)
 	}
 	if a.fix.Kind == "npm" { // a global tool's dependency is updated with the tool: npm update -g takes no names
-		return a.fix.Command
+		return termClean(a.fix.Command)
 	}
-	return a.fix.Command + " " + strings.Join(a.targets, " ")
+	quoted := make([]string, len(a.targets))
+	for i, t := range a.targets {
+		quoted[i] = vulnx.ShellQuote(t)
+	}
+	return termClean(a.fix.Command + " " + strings.Join(quoted, " "))
 }
 
 // hostActions turns findings into updates: each place's fix, named once at its most urgent tier.

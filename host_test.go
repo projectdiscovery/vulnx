@@ -816,3 +816,15 @@ func TestDropOtherSchemes(t *testing.T) {
 		t.Fatalf("summary %+v", res.Summary)
 	}
 }
+
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{"caddy": "caddy", "github.com/x/y@latest": "github.com/x/y@latest",
+		"/Users/a b/bin/python3": `'/Users/a b/bin/python3'`, "x;y": `'x;y'`, "it's": `'it'\''s'`, "": `''`} {
+		if got := ShellQuote(in); got != want {
+			t.Errorf("ShellQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+	if got := (HostFix{Command: "brew upgrade", Target: "a b"}).Line(); got != "brew upgrade 'a b'" {
+		t.Errorf("Line %s", got)
+	}
+}

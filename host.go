@@ -85,6 +85,28 @@ type HostFix struct {
 	Note    string `json:"note,omitempty"`    // what to do when there is no command ("update Wireshark")
 }
 
+// Line is the update as one line: the command with what it names (quoted for the shell), else the note.
+func (f HostFix) Line() string {
+	if f.Command == "" {
+		return f.Note
+	}
+	if f.Target == "" {
+		return f.Command
+	}
+	return f.Command + " " + ShellQuote(f.Target)
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_~-]+$`)
+
+// ShellQuote quotes s for a POSIX shell when it holds anything but a plain word's characters: a name read from
+// disk is printed in a command someone may paste.
+func ShellQuote(s string) string {
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // HostPending is a component whose source repository is known and whose product is not: SecurityContext is asked
 // which products list that repository (Client.ProductsByRepository), an exact join where a name would be a guess.
 type HostPending struct {
@@ -304,7 +326,7 @@ func (h *hostReader) pythonPlace(dir string) (string, HostFix) {
 	if h.root != "/" {
 		prefix = "/" + strings.TrimPrefix(strings.TrimPrefix(prefix, filepath.ToSlash(h.root)), "/")
 	}
-	return label, HostFix{Kind: "pip", Command: prefix + "/bin/" + m[1] + " -m pip install -U"}
+	return label, HostFix{Kind: "pip", Command: ShellQuote(prefix+"/bin/"+m[1]) + " -m pip install -U"}
 }
 
 // found is an entry and where it was found.
@@ -1610,13 +1632,9 @@ func maskHomes(s string) string {
 	return userLabel.ReplaceAllString(homeAnywhere.ReplaceAllString(s, "~"), "${1}~")
 }
 
-// fixLine is a place's update action as one line: its command with what the command names, else its note.
+// fixLine is a place's update action as one line, homes masked.
 func fixLine(f HostFix) string {
-	line := f.Note
-	if f.Command != "" {
-		line = strings.TrimSpace(f.Command + " " + f.Target)
-	}
-	return maskHomes(line)
+	return maskHomes(f.Line())
 }
 
 // CycloneDX is the inventory as a CycloneDX 1.5 JSON SBOM: one component per entry, by its purl or CPE, with where
