@@ -472,3 +472,18 @@ func TestWaitStackFailed(t *testing.T) {
 		t.Errorf("%v", err)
 	}
 }
+
+// TestRequestFailedOnce says "request failed" once: the client wraps a failed request, and the stack calls return
+// its error as it is.
+func TestRequestFailedOnce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.CheckMany(context.Background(), []string{"npm/a@1"})
+	if !errors.Is(err, ErrRequestFailed) || strings.Count(err.Error(), "request failed") != 1 {
+		t.Errorf("%v", err)
+	}
+}

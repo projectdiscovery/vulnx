@@ -291,7 +291,7 @@ func (c *Client) checkPages(ctx context.Context, entries []string, mode checkMod
 		}
 		var page stackPage
 		if err := c.do(req, &page); err != nil {
-			return res, wrapErr(ErrRequestFailed, err)
+			return res, err
 		}
 		expandRefs(page.Items, page.Advisories)
 		if n == 0 {
@@ -432,7 +432,7 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 			Cursor string `json:"cursor"`
 		}
 		if err := c.do(req, &resp); err != nil {
-			return out, wrapErr(ErrRequestFailed, err)
+			return out, err
 		}
 		for _, a := range resp.Advisories {
 			out = append(out, StackAdvisory{AdvisoryID: a.CVE, CVE: a.CVE, Name: a.Name, Severity: a.Severity,
@@ -502,7 +502,7 @@ func (c *Client) StackExpirySupported(ctx context.Context) error {
 		} `json:"paths"`
 	}
 	if err := c.do(req, &spec); err != nil {
-		return wrapErr(ErrRequestFailed, err)
+		return err
 	}
 	if _, ok := spec.Paths["/v1/stack"]["post"].RequestBody.Content["multipart/form-data"].Schema.Properties["expires_in"]; !ok {
 		return ErrExpiryUnsupported
@@ -552,7 +552,7 @@ func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]
 	// a body that can be sent again, for do()'s one retry after a 429
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body.Bytes())), nil }
 	if err := c.do(req, page); err != nil {
-		return "", wrapErr(ErrRequestFailed, err)
+		return "", err
 	}
 	id := page.ID
 	if id == "" && page.Stack != nil {
@@ -596,7 +596,7 @@ func (c *Client) ProductsByRepository(ctx context.Context, repositories []string
 				if refusedFor(err, "repository") {
 					return nil, false, nil
 				}
-				return nil, true, wrapErr(ErrRequestFailed, err)
+				return nil, true, err
 			}
 			for _, it := range resp.Items {
 				if it.Total != 1 {
@@ -646,7 +646,7 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 			continue
 		}
 		if err != nil {
-			return res, wrapErr(ErrRequestFailed, err)
+			return res, err
 		}
 		failures = 0
 		res.Stack, res.Summary, res.Total = p.Stack, p.Summary, p.Total
@@ -709,7 +709,7 @@ func (c *Client) getStack(ctx context.Context, id string) (StackResult, error) {
 		}
 		var p stackPage
 		if err := c.do(req, &p); err != nil {
-			return res, wrapErr(ErrRequestFailed, err)
+			return res, err
 		}
 		if page == 0 {
 			res.Stack = p.Stack
@@ -792,7 +792,7 @@ func (c *Client) GetCVEHistory(ctx context.Context, id string) ([]ChangeEntry, e
 		History []ChangeEntry `json:"history"`
 	}
 	if err := c.do(req, &resp); err != nil {
-		return nil, wrapErr(ErrRequestFailed, err)
+		return nil, err
 	}
 	return resp.History, nil
 }
@@ -1012,7 +1012,7 @@ func (c *Client) ScanImage(ctx context.Context, ref, platform string) (string, e
 	}
 	var page stackPage
 	if err := c.do(req, &page); err != nil {
-		return "", wrapErr(ErrRequestFailed, err)
+		return "", err
 	}
 	if page.ID == "" && page.Stack != nil {
 		page.ID = page.Stack.ID
