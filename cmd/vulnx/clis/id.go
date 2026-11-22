@@ -124,16 +124,25 @@ func runIDs(vulnIDs []string) {
 	}
 	handler := id.NewHandler(vulnxClient)
 
+	var failures []idFailure
+	fetch := func(vulnID string) *vulnx.Vulnerability {
+		vuln, failure := fetchVuln(handler, vulnID)
+		if vuln == nil {
+			failures = append(failures, failure)
+		}
+		return vuln
+	}
+
 	if jsonOutput || outputFile != "" {
 		var vulns []*vulnx.Vulnerability
 		for _, vulnID := range vulnIDs {
-			if vuln := fetchVuln(handler, vulnID); vuln != nil {
+			if vuln := fetch(vulnID); vuln != nil {
 				attachHistory(vuln)
 				vulns = append(vulns, vuln)
 			}
 		}
 		if len(vulns) == 0 {
-			gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
+			gologger.Fatal().Msg(noVulnsMessage(failures))
 		}
 		writeVulnsOutput(vulns, len(vulnIDs) == 1)
 		return
@@ -145,7 +154,7 @@ func runIDs(vulnIDs []string) {
 	}
 	printed := 0
 	for _, vulnID := range vulnIDs {
-		vuln := fetchVuln(handler, vulnID)
+		vuln := fetch(vulnID)
 		if vuln == nil {
 			continue
 		}
@@ -162,44 +171,61 @@ func runIDs(vulnIDs []string) {
 	}
 	switch {
 	case printed == 0:
-		gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
+		gologger.Fatal().Msg(noVulnsMessage(failures))
 	case printed < len(vulnIDs):
 		gologger.Info().Msgf("Retrieved %d of %d vulnerabilities", printed, len(vulnIDs))
 	}
 }
 
+// idFailure is why one id could not be fetched.
+type idFailure struct {
+	id, reason string
+}
+
 // fetchVuln fetches one id, logging why it could not be; a rate limit ends the run.
-func fetchVuln(h *id.Handler, vulnID string) *vulnx.Vulnerability {
+func fetchVuln(h *id.Handler, vulnID string) (*vulnx.Vulnerability, idFailure) {
 	vuln, err := h.Get(vulnID)
+	if err == nil {
+		return vuln, idFailure{}
+	}
+	f := idFailure{id: vulnID}
 	switch {
-	case err == nil:
-		return vuln
 	case !vulnx.IsCVEID(vulnID):
-		gologger.Error().Msg(notCVEMessage(vulnID))
+		f.reason = fmt.Sprintf("%s is not a CVE id; only CVE records are supported", vulnID)
 	case errors.Is(err, vulnx.ErrNotFound):
-		gologger.Error().Msgf("Vulnerability not found: %s", vulnID)
+		f.reason = fmt.Sprintf("%s not found", vulnID)
 	case errors.Is(err, vulnx.ErrTooManyRequests):
 		handleRateLimitError()
 	default:
-		gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
+		f.reason = fmt.Sprintf("failed to fetch %s: %s", vulnID, err)
 	}
-	return nil
+	gologger.Error().Msg(f.reason)
+	return nil, f
 }
 
-func notCVEMessage(id string) string {
-	return fmt.Sprintf("%s is not a CVE id; only CVE records are supported", id)
-}
-
-// noVulnsMessage says nothing was retrieved, repeating why for ids that are not CVE ids (the per-id error is
-// hidden by --silent).
-func noVulnsMessage(ids []string) string {
+// noVulnsMessage explains a run in which every id failed: the reason when all failed the same way, otherwise the
+// first reason and how many others failed. It repeats what the per-id errors said because --silent hides them.
+func noVulnsMessage(failures []idFailure) string {
 	msg := "No vulnerabilities were retrieved"
-	for _, id := range ids {
-		if !vulnx.IsCVEID(id) {
-			msg += "; " + notCVEMessage(id)
+	if len(failures) == 0 {
+		return msg
+	}
+	first := failures[0]
+	same := true
+	for _, f := range failures[1:] {
+		// the same failure for another id differs only by the id it names
+		if strings.ReplaceAll(f.reason, f.id, first.id) != first.reason {
+			same = false
+			break
 		}
 	}
-	return msg
+	switch {
+	case len(failures) == 1:
+		return msg + ": " + first.reason
+	case same:
+		return fmt.Sprintf("%s: all %d ids failed the same way: %s", msg, len(failures), first.reason)
+	}
+	return fmt.Sprintf("%s: %s (and %d more failed)", msg, first.reason, len(failures)-1)
 }
 
 // attachHistory adds the CVE's recorded changes when --history is set.

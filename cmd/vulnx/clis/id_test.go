@@ -36,3 +36,25 @@ func TestRenderHistory(t *testing.T) {
 		t.Errorf("empty history")
 	}
 }
+
+func TestNoVulnsMessage(t *testing.T) {
+	refused := func(id string) idFailure {
+		return idFailure{id, "failed to fetch " + id + `: request failed: Get "http://127.0.0.1:1/v1/cves/` + id + `": connection refused`}
+	}
+	notFound := idFailure{"CVE-1900-0001", "CVE-1900-0001 not found"}
+	for _, c := range []struct {
+		failures []idFailure
+		want     string
+	}{
+		{nil, "No vulnerabilities were retrieved"},
+		{[]idFailure{notFound}, "No vulnerabilities were retrieved: CVE-1900-0001 not found"},
+		{[]idFailure{refused("CVE-2021-44228"), refused("CVE-2023-4966")},
+			"No vulnerabilities were retrieved: all 2 ids failed the same way: " + refused("CVE-2021-44228").reason},
+		{[]idFailure{refused("CVE-2021-44228"), notFound, refused("CVE-2023-4966")},
+			"No vulnerabilities were retrieved: " + refused("CVE-2021-44228").reason + " (and 2 more failed)"},
+	} {
+		if got := noVulnsMessage(c.failures); got != c.want {
+			t.Errorf("got  %q\nwant %q", got, c.want)
+		}
+	}
+}
