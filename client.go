@@ -40,6 +40,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,8 +55,10 @@ import (
 const (
 	// DefaultBaseURL is the default base URL for the API (SecurityContext).
 	DefaultBaseURL = "https://api.securitycontext.com"
-	// UserAgent is the default user agent for the client.
-	UserAgent = "vulnx-client/2.0"
+	// UserAgent is the product token of the client's User-Agent; New adds the module version when the build
+	// records one (vulnx/2.0.2). WithUserAgent replaces it.
+	UserAgent  = "vulnx"
+	modulePath = "github.com/projectdiscovery/vulnx/v2"
 	// BaseURLEnvVar is the environment variable name for overriding the base URL.
 	BaseURLEnvVar = "VULNX_API_URL"
 	// APIKeyEnvVar holds the SecurityContext API key New uses when no option sets one. Without a key, calls
@@ -121,7 +124,7 @@ type Client struct {
 func New(opts ...Option) (*Client, error) {
 	c := &Client{
 		baseURL:   cmp.Or(os.Getenv(BaseURLEnvVar), DefaultBaseURL),
-		userAgent: UserAgent,
+		userAgent: defaultUserAgent(),
 		httpc:     retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle),
 		retryWait: time.Second,
 	}
@@ -145,6 +148,31 @@ func WithClient(hc *retryablehttp.Client) Option {
 	return func(c *Client) {
 		c.httpc = hc
 	}
+}
+
+// WithUserAgent sets the User-Agent sent with every request; an empty value keeps the default.
+func WithUserAgent(ua string) Option {
+	return func(c *Client) {
+		if ua = strings.TrimSpace(ua); ua != "" {
+			c.userAgent = ua
+		}
+	}
+}
+
+// defaultUserAgent is "vulnx/<version>" with the vulnx module's version from the build info, or "vulnx" when the
+// build records none (go run, tests, a local checkout).
+func defaultUserAgent() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return UserAgent
+	}
+	mods := append([]*debug.Module{&info.Main}, info.Deps...)
+	for _, m := range mods {
+		if m.Path == modulePath && m.Version != "" && m.Version != "(devel)" {
+			return UserAgent + "/" + strings.TrimPrefix(m.Version, "v")
+		}
+	}
+	return UserAgent
 }
 
 // WithAPIKey sets the SecurityContext API key sent in the X-Api-Key header.

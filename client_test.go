@@ -524,3 +524,28 @@ func TestAPIErrorsDoNotAccumulate(t *testing.T) {
 		t.Errorf("unsupported query error: %v", err)
 	}
 }
+
+func TestUserAgent(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		writeJSON(t, w, map[string]any{"cve": "CVE-2021-44228"})
+	}))
+	defer srv.Close()
+	for _, c := range []struct {
+		opts []Option
+		want string
+	}{
+		// a test binary records no vulnx module version
+		{nil, UserAgent},
+		{[]Option{WithUserAgent("vulnx/2.0.2")}, "vulnx/2.0.2"},
+		{[]Option{WithUserAgent("  ")}, UserAgent},
+	} {
+		if _, err := newTestClient(t, srv, c.opts...).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got != c.want {
+			t.Errorf("User-Agent = %q, want %q", got, c.want)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package clis
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,5 +28,27 @@ func TestTimeoutFlagApplies(t *testing.T) {
 	_, err := vulnxClient.GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
 	if err == nil || !strings.Contains(err.Error(), "Client.Timeout") {
 		t.Errorf("--timeout 50ms not applied: %v", err)
+	}
+}
+
+func TestCLIUserAgent(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	t.Setenv(vulnx.BaseURLEnvVar, srv.URL)
+	origClient := vulnxClient
+	t.Cleanup(func() { vulnxClient = origClient })
+	vulnxClient = nil
+	if err := ensureVulnxClientInitialized(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vulnxClient.GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil); !errors.Is(err, vulnx.ErrNotFound) {
+		t.Fatal(err)
+	}
+	if want := "vulnx/" + strings.TrimPrefix(Version, "v"); got != want {
+		t.Errorf("User-Agent = %q, want %q", got, want)
 	}
 }

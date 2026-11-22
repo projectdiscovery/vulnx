@@ -245,7 +245,10 @@ func ensureVulnxClientInitialized(_ *cobra.Command) error {
 		retryOpts.Timeout = httpTimeout
 		retryOpts.Verbose = debug
 
-		opts := []vulnx.Option{vulnx.WithRetryableHTTPOptions(retryOpts)}
+		opts := []vulnx.Option{
+			vulnx.WithRetryableHTTPOptions(retryOpts),
+			vulnx.WithUserAgent("vulnx/" + strings.TrimPrefix(Version, "v")),
+		}
 		if debugReq {
 			opts = append(opts, vulnx.WithDebugRequest(func(req *http.Request) {
 				dump, err := httputil.DumpRequestOut(req, true)
