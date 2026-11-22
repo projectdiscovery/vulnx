@@ -113,15 +113,15 @@ vulnx search "apache && severity:high && cve_created_at:2024 && is_remote:true"
 
 ```bash
 # Web stack vulnerabilities
-vulnx search "(apache || nginx || tomcat) && severity:high"
+vulnx search "vendor:apache && severity:high"
 vulnx search "affected_products.vendor:apache" --limit 100
 
 # Database vulnerabilities
-vulnx search "(mysql || postgresql || mongodb) && severity:critical"
-vulnx search "affected_products.product:mysql && cve_created_at:2024"
+vulnx search "product:oracle:mysql && severity:critical"
+vulnx search "product:oracle:mysql && cve_created_at:2024"
 
 # Framework vulnerabilities
-vulnx search "(spring || django || rails) && is_remote:true"
+vulnx search "vendor:vmware && spring && is_remote:true"
 ```
 
 ### Threat Intelligence Workflows
@@ -223,8 +223,7 @@ vulnx search --vuln-age "<30" --kev                  # Recent KEV vulns
 ```bash
 # Enhanced output and highlighting
 vulnx search --detailed "log4j"                      # Detailed like 'id' command
-vulnx search --highlight "injection"                 # Highlight search terms
-vulnx search --facet-size 25 --term-facets severity=10 "apache"
+vulnx search --term-facets severity=10 "apache"
 
 # Complex field selection and sorting
 vulnx search --fields cve_id,severity,cvss_score,epss_score "apache"
@@ -275,11 +274,11 @@ vulnx analyze -f affected_products.product -q "is_remote:true"
 vulnx search "web application && severity:high" --limit 100
 
 # Infrastructure components
-vulnx search "(router || firewall || switch)" --limit 50
-vulnx analyze -f affected_products.vendor -q "affected_products.product:router"
+vulnx search "router" --limit 50
+vulnx analyze -f affected_products.vendor -q "router"
 
 # Cloud service vulnerabilities
-vulnx search "(aws || azure || gcp) && severity:high"
+vulnx search "vendor:amazon && severity:high"
 vulnx search "affected_products.vendor:amazon && cve_created_at:2024"
 ```
 
@@ -377,11 +376,11 @@ vulnx search "cve_created_at:$DATE" --json --output "vulns_$DATE.json"
 
 ```bash
 # Vulnerability scanning in pipelines
-vulnx search "affected_products.product:docker" --json --silent | \
+vulnx search "product:docker:docker" --json --silent | \
   jq '.count' | xargs -I {} echo "Found {} Docker vulnerabilities"
 
 # Baseline security checks (total match count)
-vulnx search "(apache || nginx) && severity:critical" --json --silent | jq '.total'
+vulnx search "vendor:apache && severity:critical" --json --silent | jq '.total'
 ```
 
 ### Security Monitoring Integration
@@ -413,28 +412,24 @@ fi
 ```bash
 # Target specific vendors/products
 vulnx search "affected_products.vendor:microsoft"
-vulnx search "affected_products.product:windows"
+vulnx search "vendor:microsoft && windows"
 
 # Combine multiple criteria efficiently
 vulnx search "severity:critical && is_remote:true && is_poc:true"
 
 # Use comparison operators for scores
 vulnx search "cvss_score:>8.0"  # Greater than 8.0
-vulnx search "cvss_score:<9.0"  # Less than 9.0
+vulnx search "cvss_score:>=9"  # At least 9.0 (lower bounds only)
 ```
 
 ### Faceting for Analysis
 
 ```bash
 # Understand data distribution before detailed searches
-vulnx search "apache" --term-facets severity=10,tags=5
+vulnx search "apache" --term-facets severity=10,cwe=5
 
 # Multi-dimensional analysis
-vulnx search --term-facets severity=5,affected_products.vendor=10 \
-  --range-facets numeric:cvss_score:high:8:10
-
-# Time-based faceting
-vulnx search --range-facets date:cve_created_at:2024:2024-01:2024-12
+vulnx search --term-facets severity=5,affected_products.vendor=10,year "remote code"
 ```
 
 ## Common Patterns & Use Cases
@@ -448,7 +443,7 @@ vulnx search "description:'SQL injection'" --limit 100
 
 # Exploitation research
 vulnx search "is_poc:true && cvss_score:>9.0" --sort-desc epss_score
-vulnx search "tags:rce && is_template:true"
+vulnx search "cwe:CWE-94 && is_template:true"
 ```
 
 ### Compliance & Reporting
@@ -471,10 +466,10 @@ vulnx id CVE-2021-44228 --json | jq '.is_kev'
 
 # Find related vulnerabilities
 vulnx search "affected_products.vendor:apache && 'log4j'"
-vulnx search "tags:log4j" --sort-desc cvss_score
+vulnx search "log4j" --sort-desc cvss_score
 
 # Impact assessment
-vulnx search "affected_products.product:log4j && is_remote:true"
+vulnx search "product:apache:log4j && is_remote:true"
 ```
 
 ## Troubleshooting Advanced Usage
@@ -496,10 +491,10 @@ vulnx search "broad_query" --fields cve_id --limit 10  # Test first
 
 ```bash
 # Verify field names and values
-vulnx search help  # See available fields (requires API key)
+vulnx filters  # See available fields
 
 # Test query syntax
-vulnx search "test:value" --limit 1  # Verify syntax works
+vulnx search "severity:critical" --limit 1  # Verify syntax works
 
 # Validate data ranges
 vulnx search "cvss_score:>0" --limit 1  # Check valid ranges

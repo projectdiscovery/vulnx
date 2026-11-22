@@ -62,10 +62,10 @@ func (h *Handler) Search(params vulnx.SearchParams) (vulnx.SearchResponse, error
 // MCPToolSpec returns the MCP tool spec for registration.
 func (h *Handler) MCPToolSpec() mcp.Tool {
 	return mcp.NewTool("vulnx_search",
-		mcp.WithDescription("Search vulnerabilities with Bleve-inspired query syntax (use '&&' and '||' instead of 'AND', 'OR'). NOTE: Use this tool ONLY when `agent_vulnx` explicitly instructs you or when the user directly asks for a search; otherwise do not invoke it."),
+		mcp.WithDescription("Search CVEs (SecurityContext) with field:value terms joined by '&&'; '||' only between values of one field (severity:critical || severity:high); up to 5 keywords; one vendor or product. NOTE: Use this tool ONLY when `agent_vulnx` explicitly instructs you or when the user directly asks for a search; otherwise do not invoke it."),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Bleve-inspired query expression (e.g. 'severity:critical && product:atlassian'). Combine any fields from 'vulnx_fields_list'."),
+			mcp.Description("Bleve-inspired query expression (e.g. 'severity:critical && vendor:atlassian && is_kev:true'). Use only fields from 'vulnx_fields_list'."),
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum results per call (default 5, cap 100)."),

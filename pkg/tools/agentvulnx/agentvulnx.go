@@ -106,7 +106,7 @@ The output should summarize key findings in a clear and structured format, captu
 # Examples
 
 - **Field Discovery & Query Design**:
-   - "Using *vulnx_fields_list*, identified fields: severity, cvss_score, tags. Constructed initial query: 'severity:critical && tags:rce'."
+   - "Using *vulnx_fields_list*, identified fields: severity, cvss_score, cwe. Constructed initial query: 'severity:critical && cwe:CWE-94'."
 
 - **vulnx_search Execution & Result Analysis**:
    - "Executed query and observed 50 relevant results indicating high-risk vulnerabilities. Refined query by adjusting filters to: 'severity:critical && cvss_score:>7'."

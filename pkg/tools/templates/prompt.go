@@ -73,7 +73,7 @@ You are an expert vulnerability analyst helping users leverage ProjectDiscovery'
 
 ## Available MCP Tools:
 - **vulnx_fields_list**: Lists all available vulnerability fields and their examples
-- **vulnx_search**: Full-text search across vulnerabilities with Bleve query syntax
+- **vulnx_search**: Search CVEs with field:value terms joined by && (see vulnx_fields_list)
 - **vulnx_analyze**: Facet-based aggregations for statistical analysis
 - **vulnx_get_by_id**: Fetch detailed information about specific vulnerabilities
 
@@ -84,13 +84,14 @@ You are an expert vulnerability analyst helping users leverage ProjectDiscovery'
 - This provides the foundation for constructing precise queries
 
 ### Step 2: Plan Your Query Strategy
-Based on the user's intent, construct Bleve query syntax using available fields:
-- **Severity**: severity:critical, severity:high
-- **CVSS Score**: cvss_score:>7.0, cvss_score:<9.0
-- **Exploit Status**: is_exploited:true, is_kev:true
-- **Technology**: tags:wordpress, tags:nginx, tags:apache
-- **Time Range**: age_in_days:<365, age_in_days:>30
-- **Vulnerability Type**: tags:rce, tags:sqli, tags:xss, tags:lfi
+Based on the user's intent, construct a query from the available fields:
+- **Severity**: severity:critical, (severity:critical || severity:high)
+- **CVSS / EPSS (lower bounds only)**: cvss_score:>=7, epss_score:>0.5
+- **Exploit Status**: is_kev:true (CISA KEV), is_vkev:true (VulnCheck KEV), is_poc:true, is_template:true, is_ransomware:true, is_initial_access:true
+- **Technology**: vendor:wordpress, product:apache:log4j (vendor:product), or up to 5 keywords (e.g. wordpress plugin)
+- **Time Range**: age_in_days:<365, age_in_days:>30, cve_created_at:>2026-01-01
+- **Weakness (CWE)**: cwe:CWE-79 (XSS), cwe:CWE-89 (SQLi), cwe:CWE-78 (command injection), cwe:CWE-22 (path traversal)
+- **Rules**: join terms with &&; || only between values of one field (severity, vuln_status, category, deployment_model, cve_id); one vendor or product per search; no wildcards, NOT groups or score upper bounds. vulnx_analyze takes at most 3 of: severity, is_kev, is_vkev, is_poc, is_template, vendor, cwe, vuln_status, is_remote, is_auth, category, deployment_model, year.
 
 ### Step 3: Execute Targeted Analysis
 - Use **vulnx_search** for finding specific vulnerabilities
@@ -107,19 +108,19 @@ Based on the user's intent, construct Bleve query syntax using available fields:
 **Generic Query**: "Show me critical web application vulnerabilities"
 **Structured Approach**:
 1. vulnx_fields_list (understand available fields)
-2. vulnx_search with query: "severity:critical && (tags:web || tags:http || tags:webapp)"
-3. vulnx_analyze with fields: ["tags", "cvss_score"] for pattern analysis
+2. vulnx_search with query: "severity:critical && is_remote:true && web application"
+3. vulnx_analyze with fields: ["vendor", "cwe"] for pattern analysis
 
 **Generic Query**: "Find recent WordPress vulnerabilities"
 **Structured Approach**:
 1. vulnx_fields_list (get field options)
-2. vulnx_search with query: "tags:wordpress && age_in_days:<365"
-3. vulnx_analyze with fields: ["severity", "is_exploited"] for risk assessment
+2. vulnx_search with query: "wordpress && age_in_days:<365"
+3. vulnx_analyze with fields: ["severity", "is_kev"] for risk assessment
 
 **Generic Query**: "Analyze CVE-2024-1234"
 **Structured Approach**:
 1. vulnx_get_by_id with id: "CVE-2024-1234"
-2. vulnx_search with query: "tags:* && cvss_score:>X" (where X is the CVE's CVSS score)
+2. vulnx_search with query: "cwe:CWE-N && cvss_score:>=X" (the CVE's CWE and CVSS score)
 3. Provide detailed analysis of impact, exploitation, and remediation
 
 ## Output Instructions (MANDATORY)
@@ -224,38 +225,38 @@ You are a specialized threat intelligence analyst focusing on vulnerability expl
 ### Phase 1: Exploitation Landscape Assessment
 Tool Sequence:
 1. vulnx_fields_list (identify exploitation-related fields)
-2. vulnx_search with query: "is_exploited:true && is_kev:true"
-3. vulnx_analyze with fields: ["tags", "severity", "cvss_score"]
+2. vulnx_search with query: "is_kev:true && is_poc:true"
+3. vulnx_analyze with fields: ["vendor", "severity", "cwe"]
 
 ### Phase 2: Temporal Analysis
 Tool Sequence:
 1. vulnx_search with time-bounded queries
-2. vulnx_analyze with fields: ["published_date", "is_exploited"]
+2. vulnx_analyze with fields: ["year", "is_kev"]
 3. Trend analysis and pattern identification
 
 ### Phase 3: Technology Impact Assessment
 Tool Sequence:
-1. vulnx_analyze with fields: ["tags", "is_exploited"]
+1. vulnx_analyze with fields: ["vendor", "is_kev"]
 2. vulnx_search for high-risk technology stacks
 3. Cross-reference with public exploit databases
 
 ## Key Query Patterns for Threat Intelligence:
 
 **Active Exploitation Tracking**:
-- "is_exploited:true && age_in_days:<365"
-- "is_kev:true && cvss_score:>7.0"
+- "is_kev:true && age_in_days:<365"
+- "is_kev:true && cvss_score:>=7"
 
 **Zero-Day Monitoring**:
-- "tags:zero-day || tags:0day"
-- "cvss_score:>9.0 && is_exploited:true"
+- "is_kev:true && age_in_days:<30"
+- "cvss_score:>=9 && is_vkev:true"
 
 **Ransomware-Related Vulnerabilities**:
-- "tags:ransomware || tags:rce || tags:privilege-escalation"
-- "is_exploited:true && (tags:windows || tags:linux)"
+- "is_ransomware:true"
+- "is_ransomware:true && vendor:microsoft"
 
 **APT Campaign Vulnerabilities**:
-- "tags:apt || tags:nation-state"
-- "is_exploited:true && tags:supply-chain"
+- "is_initial_access:true"
+- "is_kev:true && is_oss:true"
 
 ## Intelligence Enrichment:
 - Cross-reference with public exploit databases
@@ -346,7 +347,7 @@ You are an advanced security researcher specializing in vulnerability analysis, 
 
 ### Discovery Phase
 1. vulnx_fields_list (understand data structure)
-2. vulnx_analyze with fields: ["tags", "cvss_score", "is_exploited"]
+2. vulnx_analyze with fields: ["vendor", "cwe", "is_kev"]
 3. vulnx_search with broad exploratory queries
 
 ### Analysis Phase
@@ -362,20 +363,20 @@ You are an advanced security researcher specializing in vulnerability analysis, 
 ## Advanced Query Techniques:
 
 **Vulnerability Chaining Research**:
-- "cvss_score:>7.0 && attack_vector:network"
-- "tags:privilege-escalation && tags:rce"
+- "cvss_score:>=7 && is_remote:true"
+- "cwe:CWE-269 && is_poc:true"
 
 **Attack Surface Mapping**:
-- "tags:TARGET_TECH && cvss_score:>5.0"
-- "attack_vector:network && attack_complexity:low"
+- "vendor:TARGET_VENDOR && cvss_score:>=5"
+- "is_remote:true && is_auth:false"
 
 **Exploit Development**:
-- "is_exploited:true && exploit_complexity:low"
-- "tags:buffer-overflow || tags:use-after-free"
+- "is_poc:true && is_auth:false"
+- "cwe:CWE-416 && is_poc:true"
 
 **Novel Pattern Discovery**:
-- "age_in_days:<365 && cvss_score:>8.0"
-- "tags:supply-chain || tags:dependency-confusion"
+- "age_in_days:<365 && cvss_score:>=8"
+- "is_oss:true && is_poc:true"
 
 ## Research Complexity Levels:
 
@@ -446,7 +447,7 @@ You are UVA – an expert security assistant with full access to ProjectDiscover
 
 ## Available Tools (always prefer these):
 1. vulnx_fields_list – schema, available fields, query help
-2. vulnx_search – Bleve search/filter of CVEs & Nuclei templates
+2. vulnx_search – search/filter of CVEs (SecurityContext)
 3. vulnx_analyze – statistics / top-N / distributions
 4. vulnx_get_by_id – full details & YAML for CVE or template
 
@@ -507,7 +508,7 @@ func (p *VulnxSearchReviewPrompt) MCPPromptSpec() mcp.Prompt {
 		"vulnx_search_review",
 		mcp.WithPromptDescription("Validate and iteratively improve vulnx_search queries using vulnx_fields_list guidance before execution."),
 		mcp.WithArgument("search_query",
-			mcp.ArgumentDescription("Initial Bleve search query string to validate and execute (e.g., 'severity:critical && tags:rce')"),
+			mcp.ArgumentDescription("Initial Bleve search query string to validate and execute (e.g., 'severity:critical && cwe:CWE-94')"),
 			mcp.RequiredArgument(),
 		),
 		mcp.WithArgument("max_iterations",
@@ -535,7 +536,7 @@ Your job is to ensure a vulnx_search query is syntactically correct, field-aware
 3. **Execute Search**: If the query is valid, run vulnx_search with it and assess the result count & relevance.
 4. **Refine If Needed**:
    - If results are empty or clearly off-target, analyse the mismatch.
-   - Suggest concrete improvements (add/remove fields, adjust ranges, include tags, etc.).
+   - Suggest concrete improvements (add/remove fields, adjust ranges, add a cwe or vendor, etc.).
    - Produce a revised query and repeat from step 2.
 5. **Completion**: When results are satisfactory or iterations exhausted, output the final approved query and rationale.
 

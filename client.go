@@ -48,7 +48,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/projectdiscovery/gologger"
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
@@ -57,12 +59,17 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the default base URL for the API.
-	DefaultBaseURL = "https://api.projectdiscovery.io"
+	// DefaultBaseURL is the default base URL for the API (SecurityContext).
+	DefaultBaseURL = "https://api.securitycontext.com"
 	// UserAgent is the default user agent for the client.
-	UserAgent = "vulnx-client/1.0"
+	UserAgent = "vulnx-client/2.0"
 	// BaseURLEnvVar is the environment variable name for overriding the base URL.
 	BaseURLEnvVar = "VULNX_API_URL"
+	// APIKeyEnvVar holds a SecurityContext API key. SecurityContext rejects any key it does not know (401), so a
+	// PDCP key is never sent to it; without a key, calls are anonymous and rate limited per address.
+	APIKeyEnvVar = "SECURITYCONTEXT_API_KEY"
+	// maxRateLimitWait bounds how long the client waits on a 429's Retry-After before giving up.
+	maxRateLimitWait = 65 * time.Second
 )
 
 // Client errors
@@ -70,7 +77,7 @@ var (
 	ErrBadRequest          = errkit.New("bad request: client sent an invalid request")
 	ErrUnauthorized        = errkit.New("unauthorized: invalid or missing API key")
 	ErrNotFound            = errkit.New("not found: resource does not exist")
-	ErrTooManyRequests     = errkit.New("too many requests: rate limit exceeded - consider using an API key for higher limits")
+	ErrTooManyRequests     = errkit.New("too many requests: SecurityContext allows anonymous callers a limited number of requests a minute per address")
 	ErrInternalServerError = errkit.New("internal server error: something went wrong on the server")
 	ErrUnknownAPIError     = errkit.New("unknown api error")
 
@@ -141,6 +148,8 @@ func New(opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(c)
 	}
+	// PDCP keys belong to template-service; SecurityContext answers 401 to them. Only a SecurityContext key is sent.
+	c.apiKey = strings.TrimSpace(os.Getenv(APIKeyEnvVar))
 	// API key is now optional - authentication is not required but recommended
 	// If a custom httpc was not provided, set the default retryablehttp client
 	if c.httpc == nil {
@@ -218,14 +227,137 @@ func WithDebugResponse(cb func(*http.Response)) Option {
 // enabled on the underlying HTTP client. It is safe to call concurrently.
 func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var resp SearchResponse
-	req, err := c.newRequest(ctx, http.MethodGet, "/v2/vulnerability/search", paramsToQuery(params), nil)
-	if err != nil {
-		return resp, errkit.Append(ErrRequestBuildFailure, err)
+	resp.fields = params.Fields
+	q := ""
+	if params.Query != nil {
+		q = *params.Query
 	}
-	err = c.do(req, &resp)
+	tq, err := translateQuery(q)
 	if err != nil {
-		return resp, errkit.Append(ErrRequestFailed, err)
+		return resp, err
 	}
+	facetSize := 0
+	if params.FacetSize != nil {
+		facetSize = *params.FacetSize
+	}
+	facetReqs, facets, err := translateFacets(params.TermFacets, params.RangeFacets, facetSize)
+	if err != nil {
+		return resp, err
+	}
+	sortKey, err := sortParam(params.SortAsc, params.SortDesc)
+	if err != nil {
+		return resp, err
+	}
+	limit, offset := 10, 0
+	if params.Limit != nil {
+		limit = *params.Limit
+	}
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+
+	// cpe: a product version's CVEs (issue #77)
+	if tq.cpe != nil {
+		if strings.Contains(tq.params.Get("exploit"), "ransomware") {
+			return resp, unsupported("is_ransomware cannot be combined with cpe:")
+		}
+		if sortKey != "" && !strings.HasPrefix(sortKey, "cvss_score") && !strings.HasPrefix(sortKey, "epss_score") &&
+			!strings.HasPrefix(sortKey, "published_date") && !strings.HasPrefix(sortKey, "modified_date") {
+			return resp, unsupported("with cpe:, sort by cve_created_at, cve_updated_at, cvss_score or epss_score")
+		}
+		r, err := c.searchCPE(ctx, tq, sortKey, len(facetReqs) > 0, limit, offset, params.All)
+		r.fields = params.Fields
+		return r, err
+	}
+
+	// cve_id: terms are a direct lookup (one request per id); other filters can't be combined with them
+	if len(tq.ids) > 0 {
+		if len(tq.params) > 0 {
+			return resp, unsupported("cve_id: cannot be combined with other filters")
+		}
+		for i, id := range tq.ids {
+			if i < offset {
+				continue
+			}
+			if len(resp.Results) >= limit {
+				break
+			}
+			one, err := c.GetVulnerabilityByID(ctx, id, nil)
+			if errkit.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return resp, err
+			}
+			resp.Results = append(resp.Results, *one.Data)
+		}
+		resp.Count, resp.Total = len(resp.Results), len(resp.Results)
+		return resp, nil
+	}
+
+	if !params.All && offset+limit > scMaxWindow {
+		return resp, unsupported("offset + limit can be at most %d (SecurityContext pages by cursor, %d rows a request)", scMaxWindow, scMaxPage)
+	}
+	query := tq.params
+	if sortKey != "" {
+		query.Set("sort", sortKey)
+	}
+	if facets != "" {
+		query.Set("facets", facets)
+	}
+	want := offset + limit
+	if want < 1 {
+		want = 1 // a facet-only request still needs one row
+	}
+	if params.All {
+		want = offset + scMaxPage // the first page tells the total
+	}
+	skipped, consumed := 0, 0
+	cursor := ""
+	for page := 0; ; page++ {
+		pageSize := want - consumed
+		if pageSize > scMaxPage {
+			pageSize = scMaxPage
+		}
+		query.Set("limit", strconv.Itoa(pageSize))
+		if cursor != "" {
+			query.Set("cursor", cursor)
+			query.Del("facets") // counted on the first page
+		}
+		var list scList
+		req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves", query, nil)
+		if err != nil {
+			return resp, errkit.Append(ErrRequestBuildFailure, err)
+		}
+		if err := c.do(req, &list); err != nil {
+			return resp, errkit.Append(ErrRequestFailed, err)
+		}
+		if page == 0 {
+			resp.Total = list.Total
+			resp.Facets = buildFacets(facetReqs, list.Facets, list.Total)
+			if params.All {
+				limit, want = list.Total, offset+list.Total
+			}
+		}
+		for i := range list.Items {
+			consumed++
+			if skipped < offset {
+				skipped++
+				continue
+			}
+			if len(resp.Results) < limit {
+				resp.Results = append(resp.Results, list.Items[i].toVulnerability())
+			}
+		}
+		if params.Progress != nil {
+			params.Progress(len(resp.Results), resp.Total)
+		}
+		if list.Cursor == "" || len(list.Items) == 0 || consumed >= want {
+			break
+		}
+		cursor = list.Cursor
+	}
+	resp.Count = len(resp.Results)
 	return resp, nil
 }
 
@@ -236,37 +368,29 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 // payload to a subset of fields, reducing bandwidth.
 func (c *Client) GetVulnerabilityByID(ctx context.Context, id string, params *GetByIDParams) (VulnerabilityResponse, error) {
 	var resp VulnerabilityResponse
-	path := fmt.Sprintf("/v2/vulnerability/%s", id)
-	var query url.Values
-	if params != nil && len(params.Fields) > 0 {
-		query = make(url.Values)
-		query.Set("fields", strings.Join(params.Fields, ","))
+	id = strings.TrimSpace(id)
+	if !IsCVEID(id) {
+		// template-service also served nuclei template records with no CVE; SecurityContext serves CVEs only
+		return resp, errkit.Append(ErrNotFound, fmt.Errorf("%s is not a CVE id: only CVE records are served", id))
 	}
-	req, err := c.newRequest(ctx, http.MethodGet, path, query, nil)
+	var rec scCVE
+	req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves/"+url.PathEscape(strings.ToUpper(id)), nil, nil)
 	if err != nil {
 		return resp, errkit.Append(ErrRequestBuildFailure, err)
 	}
-	err = c.do(req, &resp)
+	err = c.do(req, &rec)
 	if err != nil {
 		return resp, errkit.Append(ErrRequestFailed, err)
 	}
+	v := rec.toVulnerability()
+	resp.Data = &v
 	return resp, nil
 }
 
-// GetVulnerabilityFilters lists all filter definitions that can be applied to
-// search queries. Filters are stable identifiers used for building rich UI
-// facets or powering autocomplete experiences.
+// GetVulnerabilityFilters lists the query fields the SecurityContext backend
+// accepts. The list is built into vulnx: the API has no filters endpoint.
 func (c *Client) GetVulnerabilityFilters(ctx context.Context) ([]VulnerabilityFilter, error) {
-	var filters []VulnerabilityFilter
-	req, err := c.newRequest(ctx, http.MethodGet, "/v2/vulnerability/filters", nil, nil)
-	if err != nil {
-		return nil, errkit.Append(ErrRequestBuildFailure, err)
-	}
-	err = c.do(req, &filters)
-	if err != nil {
-		return nil, errkit.Append(ErrRequestFailed, err)
-	}
-	return filters, nil
+	return SupportedFilters(), nil
 }
 
 // IsAuthenticated returns true if the client has an API key configured.
@@ -307,7 +431,8 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	return req, nil
 }
 
-// do executes the HTTP request and decodes the JSON response.
+// do executes the HTTP request and decodes the JSON response. A 429 with a
+// Retry-After of at most maxRateLimitWait is waited out and retried once.
 func (c *Client) do(req *http.Request, out any) error {
 	if c.debugRequest != nil {
 		c.debugRequest(req)
@@ -315,6 +440,27 @@ func (c *Client) do(req *http.Request, out any) error {
 	resp, err := c.httpc.HTTPClient.Do(req)
 	if err != nil {
 		return errkit.Append(ErrRequestFailed, err)
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if wait, ok := retryAfter(resp.Header.Get("Retry-After")); ok && wait <= maxRateLimitWait {
+			_ = resp.Body.Close()
+			gologger.Warning().Msgf("rate limited by SecurityContext; retrying in %s", wait.Round(time.Second))
+			select {
+			case <-req.Context().Done():
+				return errkit.Append(ErrRequestFailed, req.Context().Err())
+			case <-time.After(wait):
+			}
+			retry := req.Clone(req.Context())
+			if req.GetBody != nil { // a POST: send its body again
+				if retry.Body, err = req.GetBody(); err != nil {
+					return errkit.Append(ErrRequestFailed, err)
+				}
+			}
+			resp, err = c.httpc.HTTPClient.Do(retry)
+			if err != nil {
+				return errkit.Append(ErrRequestFailed, err)
+			}
+		}
 	}
 	if c.debugResponse != nil {
 		c.debugResponse(resp)
@@ -388,38 +534,11 @@ func (c *Client) handleAPIError(resp *http.Response) error {
 	}
 }
 
-// paramsToQuery converts SearchParams to url.Values for query string.
-func paramsToQuery(params SearchParams) url.Values {
-	q := make(url.Values)
-	if params.Limit != nil {
-		q.Set("limit", fmt.Sprintf("%d", *params.Limit))
+// retryAfter reads a Retry-After header given in seconds.
+func retryAfter(h string) (time.Duration, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(h))
+	if err != nil || n < 0 {
+		return 0, false
 	}
-	if params.Offset != nil {
-		q.Set("offset", fmt.Sprintf("%d", *params.Offset))
-	}
-	if params.SortAsc != nil {
-		q.Set("sort_asc", *params.SortAsc)
-	}
-	if params.SortDesc != nil {
-		q.Set("sort_desc", *params.SortDesc)
-	}
-	if len(params.Fields) > 0 {
-		q.Set("fields", strings.Join(params.Fields, ","))
-	}
-	if len(params.TermFacets) > 0 {
-		q.Set("term_facets", strings.Join(params.TermFacets, ","))
-	}
-	if len(params.RangeFacets) > 0 {
-		q.Set("range_facets", strings.Join(params.RangeFacets, ","))
-	}
-	if params.Query != nil {
-		q.Set("q", *params.Query)
-	}
-	if params.Highlight != nil {
-		q.Set("highlight", fmt.Sprintf("%t", *params.Highlight))
-	}
-	if params.FacetSize != nil {
-		q.Set("facet_size", fmt.Sprintf("%d", *params.FacetSize))
-	}
-	return q
+	return time.Duration(n)*time.Second + 500*time.Millisecond, true
 }

@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -300,17 +301,13 @@ func ensureVulnxClientInitialized(_ *cobra.Command) error {
 		}
 		vulnxClient = client
 
-		// Show proactive message about API key configuration if not authenticated
-		if !client.IsAuthenticated() && !silent {
-			gologger.Info().Msg("Configure API key with 'vulnx auth' to avoid rate limits")
-		}
 	}
 	return nil
 }
 
 // handleRateLimitError provides a common, user-friendly rate limit error message
 func handleRateLimitError() {
-	gologger.Fatal().Msg("Rate limit exceeded! API key required for higher limits.")
+	gologger.Fatal().Msg("Rate limit exceeded: SecurityContext allows anonymous callers a limited number of requests a minute per address; wait a minute and retry")
 }
 
 func showBanner() {
@@ -334,15 +331,14 @@ func showDashboard() error {
 
 	handler := analyze.NewHandler(vulnxClient)
 
-	// Get overall stats first
+	// one request for severity, vendors and exploit signals (anonymous callers have 10 requests a minute)
 	overallResp, err := handler.Analyze(analyze.Params{
-		Fields:    []string{"severity=8"},
-		FacetSize: vulnx.Ptr(8),
+		Fields:    []string{"severity=8", "affected_products.vendor=5", "exploit=10"},
+		FacetSize: vulnx.Ptr(10),
 	})
 	if err != nil {
 		if errors.Is(err, vulnx.ErrTooManyRequests) {
-			fmt.Printf("⚠️  Dashboard unavailable due to rate limits. Configure API key with 'vulnx auth'.\n\n")
-			// Still show the help menu even with rate limits
+			fmt.Printf("⚠️  Dashboard unavailable: rate limited (anonymous callers get a few requests a minute); try again shortly.\n\n")
 			renderQuickStartCommands()
 			return nil
 		}
@@ -351,12 +347,11 @@ func showDashboard() error {
 
 	totalCount := overallResp.Total
 
-	// Render clean dashboard sections
-	renderSeverityDistribution(handler, totalCount)
-	renderVendorBreakdown(handler)
-	renderVulnerabilityTypes(handler)
-	renderKEVAndThreats(handler)
-	renderEPSSDistribution(handler)
+	renderSeverityDistribution(overallResp.Facets, totalCount)
+	renderVendorBreakdown(overallResp.Facets)
+	renderWeaknesses(handler)
+	renderExploitSignals(overallResp.Facets, totalCount)
+	renderEPSSDistribution(totalCount)
 	renderQuickStartCommands()
 
 	return nil
@@ -368,7 +363,7 @@ func showDashboardJSON() error {
 	handler := analyze.NewHandler(vulnxClient)
 
 	params := analyze.Params{
-		Fields:    []string{"severity", "is_kev", "is_template", "is_poc"},
+		Fields:    []string{"severity", "exploit", "affected_products.vendor"},
 		FacetSize: vulnx.Ptr(10),
 	}
 
@@ -377,7 +372,7 @@ func showDashboardJSON() error {
 		if errors.Is(err, vulnx.ErrTooManyRequests) {
 			// Return minimal JSON for rate limited requests
 			dashboardData := map[string]interface{}{
-				"error": "Dashboard unavailable due to rate limits. Configure API key with 'vulnx auth'.",
+				"error": "Dashboard unavailable: rate limited; try again shortly.",
 			}
 			jsonBytes, _ := json.MarshalIndent(dashboardData, "", "  ")
 			fmt.Printf("%s\n", jsonBytes)
@@ -733,22 +728,8 @@ func formatNumber(n int) string {
 }
 
 // renderSeverityDistribution displays vulnerability severity breakdown
-func renderSeverityDistribution(handler *analyze.Handler, totalCount int) {
-	// Get severity data
-	severityResp, err := handler.Analyze(analyze.Params{
-		Fields:    []string{"severity=8"},
-		FacetSize: vulnx.Ptr(8),
-	})
-	if err != nil {
-		if errors.Is(err, vulnx.ErrTooManyRequests) {
-			// Skip this section due to rate limits
-			return
-		}
-		fmt.Printf("⚠️  Unable to fetch severity data: %v\n\n", err)
-		return
-	}
-
-	severityBuckets := extractBuckets(severityResp.Facets, "severity")
+func renderSeverityDistribution(facets map[string]any, totalCount int) {
+	severityBuckets := extractBuckets(facets, "severity")
 
 	// Create severity order for better presentation (excluding non-informative values)
 	severityOrder := []string{"critical", "high", "medium", "low", "info"}
@@ -803,23 +784,10 @@ func renderSeverityDistribution(handler *analyze.Handler, totalCount int) {
 }
 
 // renderVendorBreakdown displays top affected vendors
-func renderVendorBreakdown(handler *analyze.Handler) {
-	vendorResp, err := handler.Analyze(analyze.Params{
-		Fields:    []string{"affected_products.vendor=5"},
-		FacetSize: vulnx.Ptr(5),
-	})
-	if err != nil {
-		if errors.Is(err, vulnx.ErrTooManyRequests) {
-			// Skip this section due to rate limits
-			return
-		}
-		fmt.Printf("⚠️  Unable to fetch vendor data: %v\n\n", err)
-		return
-	}
-
+func renderVendorBreakdown(facets map[string]any) {
 	fmt.Printf("🏢 top affected vendors\n")
 
-	vendorBuckets := extractBuckets(vendorResp.Facets, "affected_products.vendor")
+	vendorBuckets := extractBuckets(facets, "affected_products.vendor")
 
 	if len(vendorBuckets) > 5 {
 		vendorBuckets = vendorBuckets[:5]
@@ -850,164 +818,144 @@ func renderVendorBreakdown(handler *analyze.Handler) {
 }
 
 // renderVulnerabilityTypes displays top vulnerability types
-func renderVulnerabilityTypes(handler *analyze.Handler) {
-	vulnTypeResp, err := handler.Analyze(analyze.Params{
-		Fields:    []string{"vulnerability_type=5"},
-		FacetSize: vulnx.Ptr(5),
-	})
+// cweNames names the weaknesses that lead the CVE list (CWE Top 25 and other frequent ones).
+var cweNames = map[string]string{
+	"CWE-79": "cross-site scripting", "CWE-787": "out-of-bounds write", "CWE-89": "sql injection",
+	"CWE-352": "cross-site request forgery", "CWE-22": "path traversal", "CWE-125": "out-of-bounds read",
+	"CWE-78": "os command injection", "CWE-416": "use after free", "CWE-862": "missing authorization",
+	"CWE-434": "unrestricted file upload", "CWE-94": "code injection", "CWE-20": "improper input validation",
+	"CWE-77": "command injection", "CWE-287": "improper authentication", "CWE-269": "improper privilege management",
+	"CWE-502": "unsafe deserialization", "CWE-200": "information exposure", "CWE-863": "incorrect authorization",
+	"CWE-918": "server-side request forgery", "CWE-119": "memory buffer errors", "CWE-476": "null pointer dereference",
+	"CWE-798": "hard-coded credentials", "CWE-190": "integer overflow", "CWE-400": "uncontrolled resource consumption",
+	"CWE-306": "missing authentication", "CWE-120": "buffer overflow", "CWE-401": "memory leak",
+	"CWE-284": "improper access control", "CWE-264": "permissions & privileges", "CWE-399": "resource management",
+	"CWE-617": "reachable assertion", "CWE-639": "authorization bypass (idor)", "CWE-601": "open redirect",
+	"CWE-362": "race condition", "CWE-732": "incorrect permissions", "CWE-611": "xml external entities",
+}
+
+// renderWeaknesses shows the most frequent weaknesses (CWE) across CVEs.
+func renderWeaknesses(handler *analyze.Handler) {
+	resp, err := handler.Analyze(analyze.Params{Fields: []string{"cwe=8"}, FacetSize: vulnx.Ptr(8)})
 	if err != nil {
-		if errors.Is(err, vulnx.ErrTooManyRequests) {
-			// Skip this section due to rate limits
-			return
+		if !errors.Is(err, vulnx.ErrTooManyRequests) {
+			fmt.Printf("⚠️  Unable to fetch weakness data: %v\n\n", err)
 		}
-		fmt.Printf("⚠️  Unable to fetch vulnerability type data: %v\n\n", err)
 		return
 	}
-
-	fmt.Printf("🔍 top vulnerability types\n")
-
-	vulnTypeBuckets := extractBuckets(vulnTypeResp.Facets, "vulnerability_type")
-
-	// Filter out undefined/unassigned vulnerability types
-	var filteredBuckets []struct {
+	var buckets []struct {
 		key   string
 		count int
 	}
-	for _, bucket := range vulnTypeBuckets {
-		// Skip non-informative vulnerability types
-		lowerKey := strings.ToLower(strings.TrimSpace(bucket.key))
-		if lowerKey != "" &&
-			lowerKey != "undefined" &&
-			lowerKey != "unassigned" &&
-			lowerKey != "unknown" &&
-			lowerKey != "n/a" &&
-			lowerKey != "none" &&
-			lowerKey != "null" {
-			filteredBuckets = append(filteredBuckets, bucket)
+	for _, b := range extractBuckets(resp.Facets, "cwe") {
+		if strings.HasPrefix(b.key, "CWE-") && b.key != "CWE-Other" && b.key != "CWE-noinfo" {
+			buckets = append(buckets, b)
 		}
 	}
-	vulnTypeBuckets = filteredBuckets
-
-	if len(vulnTypeBuckets) > 5 {
-		vulnTypeBuckets = vulnTypeBuckets[:5]
+	if len(buckets) > 5 {
+		buckets = buckets[:5]
 	}
-
-	// Skip section if no meaningful vulnerability types found
-	if len(vulnTypeBuckets) == 0 {
+	if len(buckets) == 0 {
 		return
 	}
-
-	maxCount := 0
-	if len(vulnTypeBuckets) > 0 {
-		maxCount = vulnTypeBuckets[0].count
-	}
-
-	for _, vulnType := range vulnTypeBuckets {
-		percentage := float64(vulnType.count) / float64(maxCount) * 100
-		barLength := int(percentage / 5) // Scale to 20 chars max
-		if barLength > 20 {
-			barLength = 20
-		}
+	fmt.Printf("🔍 top weaknesses (cwe)\n")
+	maxCount := buckets[0].count
+	for _, b := range buckets {
+		barLength := b.count * 20 / maxCount
 		if barLength < 1 {
 			barLength = 1
 		}
-
-		bar := strings.Repeat("█", barLength) + strings.Repeat("▁", 20-barLength)
-
-		fmt.Printf("   %-20s │%s│ %s\n", vulnType.key, bar, formatNumber(vulnType.count))
+		label := b.key
+		if name := cweNames[b.key]; name != "" {
+			label = fmt.Sprintf("%-8s %s", b.key, name)
+		}
+		fmt.Printf("   %-36s │%s%s│ %s\n", label, strings.Repeat("█", barLength), strings.Repeat("▁", 20-barLength), formatNumber(b.count))
 	}
 	fmt.Printf("\n")
 }
 
 // renderEPSSDistribution displays EPSS score distribution
-func renderEPSSDistribution(handler *analyze.Handler) {
-	fmt.Printf("📈 exploit prediction scoring system (epss) distribution\n")
-
-	// Placeholder data - in real implementation would fetch from API
-	epssRanges := []struct {
-		label       string
-		range_      string
-		count       int
-		description string
-	}{
-		{"critical", "0.7-1.0", 4083, "Highest exploitation probability"},
-		{"high", "0.3-0.7", 4018, "High exploitation probability"},
-		{"medium", "0.1-0.3", 12800, "Moderate exploitation probability"},
-		{"low", "0.0-0.1", 264381, "Lower exploitation probability"},
+// renderEPSSDistribution counts CVEs per EPSS band (three count queries: EPSS at least 0.7, 0.3 and 0.1).
+func renderEPSSDistribution(totalCount int) {
+	atLeast := func(score string) (int, error) {
+		resp, err := vulnxClient.SearchVulnerabilities(context.Background(), vulnx.SearchParams{
+			Query: vulnx.Ptr("epss_score:>=" + score), Limit: vulnx.Ptr(1)})
+		return resp.Total, err
 	}
-
-	totalEPSS := 285282
-
-	for _, epss := range epssRanges {
-		percentage := float64(epss.count) / float64(totalEPSS) * 100
-		barLength := int(percentage / 2.0) // Scale to 50 chars max
+	var n07, n03, n01 int
+	var err error
+	if n07, err = atLeast("0.7"); err == nil {
+		if n03, err = atLeast("0.3"); err == nil {
+			n01, err = atLeast("0.1")
+		}
+	}
+	if err != nil {
+		if !errors.Is(err, vulnx.ErrTooManyRequests) {
+			fmt.Printf("⚠️  Unable to fetch EPSS data: %v\n\n", err)
+		}
+		return
+	}
+	fmt.Printf("📈 exploit prediction scoring system (epss) distribution\n")
+	bands := []struct {
+		label, range_ string
+		count         int
+	}{
+		{"critical", "0.7-1.0", n07},
+		{"high", "0.3-0.7", n03 - n07},
+		{"medium", "0.1-0.3", n01 - n03},
+		{"low", "<0.1", totalCount - n01}, // includes CVEs with no EPSS score
+	}
+	for _, b := range bands {
+		percentage := float64(b.count) / float64(totalCount) * 100
+		barLength := int(percentage / 2.0)
 		if barLength > 50 {
 			barLength = 50
 		}
-		if barLength < 1 && percentage > 0 {
+		if barLength < 1 && b.count > 0 {
 			barLength = 1
 		}
-
-		bar := strings.Repeat("█", barLength)
-		spaces := strings.Repeat(" ", 50-barLength)
-
-		fmt.Printf("   %-8s (%s) │%s%s│ %8s (%5.1f%%)\n",
-			epss.label, epss.range_, bar, spaces, formatNumber(epss.count), percentage)
+		fmt.Printf("   %-8s %-9s │%s%s│ %8s (%5.1f%%)\n", b.label, "("+b.range_+")", strings.Repeat("█", barLength),
+			strings.Repeat(" ", 50-barLength), formatNumber(b.count), percentage)
 	}
 	fmt.Printf("\n")
 }
 
 // renderKEVAndThreats displays KEV statistics and recent threats
-func renderKEVAndThreats(handler *analyze.Handler) {
-	// Get KEV data
-	kevResp, err := handler.Analyze(analyze.Params{
-		Fields:    []string{"is_kev=2"},
-		FacetSize: vulnx.Ptr(2),
-	})
-	if err != nil {
-		if errors.Is(err, vulnx.ErrTooManyRequests) {
-			// Skip this section due to rate limits
-			return
+// renderExploitSignals shows how many CVEs carry each exploitation signal (from the exploit facet).
+func renderExploitSignals(facets map[string]any, totalCount int) {
+	counts := map[string]int{}
+	for _, b := range extractBuckets(facets, "exploit") {
+		counts[b.key] = b.count
+	}
+	rows := []struct{ key, label string }{
+		{"known_exploited", "CISA KEV"},
+		{"vulncheck_known_exploited", "VulnCheck KEV"},
+		{"ransomware", "ransomware use"},
+		{"initial_access", "initial access"},
+		{"nuclei_template", "nuclei template"},
+		{"public_exploit", "public exploit"},
+	}
+	maxCount := 0
+	for _, r := range rows {
+		if counts[r.key] > maxCount {
+			maxCount = counts[r.key]
 		}
-		fmt.Printf("⚠️  Unable to fetch KEV data: %v\n\n", err)
+	}
+	if maxCount == 0 {
 		return
 	}
-
-	kevBuckets := extractBuckets(kevResp.Facets, "is_kev")
-	kevTotal := 0
-	for _, b := range kevBuckets {
-		if b.key == "true" {
-			kevTotal = b.count
+	fmt.Printf("🚨 exploitation signals (CVEs; VulnCheck KEV includes every CISA KEV entry)\n")
+	for _, r := range rows {
+		n := counts[r.key]
+		if n == 0 {
+			continue
 		}
-	}
-
-	fmt.Printf("🚨 known exploited vulnerabilities (kev) (total: %s)\n", formatNumber(kevTotal))
-
-	// KEV breakdown
-	kevSources := []struct {
-		source string
-		count  int
-		desc   string
-	}{
-		{"CISA KEV", kevTotal * 70 / 100, "US Government tracked"},
-		{"VulnCheck", kevTotal * 30 / 100, "Commercial intelligence"},
-	}
-
-	for _, source := range kevSources {
-		percentage := float64(source.count) / float64(kevTotal) * 100
-		barLength := int(percentage / 2.5) // Scale to 40 chars max
-		if barLength > 40 {
-			barLength = 40
-		}
+		barLength := n * 40 / maxCount
 		if barLength < 1 {
 			barLength = 1
 		}
-
-		bar := strings.Repeat("█", barLength)
-		spaces := strings.Repeat(" ", 40-barLength)
-
-		fmt.Printf("   %-12s │%s%s│ %s (%4.1f%%)\n",
-			source.source, bar, spaces, formatNumber(source.count), percentage)
+		fmt.Printf("   %-16s │%s%s│ %8s (%5.2f%%)\n", r.label, strings.Repeat("█", barLength), strings.Repeat(" ", 40-barLength),
+			formatNumber(n), float64(n)/float64(totalCount)*100)
 	}
 	fmt.Printf("\n")
 }
@@ -1024,6 +972,8 @@ func renderQuickStartCommands() {
 		{"vulnx search \"is_template:true\"", "cves with nuclei templates"},
 		{"vulnx search \"is_kev:true\"", "known exploited vulns"},
 		{"vulnx id CVE-2024-1234", "fetch metadata for CVE"},
+		{"vulnx search --cpe <cpe>", "cves affecting a product version"},
+		{"vulnx scan package-lock.json", "scan a lockfile or sbom (--vex)"},
 		{"vulnx analyze -f severity", "analyze by severity"},
 	}
 

@@ -21,6 +21,9 @@ import (
 var (
 	// Flag placeholders – defined in init()
 	searchLimit       int
+	searchAll         bool
+	filterCPE         string
+	filterVersion     string
 	searchOffset      int
 	searchSortAsc     string
 	searchSortDesc    string
@@ -137,6 +140,14 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 			if searchLimit > 0 {
 				params.Limit = vulnx.Ptr(searchLimit)
 			}
+			if searchAll {
+				params.All = true
+				params.Progress = func(fetched, total int) {
+					if !silent && (fetched%1000 == 0 || fetched == total) {
+						gologger.Info().Msgf("fetched %d of %d", fetched, total)
+					}
+				}
+			}
 			if searchOffset > 0 {
 				params.Offset = vulnx.Ptr(searchOffset)
 			}
@@ -198,6 +209,9 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 			if err != nil {
 				if errors.Is(err, vulnx.ErrNotFound) {
 					warnUnknownSearchFields(finalQuery)
+					if strings.Contains(err.Error(), "has no product") {
+						gologger.Fatal().Msgf("No results: %s", err)
+					}
 					gologger.Fatal().Msgf("No results found for query: %s", query)
 				}
 				if errors.Is(err, vulnx.ErrTooManyRequests) {
@@ -307,8 +321,23 @@ vulnx search --term-facets tags=10,severity=4 "is_remote:true"
 func buildFilterQuery() (string, error) {
 	var queryParts []string
 
+	// --cpe, or --product vendor:product --version v: the CVEs affecting that product version
+	if filterVersion != "" {
+		if len(filterProduct) != 1 || !strings.Contains(filterProduct[0], ":") {
+			return "", fmt.Errorf("--version needs one --product as vendor:product (e.g. --product apache:tomcat --version 8.5.62)")
+		}
+		vendor, product, _ := strings.Cut(strings.ToLower(filterProduct[0]), ":")
+		queryParts = append(queryParts, fmt.Sprintf("cpe:2.3:a:%s:%s:%s:*:*:*:*:*:*:*", vendor, product, filterVersion))
+	}
+	if filterCPE != "" {
+		if !strings.HasPrefix(strings.ToLower(filterCPE), "cpe:") {
+			return "", fmt.Errorf("--cpe takes a CPE string (cpe:2.3:a:vendor:product:version:*:*:*:*:*:*:*)")
+		}
+		queryParts = append(queryParts, filterCPE)
+	}
+
 	// Build product filter - search both vendor and product fields for better UX
-	if len(filterProduct) > 0 {
+	if len(filterProduct) > 0 && filterVersion == "" {
 		productQuery := buildProductQuery(filterProduct)
 		queryParts = append(queryParts, productQuery)
 	}
@@ -619,6 +648,9 @@ func init() { // Register flags and add command to rootCmd
 	// Existing flags
 	searchCmd.Flags().IntVarP(&searchLimit, "limit", "n", 10, "number of results to return (0 = server default)")
 	searchCmd.Flags().IntVar(&searchOffset, "offset", 0, "offset for pagination (start position)")
+	searchCmd.Flags().StringVar(&filterCPE, "cpe", "", "CVEs affecting one product version, by CPE (cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*)")
+	searchCmd.Flags().StringVar(&filterVersion, "version", "", "with --product vendor:product: CVEs affecting that version")
+	searchCmd.Flags().BoolVar(&searchAll, "all", false, "fetch every matching result, page by page (anonymous callers: about 1000 a minute)")
 	searchCmd.Flags().StringVar(&searchSortAsc, "sort-asc", "", "field to sort ascending")
 	searchCmd.Flags().StringVar(&searchSortDesc, "sort-desc", "", "field to sort descending")
 	searchCmd.Flags().StringSliceVar(&searchFields, "fields", nil, "fields to include in the response (comma-separated)")
@@ -633,11 +665,11 @@ func init() { // Register flags and add command to rootCmd
 	searchCmd.Flags().StringSliceVar(&filterVendor, "vendor", nil, "filter by vendor (comma-separated)")
 	searchCmd.Flags().StringSliceVarP(&filterSeverity, "severity", "s", nil, "filter by severity (comma-separated)")
 
-	searchCmd.Flags().StringVar(&filterVulnStatus, "vuln-status", "", "filter by vulnerability status (new, confirmed, unconfirmed, modified, rejected, unknown)")
+	searchCmd.Flags().StringVar(&filterVulnStatus, "vuln-status", "", "filter by NVD status (analyzed, modified, deferred, received, awaiting_analysis, undergoing_analysis; new, confirmed, unconfirmed, unknown still accepted)")
 	searchCmd.Flags().StringVarP(&filterVulnAge, "vuln-age", "a", "", "filter by vulnerability age (supports <, >, exact: e.g., '5', '<10', '>30')")
 
 	// Boolean filters with default to true when flag is present without value
-	searchCmd.Flags().StringVar(&filterKevOnly, "kev", "", "filter kev (known exploited vulnerabilities) only (true/false)")
+	searchCmd.Flags().StringVar(&filterKevOnly, "kev", "", "filter CISA KEV (known exploited vulnerabilities) only (true/false); VulnCheck KEV: is_vkev:true")
 	searchCmd.Flags().Lookup("kev").NoOptDefVal = "true"
 
 	searchCmd.Flags().StringVarP(&filterTemplate, "template", "t", "", "filter cves with nuclei templates (true/false)")

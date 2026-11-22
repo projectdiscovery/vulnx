@@ -28,22 +28,28 @@ vulnx search --help
 
 # 3. Start exploring vulnerabilities (no API key required)
 vulnx filters                          # See all available search fields
-vulnx search apache                    # Basic search (subject to rate limits)
-
-# 4. Set up your API key (recommended to avoid rate limits)
-vulnx auth                              # Get free API key at https://cloud.projectdiscovery.io
-
-# 5. Enhanced exploration with higher limits
-vulnx search apache                    # No rate limits
-vulnx id CVE-2021-44228               # Faster responses
+vulnx search apache                    # Keyword search
+vulnx id CVE-2021-44228                # One CVE in detail
 ```
+
+### Data source
+
+vulnx reads [SecurityContext](https://securitycontext.com) (`https://api.securitycontext.com/v1/cves`). It serves
+CVE records only: nuclei template records without a CVE (`vulnx id <template-id>`) are no longer available. Calls are
+anonymous and rate limited per address; vulnx waits out a short rate limit by itself. `VULNX_API_URL` points vulnx at
+another SecurityContext deployment.
+
+Queries are `field:value` terms joined with `&&`; `||` works between values of one field
+(`severity:critical || severity:high`), a keyword search takes up to 5 words, and a search filters on one vendor or
+product. Wildcards, `NOT` on groups, upper bounds on scores and sorting or faceting on fields SecurityContext does not
+index are rejected with a message saying so. `vulnx filters` lists every field.
 
 ## What vulnx Does
 
 **Search vulnerabilities with precision:**
 ```bash
 vulnx search "severity:critical && is_remote:true"
-vulnx search "apache || nginx" --limit 20
+vulnx search "apache" --limit 20
 vulnx search "cvss_score:>8.0 && cve_created_at:2024"
 ```
 
@@ -91,10 +97,8 @@ vulnx search "apache" --fields cve_id,severity  # Specific fields only
 
 **Advanced search:**
 ```bash
-vulnx search --term-facets severity=5,tags=10 "apache"
-vulnx search --range-facets numeric:cvss_score:high:8:10 "remote"
-vulnx search --highlight "apache"            # Enable search highlighting
-vulnx search --facet-size 20 "nginx"         # More facet buckets
+vulnx search --term-facets severity=5,vendor=10 "apache"
+vulnx search --kev --term-facets vendor "remote code"
 vulnx search --detailed "xss"                # Detailed output like 'id' command
 ```
 
@@ -143,7 +147,7 @@ vulnx search "is_kev:true && age_in_days:<90"            # Recent KEV exploits
 **Search by technology:**
 ```bash
 vulnx search "apache"                     # Apache vulnerabilities
-vulnx search "apache || nginx"          # Multiple technologies
+vulnx search --vendor apache           # One vendor (one per search)
 vulnx search "affected_products.vendor:microsoft"  # By vendor
 ```
 
@@ -175,20 +179,19 @@ vulnx search --detailed "log4j"          # Detailed analysis of specific vuln
 
 | Flag | Short | Description | Example |
 |------|-------|-------------|---------|
-| `--product` | `-p` | Filter by products | `--product apache,nginx` |
-| `--vendor` | | Filter by vendors | `--vendor microsoft,oracle` |
+| `--product` | `-p` | Filter by one product (vendor:product) or vendor | `--product apache:log4j` |
+| `--vendor` | | Filter by one vendor | `--vendor microsoft` |
 | `--severity` | `-s` | Filter by severity | `--severity critical,high` |
-| `--tags` | | Filter by tags | `--tags rce,injection` |
-| `--cvss-score` | | Filter by CVSS score | `--cvss-score ">8.0"` |
-| `--epss-score` | | Filter by EPSS score | `--epss-score ">0.8"` |
-| `--vuln-age` | `-a` | Filter by age | `--vuln-age "<30"` |
-| `--vuln-type` | | Filter by vulnerability type | `--vuln-type sql_injection` |
-| `--kev` | | KEV vulnerabilities only | `--kev` |
+| `--cvss-score` | | Minimum CVSS score | `--cvss-score ">=8"` |
+| `--epss-score` | | Minimum EPSS score | `--epss-score ">0.8"` |
+| `--vuln-age` | `-a` | Filter by age in days | `--vuln-age "<30"` |
+| `--kev` | | In CISA's KEV list (VulnCheck's: query `is_vkev:true`) | `--kev` |
 | `--template` | `-t` | Has Nuclei templates | `--template` |
 | `--poc` | | Has proof of concept | `--poc` |
-| `--hackerone` | | HackerOne reported | `--hackerone` |
 | `--remote-exploit` | | Remotely exploitable | `--remote-exploit` |
-| `--vuln-status` | | Filter by vuln status | `--vuln-status confirmed` |
+| `--vuln-status` | | Filter by NVD status | `--vuln-status analyzed` |
+
+Not available with SecurityContext: `--tags`, `--vuln-type`, `--hackerone`, `--highlight`, `--range-facets`.
 
 
 ### Search Control Flags
@@ -196,41 +199,83 @@ vulnx search --detailed "log4j"          # Detailed analysis of specific vuln
 | Flag | Short | Description | Example |
 |------|-------|-------------|---------|
 | `--detailed` | | Detailed output like 'id' | `--detailed` |
-| `--highlight` | | Enable search highlighting | `--highlight` |
 | `--limit` | `-n` | Number of results | `--limit 50` |
 | `--offset` | | Pagination offset | `--offset 100` |
-| `--sort-asc` | | Sort ascending | `--sort-asc cvss_score` |
+| `--sort-asc` | | Sort ascending (cve_created_at, cve_updated_at, cvss_score, epss_score, trending) | `--sort-asc cvss_score` |
 | `--sort-desc` | | Sort descending | `--sort-desc cve_created_at` |
 | `--fields` | | Select specific fields | `--fields cve_id,severity` |
-| `--term-facets` | | Calculate term facets | `--term-facets severity=5` |
-| `--range-facets` | | Calculate range facets | `--range-facets numeric:cvss_score:high:8:10` |
-| `--facet-size` | | Facet bucket count | `--facet-size 20` |
+| `--term-facets` | | Term facets, at most 3 (see `vulnx analyze help`) | `--term-facets severity=5` |
 
 **Product and vendor filtering:**
 ```bash
-vulnx search --product apache,nginx     # Filter by products (searches both vendor and product fields)
-vulnx search --vendor microsoft,oracle  # Filter by vendors only
-vulnx search "NOT apache"               # Exclude products using query syntax
-vulnx search "NOT affected_products.vendor:microsoft"  # Exclude vendors using query syntax
+vulnx search --product apache:log4j    # One product, as vendor:product
+vulnx search --vendor microsoft         # One vendor
 ```
 
 **Severity and scoring:**
 ```bash
 vulnx search --severity critical,high   # Filter by severity
-vulnx search "NOT severity:low"         # Exclude severities using query syntax
-vulnx search --cvss-score ">8.0"        # Filter by CVSS score
-vulnx search --epss-score ">0.8"        # Filter by EPSS score
-vulnx search --vuln-status confirmed     # Filter by status
+vulnx search --cvss-score ">=8"         # Minimum CVSS score
+vulnx search --epss-score ">0.8"        # Minimum EPSS score
+vulnx search --vuln-status analyzed     # NVD status
 vulnx search --vuln-age "<30"           # Recent vulnerabilities
 ```
 
 **Exploit characteristics:**
 ```bash
-vulnx search --kev                      # KEV vulnerabilities only
+vulnx search --kev                      # In CISA's KEV list
+vulnx search "is_vkev:true"             # In VulnCheck's KEV list (includes every CISA entry)
 vulnx search --template                 # Has Nuclei templates
 vulnx search --poc                      # Has proof of concept
-vulnx search --hackerone                # HackerOne reported
 vulnx search --remote-exploit           # Remotely exploitable
+vulnx search "is_ransomware:true"       # KEV entry records ransomware use
+vulnx search "is_initial_access:true"   # VulnCheck initial-access exploit
+```
+
+## Version Search, Scans and VEX
+
+**CVEs affecting one product version** (by CPE, as cvemap's `-cpe` did):
+```bash
+vulnx search --cpe 'cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*'
+vulnx search --product apache:tomcat --version 8.5.62          # the same, without writing the CPE
+vulnx search --cpe 'cpe:2.3:a:apache:http_server:1.3.13:*:*:*:*:*:*:*' --kev --sort-desc cvss_score
+```
+Results come most urgent first (severity, then CVSS). Severity, exploit, score, age, CWE and remote/auth filters
+and sorting work with `--cpe`; keywords, vendor and facets do not.
+
+**Scan a dependency file or a list of package versions:** lockfiles (package-lock.json, yarn.lock,
+pnpm-lock.yaml, poetry.lock, uv.lock, Cargo.lock, go.mod, Gemfile.lock, composer.lock, ...), CycloneDX / SPDX JSON
+SBOMs, compose.yaml or a Dockerfile; or versions given directly:
+```bash
+vulnx scan package-lock.json
+vulnx scan npm/lodash@4.17.20 pypi/django@3.2.0 apache:tomcat@8.5.62
+vulnx scan --list versions.txt --json
+vulnx scan sbom.cdx.json --vex openvex -o sbom.openvex.json     # OpenVEX
+vulnx scan sbom.cdx.json --vex cyclonedx -o sbom.vex.cdx.json   # CycloneDX VEX
+```
+**Scan an operating system:** a container image, or the machine vulnx runs on:
+```bash
+vulnx scan --image debian:12-slim                       # a public image: SecurityContext pulls and scans it
+vulnx scan --image ghcr.io/owner/name:tag --platform linux/arm64
+vulnx scan --host                                       # this machine
+vulnx scan --host --root /mnt/rootfs                    # a mounted Linux filesystem
+```
+`--host` reads Linux packages from dpkg, apk or rpm with the release from `/etc/os-release` (Debian, Ubuntu,
+Alpine, RHEL, Rocky Linux, AlmaLinux), judged by the distribution's own advisories, so backported fixes count;
+on macOS it checks the macOS and Safari versions against Apple's per-release fixes. Only package names and
+versions are sent. OS packages in SBOMs from syft or Trivy are judged the same way.
+
+A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
+investigation (with the reason). Clean packages get no statement.
+
+**Fetch everything a search matches** (page by page; anonymous callers get about 1,000 CVEs a minute):
+```bash
+vulnx search --kev --all -o kev.json
+```
+
+**What changed on a CVE** (recorded since 2026-10-02: KEV listings, NVD status, EPSS, patches, labels):
+```bash
+vulnx id CVE-2026-123218 --history
 ```
 
 ## Vulnerability ID Lookup
@@ -291,18 +336,18 @@ vulnx search "severity:critical"          # Field search
 **Boolean logic:**
 ```bash
 vulnx search "apache && nginx"           # Both terms
-vulnx search "apache || nginx"            # Either term
+vulnx search "severity:critical || severity:high"  # Either value of one field
 vulnx search "apache NOT tomcat"          # Exclude term
-vulnx search "(apache || nginx) && severity:high"  # Grouped
+vulnx search "apache && severity:high"     # Keyword and filter
 ```
 
 **Ranges and wildcards:**
 ```bash
 vulnx search "cvss_score:>8.0"            # Greater than
-vulnx search "cvss_score:<9.0"            # Less than
+vulnx search "cvss_score:>=9"             # At least (lower bounds only)
 vulnx search "cve_created_at:>=2024-01-01" # Date comparison
 vulnx search "age_in_days:<30"            # Recent vulnerabilities
-vulnx search "apache*"                    # Wildcard
+vulnx search "cve_created_at:2024"        # Published in 2024
 ```
 
 ## Date Queries
@@ -336,31 +381,11 @@ vulnx search "age_in_days:>365"           # Older than 1 year
 
 ## Configuration
 
-### Authentication (Optional)
+### Rate limits
 
-**vulnx works without an API key**, but authentication provides significant benefits:
-
-**⚠️ Without API key:**
-- Limited to 10 requests per minutes
-- Subject to strict rate limits
-- May encounter "429 Too Many Requests" errors
-
-**✅ With API key:**
-- Much higher rate limits
-- Access to all the filters
-
-**Set up authentication:**
-```bash
-vulnx auth                              # Interactive setup
-vulnx auth --api-key YOUR_API_KEY       # Non-interactive (automation)
-vulnx auth --test                       # Test current API key
-export PDCP_API_KEY="your-key-here"     # Environment variable
-```
-
-**Authentication modes:**
-- **Interactive**: `vulnx auth` - Guided setup with prompts
-- **Non-interactive**: `vulnx auth --api-key KEY` - Perfect for automation/CI/CD
-- **Test only**: `vulnx auth --test` - Validate current configuration
+vulnx calls SecurityContext anonymously, which allows a limited number of requests a minute per address. A short
+rate limit is waited out automatically; a longer one stops with a message. `vulnx auth` and PDCP keys are not used by
+the SecurityContext backend (a PDCP key is never sent to it).
 
 **Version management:**
 ```bash
@@ -380,34 +405,10 @@ vulnx --disable-update-check search "apache"  # Disable automatic update checks
 
 ## Troubleshooting
 
-**Rate limit issues:**
-```
-Rate limit exceeded! API key required for higher limits.
-→ Run: vulnx auth to configure API key and get higher limits
-```
+**Rate limit issues:** wait a minute and retry; scripts making many calls should pace them.
 
-**Automation/CI/CD setup:**
-```bash
-# Docker containers
-vulnx auth --api-key "$SECRET_API_KEY"
-
-# CI/CD pipelines
-vulnx auth --api-key "${PDCP_API_KEY}"
-
-# Kubernetes init containers
-vulnx auth --api-key "$(cat /secrets/api-key)"
-
-# Test authentication in scripts
-vulnx auth --test && echo "Auth OK" || echo "Auth failed"
-```
-
-**Rate limit suggestions:**
-```
-Configure API key with 'vulnx auth' to avoid rate limits
-→ This appears when no API key is configured. To remove:
-  1. Set up API key: vulnx auth
-  2. Or use --silent flag to suppress informational messages
-```
+**"unsupported query":** the query uses a field, operator or sort SecurityContext does not offer; the message says
+which. Run `vulnx filters` for the fields that work.
 
 **No results:**
 ```bash
@@ -418,7 +419,7 @@ vulnx healthcheck                       # Check connectivity
 **Large result sets:**
 ```bash
 vulnx search "apache" --limit 100         # Increase limit
-vulnx search "apache" --offset 100        # Pagination
+vulnx search "apache" --offset 100        # Pagination (offset + limit up to 1000)
 vulnx search --fields cve_id,severity "apache"  # Fewer fields
 ```
 
@@ -431,7 +432,7 @@ vulnx --debug search "apache"             # Debug mode
 
 ## Getting Help
 
-**Help commands (no API key required):**
+**Help commands:**
 ```bash
 vulnx --help                           # All commands overview
 vulnx search --help                    # Search command help
@@ -442,19 +443,17 @@ vulnx version                          # Version info with update check
 vulnx version --disable-update-check   # Version info without update check
 ```
 
-**Data exploration (subject to rate limits without API key):**
+**Data exploration:**
 ```bash
 vulnx filters                          # Show all searchable fields
 vulnx search help                      # Detailed search fields
 vulnx analyze help                     # Available analyze fields
 ```
 
-> ⚠️ **Note** All commands work without an API key, but are subject to rate limits. Configure an API key with `vulnx auth` for higher limits and better performance.
 
 ## Tips
 
 - **Start immediately**: vulnx works without an API key - just run `vulnx search apache`
-- **Avoid rate limits**: Configure API key with `vulnx auth` for heavy usage
 - **Stay updated**: vulnx automatically checks for updates; use `--disable-update-check` to disable
 - Use `vulnx filters` to discover all available search fields and their syntax
 - Start with broad searches, then narrow down with filters

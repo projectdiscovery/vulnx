@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +19,8 @@ import (
 
 var ( //nolint
 	// ID command flags
-	idFile string
+	idFile    string
+	idHistory bool
 
 	idCmd = &cobra.Command{
 		Use:   "id [vulnID...]",
@@ -129,6 +131,10 @@ vulnx id --no-color CVE-2024-1234
 					vuln, err := handler.Get(vulnID)
 					if err != nil {
 						if errors.Is(err, vulnx.ErrNotFound) {
+							if !vulnx.IsCVEID(vulnID) {
+								gologger.Error().Msgf("%s is not a CVE id: only CVE records are served (nuclei template ids without a CVE are not)", vulnID)
+								continue
+							}
 							gologger.Warning().Msgf("Vulnerability not found: %s", vulnID)
 							continue
 						}
@@ -138,11 +144,12 @@ vulnx id --no-color CVE-2024-1234
 						gologger.Error().Msgf("Failed to fetch vulnerability %s: %s", vulnID, err)
 						continue
 					}
+					attachHistory(vuln)
 					allVulns = append(allVulns, vuln)
 				}
 
 				if len(allVulns) == 0 {
-					gologger.Fatal().Msg("No vulnerabilities were successfully retrieved")
+					gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
 				}
 
 				writeVulnsOutput(allVulns, len(vulnIDs) == 1 && len(allVulns) == 1)
@@ -163,6 +170,10 @@ vulnx id --no-color CVE-2024-1234
 				vuln, err := handler.Get(vulnID)
 				if err != nil {
 					if errors.Is(err, vulnx.ErrNotFound) {
+						if !vulnx.IsCVEID(vulnID) {
+							gologger.Error().Msgf("%s is not a CVE id: only CVE records are served (nuclei template ids without a CVE are not)", vulnID)
+							continue
+						}
 						gologger.Warning().Msgf("Vulnerability not found: %s", vulnID)
 						continue
 					}
@@ -194,17 +205,77 @@ vulnx id --no-color CVE-2024-1234
 				// Render detailed output
 				result := renderer.RenderDetailed(entry, colors)
 				fmt.Println(result)
+				if idHistory {
+					attachHistory(vuln)
+					fmt.Println(renderHistory(vuln.History))
+				}
 				successCount++
 			}
 
 			if successCount == 0 {
-				gologger.Fatal().Msg("No vulnerabilities were successfully retrieved")
+				gologger.Fatal().Msg(noVulnsMessage(vulnIDs))
 			} else if successCount < len(vulnIDs) {
 				gologger.Info().Msgf("Successfully retrieved %d out of %d vulnerabilities", successCount, len(vulnIDs))
 			}
 		},
 	}
 )
+
+// attachHistory adds the CVE's recorded changes when --history is set.
+func attachHistory(v *vulnx.Vulnerability) {
+	if !idHistory || v == nil {
+		return
+	}
+	h, err := vulnxClient.GetCVEHistory(context.Background(), v.CVEID)
+	if err != nil {
+		gologger.Warning().Msgf("history for %s: %s", v.CVEID, err)
+		return
+	}
+	v.History = h
+}
+
+// renderHistory prints a CVE's recorded changes, newest first.
+func renderHistory(h []vulnx.ChangeEntry) string {
+	var b strings.Builder
+	b.WriteString("Changes 🕒\n")
+	if len(h) == 0 {
+		b.WriteString("  ↳ none recorded (SecurityContext records changes since 2026-10-02)\n")
+		return b.String()
+	}
+	val := func(v any) string {
+		if v == nil {
+			return "∅"
+		}
+		s := fmt.Sprint(v)
+		if len(s) > 60 {
+			s = s[:57] + "..."
+		}
+		return s
+	}
+	for i := len(h) - 1; i >= 0; i-- {
+		c := h[i]
+		src := ""
+		if c.Source != "" {
+			src = " (" + c.Source + ")"
+		}
+		fmt.Fprintf(&b, "  ↳ %s  %s: %s → %s%s\n", c.ChangedDate, c.Field, val(c.OldValue), val(c.NewValue), src)
+	}
+	return b.String()
+}
+
+// noVulnsMessage says why nothing came back, naming ids that are not CVE ids (only CVE records are served).
+func noVulnsMessage(ids []string) string {
+	var notCVE []string
+	for _, id := range ids {
+		if !vulnx.IsCVEID(id) {
+			notCVE = append(notCVE, id)
+		}
+	}
+	if len(notCVE) > 0 {
+		return fmt.Sprintf("No vulnerabilities were successfully retrieved: %s is not a CVE id (only CVE records are served; nuclei template ids without a CVE are not)", strings.Join(notCVE, ", "))
+	}
+	return "No vulnerabilities were successfully retrieved"
+}
 
 // readIDsFromFile reads vulnerability IDs from a file
 func readIDsFromFile(filename string) ([]string, error) {
@@ -316,5 +387,6 @@ func validateSingleID(vulnID string) error {
 
 func init() {
 	idCmd.Flags().StringVar(&idFile, "file", "", "read vulnerability ids from file (one per line or comma-separated)")
+	idCmd.Flags().BoolVar(&idHistory, "history", false, "show what changed on each CVE (SecurityContext records changes since 2026-10-02)")
 	rootCmd.AddCommand(idCmd)
 }

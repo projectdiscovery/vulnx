@@ -106,6 +106,9 @@ type Vulnerability struct {
 	H1               *H1Stats       `json:"h1,omitempty"`
 	NTPS             int            `json:"ntps,omitempty"`
 	UpdatedAt        *time.Time     `json:"updated_at,omitempty"`
+
+	// History is what SecurityContext recorded changing on the CVE (vulnx id --history).
+	History []ChangeEntry `json:"history,omitempty"`
 }
 
 // Citation represents a citation for a vulnerability/template.
@@ -219,6 +222,10 @@ type SearchParams struct {
 	Query       *string  `json:"q,omitempty"`
 	Highlight   *bool    `json:"highlight,omitempty"`
 	FacetSize   *int     `json:"facet_size,omitempty"`
+	// All fetches every matching result, page by page (vulnx search --all); Limit and the 1000-row window do not apply.
+	All bool `json:"-"`
+	// Progress, when set, is called after each page with the rows fetched so far and the total.
+	Progress func(fetched, total int) `json:"-"`
 }
 
 // SearchResponse represents the response from /v2/vulnerability/search.
@@ -227,6 +234,7 @@ type SearchResponse struct {
 	Facets  map[string]any  `json:"facets,omitempty"`
 	Results []Vulnerability `json:"results"`
 	Total   int             `json:"total"`
+	fields  []string        // SearchParams.Fields: MarshalJSON narrows each result to them
 }
 
 // GetByIDParams defines optional query parameters for GetVulnerabilityByID.
