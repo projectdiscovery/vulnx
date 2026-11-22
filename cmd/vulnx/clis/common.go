@@ -28,11 +28,9 @@ import (
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
 	"github.com/projectdiscovery/vulnx/v2"
 
-	"github.com/mark3labs/mcp-go/server"
 	fileutil "github.com/projectdiscovery/utils/file"
 	updateutils "github.com/projectdiscovery/utils/update"
 	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
-	"github.com/projectdiscovery/vulnx/v2/pkg/tools"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/analyze"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 )
@@ -88,9 +86,7 @@ var (
 				return nil
 			}
 
-			// Do not print the banner when running the "mcp" sub-command as it
-			// can interfere with clients expecting clean JSON output.
-			if cmd.Name() != "mcp" && !silent {
+			if !silent {
 				showBanner()
 				// Don't show version info for the version command itself
 				if cmd.Name() != "version" {
@@ -117,25 +113,6 @@ var (
 
 			// Otherwise, show help
 			return cmd.Help()
-		},
-	}
-
-	mcpCmd = &cobra.Command{
-		Use:   "mcp",
-		Short: "start an mcp server (stdio) with the vulnx tools",
-		// stdout carries the protocol
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s := server.NewMCPServer(
-				"ProjectDiscovery vulnerability.sh (vulnx)",
-				strings.TrimPrefix(Version, "v"),
-				server.WithToolCapabilities(false),
-				server.WithRecovery(),
-			)
-			for _, tool := range tools.AllMCPTools(vulnxClient) {
-				s.AddTool(tool.MCPToolSpec(), tool.MCPHandler(vulnxClient))
-			}
-			return server.ServeStdio(s)
 		},
 	}
 )
@@ -195,7 +172,6 @@ func init() {
 		return defaultUsageFunc(cmd)
 	})
 
-	rootCmd.AddCommand(mcpCmd)
 }
 
 // Execute executes the root command

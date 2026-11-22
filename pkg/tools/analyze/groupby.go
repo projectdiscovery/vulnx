@@ -2,11 +2,9 @@ package analyze
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
@@ -57,56 +55,4 @@ func (h *Handler) Analyze(params Params) (vulnx.SearchResponse, error) {
 		Fields:     []string{"cve_id"},
 		Limit:      vulnx.Ptr(1),
 	})
-}
-
-// MCPToolSpec returns the MCP tool specification for vulnerability analysis
-func (h *Handler) MCPToolSpec() mcp.Tool {
-	return mcp.NewTool("vulnx_analyze",
-		mcp.WithDescription("Aggregate vulnerabilities (ANALYZE/facets) over selected fields. NOTE: Use this tool ONLY when instructed by `agent_vulnx` or when the user explicitly asks for an analysis; do NOT call it otherwise."),
-		mcp.WithArray("fields",
-			mcp.Description("Up to 3 fields to count CVEs by, each a field name or 'field=size' (bucket count, max 50). Fields: "+strings.Join(vulnx.FacetFields(), ", ")+". Example: ['severity', 'vendor=10']."),
-			mcp.Items(map[string]any{"type": "string"}),
-			mcp.Required(),
-		),
-		mcp.WithString("query",
-			mcp.Description("Optional field:value query (terms joined by '&&'; '||' only between values of one field) that filters the CVEs counted. See 'vulnx_fields_list' for valid fields."),
-		),
-		mcp.WithNumber("facet_size",
-			mcp.Description("Bucket count for fields given without '=size' (default 10, max 50)."),
-		),
-	)
-}
-
-// MCPHandler returns the MCP handler for this tool.
-func (h *Handler) MCPHandler(client *vulnx.Client) func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		fields, err := request.RequireStringSlice("fields")
-		if err != nil || len(fields) == 0 {
-			return mcp.NewToolResultError("ProjectDiscovery vulnx: 'fields' is required and must be a string array."), nil
-		}
-		query := request.GetString("query", "")
-		var queryPtr *string
-		if query != "" {
-			queryPtr = &query
-		}
-		facetSize := request.GetInt("facet_size", 0)
-		var facetSizePtr *int
-		if facetSize > 0 {
-			facetSizePtr = &facetSize
-		}
-		params := Params{
-			Fields:    fields,
-			Query:     queryPtr,
-			FacetSize: facetSizePtr,
-		}
-		resp, err := h.Analyze(params)
-		if err != nil {
-			return mcp.NewToolResultError("ProjectDiscovery vulnx: " + err.Error()), nil
-		}
-		b, err := json.MarshalIndent(resp, "", "  ")
-		if err != nil {
-			return mcp.NewToolResultError("ProjectDiscovery vulnx: failed to marshal analysis result: " + err.Error()), nil
-		}
-		return mcp.NewToolResultText("ProjectDiscovery vulnerability.sh (vulnx) analysis result:\n" + string(b)), nil
-	}
 }

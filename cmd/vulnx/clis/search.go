@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
-	searchtool "github.com/projectdiscovery/vulnx/v2/pkg/tools/search"
 )
 
 var (
@@ -192,8 +192,7 @@ vulnx search --product apache:tomcat --version 8.5.62
 			}
 
 			// Use the global vulnxClient
-			handler := searchtool.NewHandler(vulnxClient)
-			resp, err := handler.Search(params)
+			resp, err := vulnxClient.SearchVulnerabilities(context.Background(), params)
 			if err != nil {
 				if errors.Is(err, vulnx.ErrNotFound) {
 					gologger.Fatal().Msgf("No results: %s", err)

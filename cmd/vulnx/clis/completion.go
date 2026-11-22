@@ -127,7 +127,7 @@ _vulnx_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Available commands
-    commands="analyze completion filters healthcheck id mcp scan search update version help"
+    commands="analyze completion filters healthcheck id scan search update version help"
 
     # Available shells for completion command
     shells="bash zsh fish powershell"
@@ -164,7 +164,7 @@ _vulnx_completion() {
             COMPREPLY=( $(compgen -W "${global_flags}" -- ${cur}) )
             return 0
             ;;
-        mcp|update)
+        update)
             COMPREPLY=( $(compgen -W "${global_flags}" -- ${cur}) )
             return 0
             ;;

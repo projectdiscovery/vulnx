@@ -140,12 +140,11 @@ vulnx/
 ├── cmd/
 │   ├── vulnx/          # Main CLI application
 │   └── integration-test/ # Integration tests
+├── internal/termtext/   # Terminal-safe text from the API
 ├── pkg/
-│   ├── runner/          # Core application logic
-│   ├── service/         # API service layer
-│   ├── types/           # Type definitions
-│   ├── tools/           # CLI tools and MCP handlers
-│   └── utils/           # Utility functions
+│   ├── testutils/       # Integration test helpers
+│   ├── tools/           # analyze (facets) and renderer (terminal and CSV output)
+│   └── types/           # Integration test data types
 ├── static/              # Static assets
 └── scripts/             # Build and development scripts
 ```

@@ -9,7 +9,7 @@ import (
 	"github.com/projectdiscovery/gologger"
 	"github.com/spf13/cobra"
 
-	"github.com/projectdiscovery/vulnx/v2/pkg/tools/filters"
+	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 )
 
@@ -35,20 +35,12 @@ vulnx filters --output filters.json
 vulnx filters --output filters.csv`,
 		Run: func(cmd *cobra.Command, args []string) {
 			// Use the filters handler to get available filters
-			handler := filters.NewHandler(vulnxClient)
-			filterList, err := handler.List()
-			if err != nil {
-				gologger.Fatal().Msgf("Failed to fetch vulnerability filters: %s", err)
-			}
-
-			if len(filterList) == 0 {
-				gologger.Info().Msg("No filters available")
-				return
-			}
+			filterList := vulnx.SupportedFilters()
 
 			// Handle JSON and output file flags
 			if jsonOutput || outputFile != "" {
 				var data []byte
+				var err error
 				if isCSVOutput() {
 					data, err = renderer.RenderFiltersCSV(filterList)
 				} else {

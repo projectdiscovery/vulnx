@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
-	"github.com/projectdiscovery/vulnx/v2/pkg/tools/id"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 )
 
@@ -138,11 +137,10 @@ func runIDs(vulnIDs []string) {
 		gologger.Info().Msgf("Processing %d IDs. Limiting to the first %d.", len(vulnIDs), maxIDs)
 		vulnIDs = vulnIDs[:maxIDs]
 	}
-	handler := id.NewHandler(vulnxClient)
 
 	var failures []idFailure
 	fetch := func(vulnID string) *vulnx.Vulnerability {
-		vuln, failure := fetchVuln(handler, vulnID)
+		vuln, failure := fetchVuln(vulnID)
 		if vuln == nil {
 			failures = append(failures, failure)
 		}
@@ -199,10 +197,10 @@ type idFailure struct {
 }
 
 // fetchVuln fetches one id, logging why it could not be; a rate limit ends the run.
-func fetchVuln(h *id.Handler, vulnID string) (*vulnx.Vulnerability, idFailure) {
-	vuln, err := h.Get(vulnID)
+func fetchVuln(vulnID string) (*vulnx.Vulnerability, idFailure) {
+	resp, err := vulnxClient.GetVulnerabilityByID(context.Background(), vulnID, nil)
 	if err == nil {
-		return vuln, idFailure{}
+		return resp.Data, idFailure{}
 	}
 	f := idFailure{id: vulnID}
 	switch {

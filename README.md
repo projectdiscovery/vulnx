@@ -74,7 +74,6 @@ vulnx analyze --fields vendor -q "is_kev:true"
 | `filters` | List all available search fields and filters | `vulnx filters` |
 | `analyze` | Aggregate data by fields | `vulnx analyze -f severity` |
 | `scan` | Check package versions, lockfiles, SBOMs or images | `vulnx scan npm/lodash@4.17.20` |
-| `mcp` | Serve the vulnx tools to an MCP client (stdio) | `vulnx mcp` |
 | `version` | Show version info and check for updates | `vulnx version` |
 | `update` | Update vulnx to latest version | `vulnx update` |
 | `healthcheck` | Check that the API answers | `vulnx healthcheck` |
@@ -494,6 +493,27 @@ vulnx analyze help                     # Available analyze fields
 
 For advanced usage patterns and examples, see [USAGE.md](USAGE.md).
 
+## AI Assistants (MCP)
+
+vulnx no longer ships an MCP server. Point an MCP client at the hosted SecurityContext server,
+`https://mcp.securitycontext.com` (Streamable HTTP, stateless). It offers three tools: `get_security_context` (one
+repository, package, product, CVE, ...), `search_security_context` (find and filter them) and
+`create_security_context` (scan a public repository it does not have yet). Anonymous use works with rate limits; send
+a SecurityContext API key in the `X-Api-Key` header for higher limits.
+
+```json
+{
+  "mcpServers": {
+    "securitycontext": {
+      "url": "https://mcp.securitycontext.com",
+      "headers": { "X-Api-Key": "<your key>" }
+    }
+  }
+}
+```
+
+Leave out `headers` to use it anonymously.
+
 ## Breaking Changes in v2 (SecurityContext backend)
 
 - The API is `https://api.securitycontext.com` (override with `VULNX_API_URL`); the `/v2/vulnerability` API is no
@@ -507,7 +527,8 @@ For advanced usage patterns and examples, see [USAGE.md](USAGE.md).
   score minimums only, and fields SecurityContext does not index are rejected with a message.
 - `vulnx analyze` counts by at most 3 of the fields `vulnx analyze help` lists, and rejects a positional query
   (it was ignored); filter with `--query`.
-- `vulnx mcp` serves stdio only (`--mode` and `--port` are removed); `vulnx update --disable-update-check` is removed.
+- `vulnx mcp` is removed: use the hosted SecurityContext MCP server (see [AI assistants (MCP)](#ai-assistants-mcp)).
+  `vulnx update --disable-update-check` is removed.
 
 ## Development
 
