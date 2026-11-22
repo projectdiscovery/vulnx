@@ -4,73 +4,50 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
+	"sort"
 
 	"github.com/logrusorgru/aurora"
-	"github.com/pkg/errors"
 	"github.com/projectdiscovery/gologger"
-	"github.com/projectdiscovery/vulnx/v2/pkg/testutils"
 )
 
 var (
-	xPDCPHeaderTestKey = "test-67291d9a-0aa6-49b1-b249-2b9d4b45bcea"
-	debug              = os.Getenv("DEBUG") == "true"
-	success            = aurora.Green("[✓]").String()
-	failed             = aurora.Red("[✘]").String()
-	vulnxBinary        = flag.String("vulnx", "", "Vulnx Binary")
+	testAPIKey  = "test-67291d9a-0aa6-49b1-b249-2b9d4b45bcea"
+	debug       = os.Getenv("DEBUG") == "true"
+	success     = aurora.Green("[✓]").String()
+	failed      = aurora.Red("[✘]").String()
+	vulnxBinary = flag.String("vulnx", "", "Vulnx Binary")
 )
 
 func main() {
 	flag.Parse()
 	SetupMockServer()
 	if err := os.Setenv("VULNX_API_URL", "http://localhost:"+testPort()); err != nil {
-		gologger.Error().Msgf("Failed to set VULNX_API_URL: %s", err)
+		gologger.Fatal().Msgf("Failed to set VULNX_API_URL: %s", err)
 	}
-	if err := os.Setenv("SECURITYCONTEXT_API_KEY", xPDCPHeaderTestKey); err != nil {
-		gologger.Error().Msgf("Failed to set SECURITYCONTEXT_API_KEY: %s", err)
+	if err := os.Setenv("SECURITYCONTEXT_API_KEY", testAPIKey); err != nil {
+		gologger.Fatal().Msgf("Failed to set SECURITYCONTEXT_API_KEY: %s", err)
 	}
-	if err := runIntegrationTests(); err != nil {
-		fmt.Println("Error running integration tests:", err)
+	if !runIntegrationTests() {
+		os.Exit(1)
 	}
 }
 
-var testCases = map[string]testutils.TestCase{
-	"Get By cve_id": &CveIDTestCase{},
-}
-
-type CveIDTestCase struct{}
-
-func (c *CveIDTestCase) Execute() error {
-	output, err := testutils.RunVulnxBinaryAndGetResults(*vulnxBinary, debug, []string{"id", "CVE-1999-0027", "--json", "--silent"})
-	if err != nil {
-		return errors.Wrap(err, "could not run vulnx test")
-	}
-	if len(output) == 0 {
-		return errors.New("no output from vulnx")
-	}
-	if strings.Contains(strings.Join(output, ""), `"cve_id": "CVE-1999-0027"`) {
-		return nil
-	}
-	return errors.New("cve_id not found in output")
-}
-
-func runIntegrationTests() error {
+// runIntegrationTests runs every case in name order and reports whether all passed.
+func runIntegrationTests() bool {
 	fmt.Println("Running Vulnx integration tests...")
-	for testName, testcase := range testCases {
-		if err := testcase.Execute(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s Vulnx Test \"%s\" failed: %s\n", failed, testName, err)
-		} else {
-			fmt.Printf("%s Vulnx Test \"%s\" passed!\n", success, testName)
-		}
+	names := make([]string, 0, len(vulnxTestCases))
+	for name := range vulnxTestCases {
+		names = append(names, name)
 	}
-
-	for testName, testcase := range vulnxTestCases {
-		if err := testcase.Execute(); err != nil {
-			fmt.Fprintf(os.Stderr, "%s Vulnx Test \"%s\" failed: %s\n", failed, testName, err)
-		} else {
-			fmt.Printf("%s Vulnx Test \"%s\" passed!\n", success, testName)
+	sort.Strings(names)
+	ok := true
+	for _, name := range names {
+		if err := vulnxTestCases[name].Execute(); err != nil {
+			fmt.Fprintf(os.Stderr, "%s Vulnx Test %q failed: %s\n", failed, name, err)
+			ok = false
+			continue
 		}
+		fmt.Printf("%s Vulnx Test %q passed!\n", success, name)
 	}
-
-	return nil
+	return ok
 }

@@ -49,7 +49,7 @@ func testPort() string {
 func RequireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		apiKey := r.Header.Get("X-Api-Key")
-		if apiKey != xPDCPHeaderTestKey {
+		if apiKey != testAPIKey {
 			http.Error(w, "Unauthorized: X-Api-Key header is required", http.StatusUnauthorized)
 			return
 		}
@@ -70,7 +70,9 @@ func handleGetByIDRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
-	_, _ = w.Write([]byte(`{"found":false,"error":"no such CVE"}`))
+	if _, err := w.Write([]byte(`{"found":false,"error":"no such CVE"}`)); err != nil {
+		gologger.Warning().Msgf("writing 404: %s", err)
+	}
 }
 
 // handleSearchRequest handles GET /v1/cves: every test record, one page, and the facets asked for

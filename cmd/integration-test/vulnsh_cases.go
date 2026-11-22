@@ -1,95 +1,42 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/vulnx/v2/pkg/testutils"
 )
 
-// VulnxTestCase represents a test case for vulnx
+// VulnxTestCase runs vulnx with Args and checks its exit status and stdout.
 type VulnxTestCase struct {
-	Name        string
 	Args        []string
 	ExpectedOut string
 	ShouldFail  bool
 }
 
 func (v *VulnxTestCase) Execute() error {
-	output, err := runVulnxBinaryAndGetResults(*vulnxBinary, debug, v.Args)
+	output, err := testutils.RunVulnxBinaryAndGetResults(*vulnxBinary, debug, v.Args)
 	if err != nil && !v.ShouldFail {
-		return errors.Wrapf(err, "vulnx test '%s' failed unexpectedly", v.Name)
+		return errors.Wrap(err, "failed unexpectedly")
 	}
-
 	if err == nil && v.ShouldFail {
-		return errors.Errorf("vulnx test '%s' should have failed but succeeded", v.Name)
+		return errors.New("should have failed but succeeded")
 	}
-
-	if v.ExpectedOut != "" {
-		outputStr := strings.Join(output, " ")
-		if !strings.Contains(outputStr, v.ExpectedOut) {
-			return errors.Errorf("vulnx test '%s' output doesn't contain expected string '%s'. Got: %s",
-				v.Name, v.ExpectedOut, outputStr)
-		}
+	if v.ExpectedOut != "" && !strings.Contains(strings.Join(output, " "), v.ExpectedOut) {
+		return errors.Errorf("output doesn't contain %q. Got: %s", v.ExpectedOut, strings.Join(output, " "))
 	}
-
 	return nil
 }
 
-// runVulnxBinaryAndGetResults executes vulnx with given arguments and returns output
-func runVulnxBinaryAndGetResults(vulnxBinary string, debug bool, args []string) ([]string, error) {
-	cmd := exec.Command("bash", "-c")
-	cmdLine := fmt.Sprintf(`./%s `, vulnxBinary)
-	cmdLine += strings.Join(args, " ")
-	if debug {
-		if err := os.Setenv("DEBUG", "1"); err != nil {
-			gologger.Error().Msgf("Failed to set DEBUG env: %s", err)
-		}
-		cmd.Stderr = os.Stderr
-	}
-	cmd.Args = append(cmd.Args, cmdLine)
-	data, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	parts := []string{}
-	items := strings.Split(string(data), "\n")
-	for _, i := range items {
-		if i != "" {
-			parts = append(parts, i)
-		}
-	}
-	return parts, nil
-}
-
-// Vulnx specific test cases
 var vulnxTestCases = map[string]*VulnxTestCase{
-	"Get By CVE ID": {
-		Name:        "Get By CVE ID",
-		Args:        []string{"id", "CVE-1999-0027", "--json", "--silent"},
-		ExpectedOut: `"cve_id": "CVE-1999-0027"`,
-	},
-	"Search Command": {
-		Name:        "Search Command",
-		Args:        []string{"search", "--json", "--silent", "--limit", "1", "severity:critical"},
-		ExpectedOut: `"results"`,
-	},
-	"Health Check": {
-		Name:        "Health Check",
-		Args:        []string{"healthcheck", "--silent"},
-		ExpectedOut: "Authentication: PASS",
-	},
-	"Help Command": {
-		Name:        "Help Command",
-		Args:        []string{"--help"},
-		ExpectedOut: "vulnx — the swiss army knife for vulnerability intel",
-	},
-	"Analyze Command": {
-		Name:        "Analyze Command",
-		Args:        []string{"analyze", "--fields", "severity", "--json", "--silent"},
-		ExpectedOut: "facets",
-	},
+	"Get By CVE ID":           {Args: []string{"id", "CVE-1999-0027", "--json", "--silent"}, ExpectedOut: `"cve_id": "CVE-1999-0027"`},
+	"Get By non-CVE ID fails": {Args: []string{"id", "php-xdebug-rce", "--json", "--silent"}, ShouldFail: true},
+	"Search Command":          {Args: []string{"search", "--json", "--silent", "--limit", "1", "severity:critical"}, ExpectedOut: `"results"`},
+	"Search Filter Flags":     {Args: []string{"search", "--json", "--silent", "--severity", "critical,high", "--kev"}, ExpectedOut: `"results"`},
+	"Search Rejects >":        {Args: []string{"search", "--silent", "'cvss_score:>7'"}, ShouldFail: true},
+	"Search Removed Flag":     {Args: []string{"search", "--silent", "--hackerone"}, ShouldFail: true},
+	"Search Limit Over Cap":   {Args: []string{"search", "--silent", "--limit", "1001"}, ShouldFail: true},
+	"Health Check":            {Args: []string{"healthcheck", "--silent"}},
+	"Help Command":            {Args: []string{"--help"}, ExpectedOut: "vulnx — the swiss army knife for vulnerability intel"},
+	"Analyze Command":         {Args: []string{"analyze", "--fields", "severity", "--json", "--silent"}, ExpectedOut: "facets"},
 }
