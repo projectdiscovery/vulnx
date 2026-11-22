@@ -1,6 +1,7 @@
 package vulnx
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -10,7 +11,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -294,11 +297,12 @@ func TestShareFile(t *testing.T) {
 		uploads, field := 0, ""
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/v1/openapi.json" {
+				// the JSON body takes expires_in (with save) in both: only the upload's form decides
+				json := `{"paths": {"/v1/stack": {"post": {"requestBody": {"content": {"application/json": {"schema": {"properties": {"expires_in": {}}}}`
 				if supported {
-					_, _ = w.Write([]byte(`{"paths": {"/v1/stack": {"post": {"properties": {"expires_in": {}}}}}}`))
-				} else {
-					_, _ = w.Write([]byte(`{"paths": {}}`))
+					json += `, "multipart/form-data": {"schema": {"properties": {"file": {}, "expires_in": {}}}}`
 				}
+				_, _ = w.Write([]byte(json + `}}}}}}`))
 				return
 			}
 			uploads++
@@ -354,12 +358,25 @@ func TestProductsByRepository(t *testing.T) {
 	}
 }
 
-// TestCheckFunctionsFallback asks for function lists, and on an API that rejects the field answers without them.
+// TestCheckFunctionsFallback asks for function lists, and on an API that rejects the field answers without them,
+// asking for them once: a compact request refused for the field is not taken as a refusal of compact answers.
 func TestCheckFunctionsFallback(t *testing.T) {
+	var mu sync.Mutex
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
+		raw, err := io.ReadAll(r.Body)
+		if err == nil && r.Header.Get("Content-Encoding") == "gzip" {
+			var zr *gzip.Reader
+			if zr, err = gzip.NewReader(bytes.NewReader(raw)); err == nil {
+				raw, err = io.ReadAll(zr)
+			}
+		}
+		if err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
 		bodies = append(bodies, string(raw))
+		mu.Unlock()
 		if strings.Contains(string(raw), `"functions"`) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error": "unknown body field(s) ['functions']", "field": "body"}`))
@@ -372,8 +389,56 @@ func TestCheckFunctionsFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.CheckManyWith(context.Background(), []string{"pkg:npm/a@1"}, CheckOptions{Functions: true})
-	if err != nil || !res.FunctionsUnavailable || len(res.Items) != 1 || len(bodies) != 2 {
-		t.Fatalf("err %v, unavailable %v, items %d, requests %d", err, res.FunctionsUnavailable, len(res.Items), len(bodies))
+	for _, compact := range []bool{false, true} {
+		mu.Lock()
+		bodies = nil
+		mu.Unlock()
+		res, err := c.CheckManyWith(context.Background(), []string{"pkg:npm/a@1"}, CheckOptions{Functions: true, Compact: compact})
+		mu.Lock()
+		got := slices.Clone(bodies)
+		mu.Unlock()
+		if err != nil || !res.FunctionsUnavailable || len(res.Items) != 1 || len(got) != 2 || !strings.Contains(got[1], `"compact"`) == compact {
+			t.Fatalf("compact %v: err %v, unavailable %v, items %d, requests %q", compact, err, res.FunctionsUnavailable, len(res.Items), got)
+		}
+	}
+}
+
+// TestWaitStackTransient rides out a 502 and a dropped answer while a stack is read, and stops on a 400.
+func TestWaitStackTransient(t *testing.T) {
+	var mu sync.Mutex
+	calls, refuse := 0, false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n, no := calls, refuse
+		mu.Unlock()
+		switch {
+		case no:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error": "invalid id"}`))
+		case n == 1:
+			w.WriteHeader(http.StatusBadGateway)
+		case n == 2:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			_, _ = w.Write([]byte(`{"id": "abc", "status": "ready", "total": 1, "items": [{"input": "pkg:npm/a@1", "status": "clean"}]}`))
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := c.WaitStack(ctx, "abc", nil)
+	if err != nil || len(res.Items) != 1 {
+		t.Fatalf("err %v, items %d, calls %d", err, len(res.Items), calls)
+	}
+	mu.Lock()
+	refuse, calls = true, 0
+	mu.Unlock()
+	if _, err := c.WaitStack(ctx, "abc", nil); !errkit.Is(err, ErrBadRequest) || calls != 1 {
+		t.Fatalf("a refusal is not retried: err %v, calls %d", err, calls)
 	}
 }

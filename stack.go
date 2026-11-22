@@ -19,7 +19,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -208,11 +207,7 @@ func isEcosystem(s string) bool {
 	return false
 }
 
-// CheckPackages answers a list of entries at once (POST /v1/stack {"packages"}).
-func (c *Client) CheckPackages(ctx context.Context, entries []string) (StackResult, error) {
-	return c.checkPackages(ctx, entries, checkMode{})
-}
-
+// checkPackages answers a list of entries at once (POST /v1/stack {"packages"}).
 func (c *Client) checkPackages(ctx context.Context, entries []string, mode checkMode) (StackResult, error) {
 	var res StackResult
 	if len(entries) == 0 {
@@ -435,8 +430,8 @@ var ErrExpiryUnsupported = errkit.New("this SecurityContext API cannot expire a 
 
 // ShareFile uploads a file as a stored stack whose link expires: after expires it stops answering (SecurityContext
 // keeps the names and versions for analysis, no longer tied to who sent them). It returns the stack's id and when
-// the link expires. An API that cannot expire a link is not sent the file at all (ErrExpiryUnsupported): the link
-// would work forever.
+// the link expires, as the API answered it (empty: the API did not say). An API that cannot expire a link is not
+// sent the file at all (ErrExpiryUnsupported): the link would work forever.
 func (c *Client) ShareFile(ctx context.Context, path string, expires time.Duration) (id, expiresAt string, err error) {
 	if err := c.StackExpirySupported(ctx); err != nil {
 		return "", "", err
@@ -445,24 +440,31 @@ func (c *Client) ShareFile(ctx context.Context, path string, expires time.Durati
 	if err != nil {
 		return "", "", err
 	}
-	if page.ExpiresAt == "" {
-		return page.ID, "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("stack %s was stored without an expiry", page.ID))
-	}
 	return page.ID, page.ExpiresAt, nil
 }
 
-// StackExpirySupported is nil when the API can expire a stored stack (its description names expires_in), and
-// ErrExpiryUnsupported when it cannot.
+// StackExpirySupported is nil when the API can expire a stored stack: its description of an upload
+// (POST /v1/stack as multipart/form-data) has an expires_in field. ErrExpiryUnsupported when it does not.
 func (c *Client) StackExpirySupported(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/openapi.json", nil, nil)
 	if err != nil {
 		return errkit.Append(ErrRequestBuildFailure, err)
 	}
-	var spec json.RawMessage
+	var spec struct {
+		Paths map[string]map[string]struct {
+			RequestBody struct {
+				Content map[string]struct {
+					Schema struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					} `json:"schema"`
+				} `json:"content"`
+			} `json:"requestBody"`
+		} `json:"paths"`
+	}
 	if err := c.do(req, &spec); err != nil {
 		return errkit.Append(ErrRequestFailed, err)
 	}
-	if !bytes.Contains(spec, []byte(`"expires_in"`)) {
+	if _, ok := spec.Paths["/v1/stack"]["post"].RequestBody.Content["multipart/form-data"].Schema.Properties["expires_in"]; !ok {
 		return ErrExpiryUnsupported
 	}
 	return nil
@@ -477,18 +479,17 @@ func (c *Client) uploadFile(ctx context.Context, path string, fields map[string]
 }
 
 func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]string, page *stackPage) (string, error) {
-	f, err := os.Open(path)
+	raw, err := ReadUpload(path)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = f.Close() }()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	part, err := mw.CreateFormFile("file", filepath.Base(path))
 	if err != nil {
 		return "", err
 	}
-	if _, err := io.Copy(part, f); err != nil {
+	if _, err := part.Write(raw); err != nil {
 		return "", err
 	}
 	for k, v := range fields {
@@ -589,15 +590,25 @@ func (c *Client) StackPage(id string) string {
 // small request a poll, where WaitStack reads every page).
 func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, error) {
 	var res StackResult
+	failures := 0
 	for {
 		req, err := c.newRequest(ctx, http.MethodGet, "/v1/stack/"+url.PathEscape(id), url.Values{"limit": {"1"}}, nil)
 		if err != nil {
 			return res, errkit.Append(ErrRequestBuildFailure, err)
 		}
 		var p stackPage
-		if err := c.do(req, &p); err != nil {
+		err = c.do(req, &p)
+		if transientPollError(ctx, err) && failures < maxPollFailures {
+			failures++
+			if err := sleepCtx(ctx, stackReadyPoll); err != nil {
+				return res, err
+			}
+			continue
+		}
+		if err != nil {
 			return res, errkit.Append(ErrRequestFailed, err)
 		}
+		failures = 0
 		res.Stack, res.Summary, res.Total = p.Stack, p.Summary, p.Total
 		if res.Stack == nil {
 			res.Stack = &StackInfo{ID: p.ID, Status: p.Status}
@@ -608,20 +619,45 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 		case "failed":
 			return res, errkit.Append(ErrRequestFailed, fmt.Errorf("the stack could not be read: %s", res.Stack.Error))
 		}
-		select {
-		case <-ctx.Done():
-			return res, ctx.Err()
-		case <-time.After(7 * time.Second): // under an anonymous caller's ten requests a minute
+		if err := sleepCtx(ctx, stackReadyPoll); err != nil {
+			return res, err
 		}
 	}
 }
 
-// GetStack reads a stack: while it is queued or being scanned, its status; when ready, the summary and every item
+// stackReadyPoll is WaitStackReady's interval: under an anonymous caller's ten requests a minute.
+const stackReadyPoll = 7 * time.Second
+
+// maxPollFailures is how many failed polls in a row a wait rides out: a scan takes minutes, and one 502 or dropped
+// connection in them is not its result.
+const maxPollFailures = 3
+
+// transientPollError is an error a poll may meet once and not again: a network error or a 5xx. An answer that
+// refuses the request (400, 401, 404, a rate limit do() could not wait out) is the same on every poll.
+func transientPollError(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil &&
+		!errkit.Is(err, ErrBadRequest, ErrUnauthorized, ErrNotFound, ErrTooManyRequests, ErrRequestBuildFailure, ErrDecodeResponse)
+}
+
+// sleepCtx waits d, or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// maxStackPages bounds the pages a stored stack is read in.
+const maxStackPages = 500
+
+// getStack reads a stack: while it is queued or being scanned, its status; when ready, the summary and every item
 // (all cursor pages).
-func (c *Client) GetStack(ctx context.Context, id string) (StackResult, error) {
+func (c *Client) getStack(ctx context.Context, id string) (StackResult, error) {
 	var res StackResult
 	cursor := ""
-	for page := 0; page < 500; page++ {
+	for page := 0; page < maxStackPages; page++ {
 		q := url.Values{"limit": {"100"}}
 		if cursor != "" {
 			q.Set("cursor", cursor)
@@ -655,12 +691,20 @@ func (c *Client) GetStack(ctx context.Context, id string) (StackResult, error) {
 
 // WaitStack polls a stack until it is ready or failed (or ctx ends), calling progress with each status seen.
 func (c *Client) WaitStack(ctx context.Context, id string, progress func(status string)) (StackResult, error) {
-	delay := 2 * time.Second
+	delay, failures := 2*time.Second, 0
 	for {
-		res, err := c.GetStack(ctx, id)
+		res, err := c.getStack(ctx, id)
+		if transientPollError(ctx, err) && failures < maxPollFailures {
+			failures++
+			if err := sleepCtx(ctx, delay); err != nil {
+				return res, err
+			}
+			continue
+		}
 		if err != nil {
 			return res, err
 		}
+		failures = 0
 		status := ""
 		if res.Stack != nil {
 			status = res.Stack.Status
@@ -678,10 +722,8 @@ func (c *Client) WaitStack(ctx context.Context, id string, progress func(status 
 			}
 			return res, errkit.Append(ErrUnknownAPIError, fmt.Errorf("%s", msg))
 		}
-		select {
-		case <-ctx.Done():
-			return res, ctx.Err()
-		case <-time.After(delay):
+		if err := sleepCtx(ctx, delay); err != nil {
+			return res, err
 		}
 		if delay < 10*time.Second { // anonymous callers share 10 requests a minute
 			delay += 2 * time.Second
@@ -717,14 +759,29 @@ func (c *Client) GetCVEHistory(ctx context.Context, id string) ([]ChangeEntry, e
 	return resp.History, nil
 }
 
+// cdxComponent is what SBOMEntries reads of a CycloneDX component; the document is decoded once, nested
+// components with it.
+type cdxComponent struct {
+	Purl       string `json:"purl"`
+	CPE        string `json:"cpe"`
+	Properties []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"properties"`
+	Components []cdxComponent `json:"components"`
+}
+
+// maxComponentDepth bounds how deep SBOMEntries follows nested components: a real SBOM nests a few levels.
+const maxComponentDepth = 32
+
 // SBOMEntries reads a CycloneDX or SPDX JSON SBOM and returns its components as check entries: each component's
 // purl, or its CPE when it has none. ok is false when the file is not a JSON SBOM (a lockfile, Compose file ...).
 // vulnx checks an SBOM's entries as a list (one request, answered at once) rather than uploading the file.
 func SBOMEntries(raw []byte) (entries []string, format string, ok bool) {
 	var doc struct {
-		BOMFormat   string            `json:"bomFormat"`
-		SPDXVersion string            `json:"spdxVersion"`
-		Components  []json.RawMessage `json:"components"`
+		BOMFormat   string         `json:"bomFormat"`
+		SPDXVersion string         `json:"spdxVersion"`
+		Components  []cdxComponent `json:"components"`
 		Packages    []struct {
 			ExternalRefs []struct {
 				ReferenceType    string `json:"referenceType"`
@@ -745,21 +802,12 @@ func SBOMEntries(raw []byte) (entries []string, format string, ok bool) {
 	}
 	switch {
 	case strings.EqualFold(doc.BOMFormat, "CycloneDX"):
-		var walk func(list []json.RawMessage)
-		walk = func(list []json.RawMessage) {
-			for _, rawC := range list {
-				var c struct {
-					Purl       string `json:"purl"`
-					CPE        string `json:"cpe"`
-					Properties []struct {
-						Name  string `json:"name"`
-						Value string `json:"value"`
-					} `json:"properties"`
-					Components []json.RawMessage `json:"components"`
-				}
-				if json.Unmarshal(rawC, &c) != nil {
-					continue
-				}
+		var walk func(list []cdxComponent, depth int)
+		walk = func(list []cdxComponent, depth int) {
+			if depth > maxComponentDepth {
+				return
+			}
+			for _, c := range list {
 				if c.Purl != "" {
 					props := map[string]string{}
 					for _, p := range c.Properties {
@@ -769,10 +817,10 @@ func SBOMEntries(raw []byte) (entries []string, format string, ok bool) {
 				} else if c.CPE != "" {
 					add(c.CPE)
 				}
-				walk(c.Components)
+				walk(c.Components, depth+1)
 			}
 		}
-		walk(doc.Components)
+		walk(doc.Components, 0)
 		return entries, "cyclonedx", true
 	case doc.SPDXVersion != "":
 		for _, p := range doc.Packages {
@@ -854,14 +902,17 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 	for start := 0; start < len(entries); start += size {
 		end := min(start+size, len(entries))
 		res, err := c.checkPackages(ctx, entries[start:end], mode)
-		// an API without compact answers refuses the field, the gzip body or the batch size: the plain way instead
-		if err != nil && mode.compact && start == 0 && errkit.Is(err, ErrBadRequest) {
-			opts.Compact = false
-			return c.CheckManyWith(ctx, entries, opts)
-		}
+		// the function lists first: a refusal of that field would read as a refusal of compact answers too
 		if err != nil && mode.functions && functionsRejected(err) {
 			mode.functions, all.FunctionsUnavailable = false, true
 			res, err = c.checkPackages(ctx, entries[start:end], mode)
+		}
+		// an API without compact answers refuses the field, the gzip body or the batch size: the plain way instead
+		if err != nil && mode.compact && start == 0 && errkit.Is(err, ErrBadRequest) {
+			opts.Compact, opts.Functions = false, mode.functions
+			retry, err := c.CheckManyWith(ctx, entries, opts)
+			retry.FunctionsUnavailable = retry.FunctionsUnavailable || all.FunctionsUnavailable
+			return retry, err
 		}
 		if err != nil {
 			return all, err
@@ -874,7 +925,6 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 	return all, nil
 }
 
-// functionsRejected is an API's 400 for a body field it does not know: one deployed before function lists.
 // CheckExtensions checks editor extensions (pkg:vscode-extension/publisher/name@version) against the marketplaces'
 // removals. checked is false, with no error, when the API does not know the type (it refuses the list whole, which
 // is why extensions are never sent with the other entries) or holds no removal lists to check against.
@@ -897,6 +947,7 @@ func (c *Client) CheckExtensions(ctx context.Context, entries []string) (res Sta
 	return res, true, nil
 }
 
+// functionsRejected is an API's 400 for a body field it does not know: one deployed before function lists.
 func functionsRejected(err error) bool {
 	return errkit.Is(err, ErrBadRequest) && strings.Contains(err.Error(), "functions")
 }
