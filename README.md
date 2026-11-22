@@ -87,6 +87,15 @@ vulnx search "apache" --json              # Machine-readable JSON
 vulnx search "apache" --output results.json  # Save to file
 vulnx search "apache" --output results.csv   # Save as CSV (format picked by extension)
 vulnx search "apache" --silent            # Quiet output
+vulnx search "apache" --no-color          # No colors (also off when output is not a terminal)
+```
+
+**Logging and debugging** (all on stderr, so `--json` output stays clean):
+```bash
+vulnx --verbose search "apache"           # Verbose (-v): also show notices hidden by default
+vulnx --debug search "apache"             # Debug logs plus request and response dumps
+vulnx --debug-req search "apache"         # Dump requests only (API key redacted)
+vulnx --debug-resp search "apache"        # Dump responses only
 ```
 
 **Search control:**
@@ -264,6 +273,24 @@ versions are sent. OS packages in SBOMs from syft or Trivy are judged the same w
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.
+
+| Flag | Description |
+|------|-------------|
+| `--list <file>` | Read package versions from a file (one per line or comma-separated) |
+| `--show <n>` | CVEs listed per package in text output (default 10; `0` lists all) |
+| `--show-all` | List every CVE per package in text output (same as `--show 0`) |
+| `--full` | Fetch every CVE of a product version (`vendor:product@version`); without it a scan returns the 10 most urgent. `--vex` implies it; combine with `--show 0` to print them all |
+| `--vex openvex\|cyclonedx` | Write a VEX document instead of the report |
+| `--vex-author <name>` | Author of the OpenVEX document (default `vulnx`) |
+| `--wait <duration>` | How long to wait for the scan (default `20m`; image pulls can take minutes) |
+| `--image <ref>`, `--platform <os/arch>` | Scan a public container image (default platform `linux/amd64`) |
+| `--host`, `--root <dir>` | Scan this machine, or a mounted Linux root filesystem |
+
+```bash
+vulnx scan --full --show 0 apache:tomcat@8.5.62          # every CVE of that version
+vulnx scan --vex openvex --vex-author "Acme PSIRT" -o vex.json --list versions.txt
+vulnx scan --image debian:12-slim --wait 45m
+```
 
 **Fetch everything a search matches** (page by page, up to 10,000 CVEs):
 ```bash
