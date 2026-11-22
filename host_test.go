@@ -3,6 +3,7 @@ package vulnx
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"debug/elf"
 	"encoding/binary"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -51,7 +53,7 @@ Status: install ok installed
 Architecture: arm64
 Version: 5.2.15-2+b8
 `)
-	inv, err := HostEntries(root)
+	inv, err := HostEntries(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +67,78 @@ Version: 5.2.15-2+b8
 	}
 }
 
+// TestHostNoVersionID sends a release without VERSION_ID (a rolling or testing one) with no distro qualifier, and
+// says so, rather than as distro=debian-.
+func TestHostNoVersionID(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "etc/os-release", "ID=debian\nPRETTY_NAME=\"Debian GNU/Linux trixie/sid\"\n")
+	writeFile(t, root, "var/lib/dpkg/status", "Package: bash\nStatus: install ok installed\nVersion: 5.2.15-2\n\n")
+	inv, err := HostEntries(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(inv.Entries, ",") != "pkg:deb/debian/bash@5.2.15-2" || inv.OS != "debian" ||
+		!slices.ContainsFunc(inv.NotRead, func(s string) bool { return strings.Contains(s, "VERSION_ID") }) {
+		t.Errorf("%q %q %q", inv.OS, inv.Entries, inv.NotRead)
+	}
+}
+
+// TestHostUserHomes keeps two users' places apart: each home is named, and only an upload masks them to ~.
+func TestHostUserHomes(t *testing.T) {
+	root := t.TempDir()
+	for _, user := range []string{"alice", "bob"} {
+		writeFile(t, root, "home/"+user+"/.cursor/mcp.json", `{"mcpServers":{"fs":{"command":"npx","args":["-y","fs-server@1.0.0"]}}}`)
+	}
+	h := newHostReader(root, "linux")
+	servers := h.mcpServers()
+	if len(servers) != 2 || servers[0].config == servers[1].config {
+		t.Fatalf("%+v", servers)
+	}
+	if got := h.label(filepath.Join(root, "home/bob/.npm-global/lib/node_modules")); got != "~bob/.npm-global" {
+		t.Errorf("label %q", got)
+	}
+	h.home = "/home/alice" // as when scanning / as alice
+	if got := h.label(filepath.Join(root, "home/alice/.npm-global/lib/node_modules")); got != "~/.npm-global" {
+		t.Errorf("own label %q", got)
+	}
+	for in, want := range map[string]string{"~bob/.codex/config.toml": "~/.codex/config.toml", "~/.local (python3.10)": "~/.local (python3.10)",
+		"update act (/Users/sam/go/bin/act)": "update act (~/go/bin/act)", "caddy": "caddy", "update tool (~sam/bin/tool)": "update tool (~/bin/tool)"} {
+		if got := maskHomes(in); got != want {
+			t.Errorf("maskHomes(%q) = %q", in, got)
+		}
+	}
+}
+
+// TestHostCycloneDXPrivate keeps users and what only the runtime snapshot saw out of the SBOM, and names an OS
+// package by its own name with the distribution as its group.
+func TestHostCycloneDXPrivate(t *testing.T) {
+	deb := "pkg:deb/debian/libc6@2.36-9?arch=arm64&distro=debian-12"
+	inv := HostInventory{OS: "debian 12", Entries: []string{deb, "pkg:golang/example.com/tool@v1.0.0"},
+		FoundIn:       map[string][]string{deb: {"dpkg"}, "pkg:golang/example.com/tool@v1.0.0": {"~bob/go/bin", "/opt/srv/tool"}},
+		EntrySource:   map[string]string{deb: "dpkg", "pkg:golang/example.com/tool@v1.0.0": runtimeInventorySource},
+		Paths:         map[string]string{"~bob/go/bin": "/home/bob/go/bin", "/opt/srv/tool": "/opt/srv/tool"},
+		runtimePlaces: map[string]bool{"/opt/srv/tool": true}}
+	raw, err := inv.CycloneDX(time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"group": "debian"`, `"name": "libc6"`, `"value": "~/go/bin"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	for _, never := range []string{"bob", "/opt/srv", runtimeInventorySource, `"name": "debian/libc6"`} {
+		if strings.Contains(string(raw), never) {
+			t.Errorf("the SBOM holds %s", never)
+		}
+	}
+}
+
 func TestHostAlpine(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "etc/os-release", "ID=alpine\nVERSION_ID=3.19.4\n")
 	writeFile(t, root, "lib/apk/db/installed", "C:Q1abc\nP:libcrypto3\nV:3.1.8-r0\nA:aarch64\no:openssl\n\nP:musl\nV:1.2.4_git20230717-r5\no:musl\n")
-	inv, err := HostEntries(root)
+	inv, err := HostEntries(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +313,7 @@ func TestHostLinuxSources(t *testing.T) {
 		`{"name":"forked","version":"1.0.0","source":"git"}]}`)
 	writeFile(t, root, "usr/bin/script.sh", "#!/bin/sh\n")
 
-	inv, err := HostEntries(root)
+	inv, err := HostEntries(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,8 +326,8 @@ func TestHostLinuxSources(t *testing.T) {
 	hasNone(t, inv.Entries, "distro-owned", "not-a-header", "forked", "rusttool")
 	for entry, want := range map[string]string{
 		"pkg:pypi/requests@2.19.0": "/usr/local (python3.10)",
-		"pkg:pypi/legacy@0.3":      "~/.local (python3.10)",
-		"pkg:npm/corepack@0.18.0":  "~/.nvm/versions/node/v20.1.0",
+		"pkg:pypi/legacy@0.3":      "~alice/.local (python3.10)", // a mounted root has no scanning user: every home is named
+		"pkg:npm/corepack@0.18.0":  "~alice/.nvm/versions/node/v20.1.0",
 		"pkg:gem/json@2.6.1":       "/var/lib/gems/3.0.0",
 		"pkg:cargo/hyper@0.14.10":  "rusttool",
 		goStdlib():                 "gotool",
@@ -271,12 +340,12 @@ func TestHostLinuxSources(t *testing.T) {
 	// how each place is updated: the interpreter's pip (--user for a user site), npm, gem, the OS package manager,
 	// go install for a Go bin directory, cargo for Cargo's
 	for label, want := range map[string]HostFix{
-		"/usr/local (python3.10)": {Kind: "pip", Command: "/usr/local/bin/python3.10 -m pip install -U"},
-		"~/.local (python3.10)":   {Kind: "pip", Command: "python3.10 -m pip install --user -U"},
-		"/usr/local":              {Kind: "npm", Command: "npm update -g"},
-		"/var/lib/gems/3.0.0":     {Kind: "gem", Command: "gem update"},
-		"dpkg":                    {Kind: "apt", Command: "sudo apt-get install --only-upgrade"},
-		"rusttool":                {Kind: "cargo", Command: "cargo install", Target: "rusttool"},
+		"/usr/local (python3.10)":    {Kind: "pip", Command: "/usr/local/bin/python3.10 -m pip install -U"},
+		"~alice/.local (python3.10)": {Kind: "pip", Command: "python3.10 -m pip install --user -U"},
+		"/usr/local":                 {Kind: "npm", Command: "npm update -g"},
+		"/var/lib/gems/3.0.0":        {Kind: "gem", Command: "gem update"},
+		"dpkg":                       {Kind: "apt", Command: "sudo apt-get install --only-upgrade"},
+		"rusttool":                   {Kind: "cargo", Command: "cargo install", Target: "rusttool"},
 	} {
 		if got := inv.Fixes[label]; got != want {
 			t.Errorf("fix for %q: %+v, want %+v", label, got, want)
@@ -301,14 +370,14 @@ func TestHostNoPackageDatabase(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "etc/os-release", "ID=debian\nVERSION_ID=12\n")
 	writeFile(t, root, "usr/local/lib/python3.11/site-packages/flask-2.0.0.dist-info/METADATA", "Name: Flask\nVersion: 2.0.0\n")
-	inv, err := HostEntries(root)
+	inv, err := HostEntries(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Join(inv.Entries, ",") != "pkg:pypi/flask@2.0.0" || !strings.Contains(inv.Note, "no dpkg, apk or rpm package database") {
 		t.Errorf("%v\n%s", inv.Entries, inv.Note)
 	}
-	if _, err := HostEntries(t.TempDir()); err == nil {
+	if _, err := HostEntries(context.Background(), t.TempDir()); err == nil {
 		t.Error("a root without os-release should fail")
 	}
 }
@@ -549,8 +618,8 @@ func TestHostCycloneDX(t *testing.T) {
 	if !ok || format != "cyclonedx" || strings.Join(entries, "\n") != strings.Join(inv.Entries, "\n") {
 		t.Errorf("%s %v\n%s", format, ok, strings.Join(entries, "\n"))
 	}
-	for _, want := range []string{`"name": "@scope/tool"`, `"version": "1.2.3"`, `"type": "operating-system"`, `"name": "macos"`,
-		`"name": "golang.org/x/net"`, `"value": "go binaries"`, `"value": "caddy"`, `"name": "macOS 26.4"`,
+	for _, want := range []string{`"group": "@scope"`, `"name": "tool"`, `"version": "1.2.3"`, `"type": "operating-system"`, `"name": "macos"`,
+		`"group": "golang.org/x"`, `"name": "net"`, `"value": "go binaries"`, `"value": "caddy"`, `"name": "macOS 26.4"`,
 		// each place a component names: where it is and how it is updated, home directories as ~
 		`"value": "{\"name\":\"caddy\",\"path\":\"/opt/homebrew/bin/caddy\",\"kind\":\"brew\",\"fix\":\"brew upgrade caddy\"}"`,
 		`"value": "{\"name\":\"act\",\"path\":\"~/go/bin/act\",\"kind\":\"binary\",\"fix\":\"update act (~/go/bin/act)\"}"`} {
@@ -625,6 +694,9 @@ func TestHostElectronApp(t *testing.T) {
 		"node_modules/@scope/pkg/package.json":        `{"name":"@scope/pkg","version":"2.0.0"}`,
 		"node_modules/a/node_modules/ms/package.json": `{"name":"ms","version":"2.0.0"}`,
 		"node_modules/lodash/lodash.js":               "module.exports = {}",
+		// a package.json inside a package's own files names no installed package
+		"node_modules/lodash/test/fixture/package.json": `{"name":"fixture","version":"9.9.9"}`,
+		"node_modules/@scope/package.json":              `{"name":"not-a-package","version":"1.0.0"}`,
 	})
 	writeFile(t, root, app+"Resources/app.asar.unpacked/node_modules/sharp/package.json", `{"name":"sharp","version":"0.32.0"}`)
 	writeFile(t, root, "Applications/Plain.app/Contents/Info.plist", appPlist("com.example.plain", "3.0"))
@@ -710,5 +782,37 @@ end
 	}
 	if src := inv.Sources[0]; src.Sent != 2 || src.NotAssessed != 2 {
 		t.Errorf("source %+v", src)
+	}
+}
+
+func TestDropOtherSchemes(t *testing.T) {
+	res := StackResult{Summary: StackSummary{Affected: 3, Clean: 0}, Items: []StackItem{
+		{Input: "cpe:2.3:a:anysphere:cursor:3.29.9:*", Version: "3.29.9", Status: "affected", Advisories: 2, WorstSeverity: "high",
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-1", Severity: "high", Ranges: []string{"< 2025.09.17-25b418f"}},
+				{CVE: "CVE-2", Severity: "medium", Ranges: []string{">= 1.0, < 3.30.0"}}}},
+		{Input: "cpe:2.3:a:x:agent:3.1:*", Version: "3.1", Status: "affected", Advisories: 1, WorstSeverity: "critical",
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-3", Severity: "critical", Ranges: []string{"< 2025.9.1", "= 2025.10.2"}}}},
+		{Input: "cpe:2.3:a:x:cal:2024.1.2:*", Version: "2024.1.2", Status: "affected", Advisories: 1, WorstSeverity: "low",
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-4", Severity: "low", Ranges: []string{"< 2025.1"}}}},
+		{Input: "pkg:npm/a@3.0.0", Version: "3.0.0", Status: "affected", Advisories: 1,
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-5", Ranges: []string{"< 2025.1.1"}}}},
+		{Input: "cpe:2.3:a:x:all:1.0:*", Version: "1.0", Status: "affected", Advisories: 1,
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-6", Ranges: []string{"all versions"}}}},
+	}}
+	DropOtherSchemes(&res)
+	cursor, agent := res.Items[0], res.Items[1]
+	if len(cursor.AdvisoryRows) != 1 || cursor.AdvisoryRows[0].CVE != "CVE-2" || cursor.Advisories != 1 || cursor.WorstSeverity != "medium" || cursor.Status != "affected" {
+		t.Fatalf("cursor %+v", cursor)
+	}
+	if agent.Status != "clean" || len(agent.AdvisoryRows) != 0 || agent.WorstSeverity != "" {
+		t.Fatalf("agent %+v", agent)
+	}
+	for _, it := range res.Items[2:] {
+		if it.Status != "affected" || len(it.AdvisoryRows) != 1 {
+			t.Fatalf("kept as it was: %+v", it)
+		}
+	}
+	if res.Summary.Affected != 2 || res.Summary.Clean != 1 {
+		t.Fatalf("summary %+v", res.Summary)
 	}
 }

@@ -1,43 +1,17 @@
 package vulnx
 
 import (
-	"bytes"
 	"context"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
-type runtimeBuffer struct {
-	mu        sync.Mutex
-	buffer    bytes.Buffer
-	truncated bool
-}
-
-func (b *runtimeBuffer) Len() int { b.mu.Lock(); defer b.mu.Unlock(); return b.buffer.Len() }
-func (b *runtimeBuffer) Bytes() []byte {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return bytes.Clone(b.buffer.Bytes())
-}
-func (b *runtimeBuffer) Truncated() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.truncated }
-func (b *runtimeBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	n := len(p)
-	if room := (8 << 20) - b.buffer.Len(); len(p) > room {
-		p = p[:room]
-		b.truncated = true
-	}
-	if _, err := b.buffer.Write(p); err != nil {
-		return 0, err
-	}
-	return n, nil
-}
+// runtimeOutputLimit bounds what the runtime worker and lsof may print.
+const runtimeOutputLimit = 8 << 20
 
 // HostRuntime contains observations, not a verdict about external access or exploitability.
 type HostRuntime struct {

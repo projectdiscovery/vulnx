@@ -76,7 +76,7 @@ func TestHostAITools(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("entries:\n got %q\nwant %q", got, want)
 	}
-	if in := h.inv.FoundIn["pkg:npm/docs-server@0.2.0"]; !reflect.DeepEqual(in, []string{"~/.codex/config.toml"}) {
+	if in := h.inv.FoundIn["pkg:npm/docs-server@0.2.0"]; !reflect.DeepEqual(in, []string{"~a/.codex/config.toml"}) {
 		t.Fatalf("found in %q", in)
 	}
 	notChecked := map[string]string{}
@@ -141,39 +141,6 @@ func TestNewestVersion(t *testing.T) {
 	}
 	if got := newestVersion(root); got != "2.1.10" {
 		t.Fatalf("got %q", got)
-	}
-}
-
-func TestDropOtherSchemes(t *testing.T) {
-	inv := HostInventory{}
-	res := StackResult{Summary: StackSummary{Affected: 3, Clean: 0}, Items: []StackItem{
-		{Input: "cpe:2.3:a:anysphere:cursor:3.29.9:*", Version: "3.29.9", Status: "affected", Advisories: 2, WorstSeverity: "high",
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-1", Severity: "high", Ranges: []string{"< 2025.09.17-25b418f"}},
-				{CVE: "CVE-2", Severity: "medium", Ranges: []string{">= 1.0, < 3.30.0"}}}},
-		{Input: "cpe:2.3:a:x:agent:3.1:*", Version: "3.1", Status: "affected", Advisories: 1, WorstSeverity: "critical",
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-3", Severity: "critical", Ranges: []string{"< 2025.9.1", "= 2025.10.2"}}}},
-		{Input: "cpe:2.3:a:x:cal:2024.1.2:*", Version: "2024.1.2", Status: "affected", Advisories: 1, WorstSeverity: "low",
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-4", Severity: "low", Ranges: []string{"< 2025.1"}}}},
-		{Input: "pkg:npm/a@3.0.0", Version: "3.0.0", Status: "affected", Advisories: 1,
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-5", Ranges: []string{"< 2025.1.1"}}}},
-		{Input: "cpe:2.3:a:x:all:1.0:*", Version: "1.0", Status: "affected", Advisories: 1,
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-6", Ranges: []string{"all versions"}}}},
-	}}
-	inv.DropOtherSchemes(&res)
-	cursor, agent := res.Items[0], res.Items[1]
-	if len(cursor.AdvisoryRows) != 1 || cursor.AdvisoryRows[0].CVE != "CVE-2" || cursor.Advisories != 1 || cursor.WorstSeverity != "medium" || cursor.Status != "affected" {
-		t.Fatalf("cursor %+v", cursor)
-	}
-	if agent.Status != "clean" || len(agent.AdvisoryRows) != 0 || agent.WorstSeverity != "" {
-		t.Fatalf("agent %+v", agent)
-	}
-	for _, it := range res.Items[2:] {
-		if it.Status != "affected" || len(it.AdvisoryRows) != 1 {
-			t.Fatalf("kept as it was: %+v", it)
-		}
-	}
-	if res.Summary.Affected != 2 || res.Summary.Clean != 1 {
-		t.Fatalf("summary %+v", res.Summary)
 	}
 }
 

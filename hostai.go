@@ -71,7 +71,7 @@ func (h *hostReader) aiTools() {
 	apps := 0
 	if h.goos == "darwin" {
 		for _, b := range h.glob(append([]string{"Applications/*.app"}, h.inHomes("Applications/*.app")...)...) {
-			info := appInfo(filepath.Join(b, "Contents", "Info.plist"))
+			info := h.appInfo(filepath.Join(b, "Contents", "Info.plist"))
 			product, ok := aiApps[info["CFBundleIdentifier"]]
 			if !ok {
 				continue
@@ -181,7 +181,7 @@ func newestVersion(dir string) string {
 	}
 	best := ""
 	for _, e := range list {
-		if versionName.MatchString(e.Name()) && (best == "" || versionLess(best, e.Name())) {
+		if versionName.MatchString(e.Name()) && (best == "" || VersionLess(best, e.Name())) {
 			best = e.Name()
 		}
 	}
@@ -203,19 +203,6 @@ func newestEntry(dir string) string {
 	return best
 }
 
-func versionLess(a, b string) bool {
-	as, bs := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(as) && i < len(bs); i++ {
-		if as[i] != bs[i] {
-			if len(as[i]) != len(bs[i]) {
-				return len(as[i]) < len(bs[i])
-			}
-			return as[i] < bs[i]
-		}
-	}
-	return len(as) < len(bs)
-}
-
 type editorExtension struct{ id, version, display string }
 
 var aiExtensionName = regexp.MustCompile(`\b(AI|Copilot|ChatGPT|Claude|Codeium|Cody|Cline|Roo Code|Gemini|LLM)\b`)
@@ -224,7 +211,7 @@ var aiExtensionName = regexp.MustCompile(`\b(AI|Copilot|ChatGPT|Claude|Codeium|C
 // package.json; a directory the editor has marked removed (.obsolete) is not installed.
 func editorExtensions(dir string) []editorExtension {
 	obsolete := map[string]bool{}
-	if raw, err := os.ReadFile(filepath.Join(dir, ".obsolete")); err == nil {
+	if raw, err := readCapped(filepath.Join(dir, ".obsolete"), maxConfigFile); err == nil {
 		if err := json.Unmarshal(raw, &obsolete); err != nil {
 			obsolete = map[string]bool{}
 		}
@@ -239,7 +226,7 @@ func editorExtensions(dir string) []editorExtension {
 			continue
 		}
 		var pkg struct{ Publisher, Name, Version, DisplayName string }
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name(), "package.json"))
+		raw, err := readCapped(filepath.Join(dir, e.Name(), "package.json"), maxConfigFile)
 		if err != nil || json.Unmarshal(raw, &pkg) != nil || pkg.Publisher == "" || pkg.Name == "" || pkg.Version == "" {
 			continue
 		}
@@ -415,7 +402,7 @@ func (h *hostReader) npxCached(from, name string) string {
 	versions := map[string]bool{}
 	for _, p := range globAll(filepath.Join(home, ".npm", "_npx", "*", "node_modules", filepath.FromSlash(name), "package.json")) {
 		var pkg struct{ Version string }
-		if raw, err := os.ReadFile(p); err == nil && json.Unmarshal(raw, &pkg) == nil && pkg.Version != "" {
+		if raw, err := readCapped(p, maxConfigFile); err == nil && json.Unmarshal(raw, &pkg) == nil && pkg.Version != "" {
 			versions[pkg.Version] = true
 		}
 	}
@@ -489,53 +476,4 @@ func outsideStrings(raw []byte, cut func(raw []byte, i int) (skip int, put byte)
 		out = append(out, c)
 	}
 	return out
-}
-
-var (
-	rangeVersion    = regexp.MustCompile(`\d[0-9A-Za-z.+-]*`)
-	calendarVersion = regexp.MustCompile(`^(19|20)\d\d\.\d{1,2}(\.|-|$)`)
-)
-
-var severityOrder = map[string]int{"critical": 4, "high": 3, "medium": 2, "low": 1}
-
-// DropOtherSchemes removes, from a product's rows, the advisories whose every range bound is a date (2025.09.17)
-// where the installed version is not: one product can cover two programs numbered differently (an editor at 3.29
-// and its command-line agent at 2025.09.17), and a date bound compared with 3.29 reads affected whatever it says.
-// An item left with no row is clean.
-func (inv *HostInventory) DropOtherSchemes(res *StackResult) {
-	for i := range res.Items {
-		it := &res.Items[i]
-		if !strings.HasPrefix(it.Input, "cpe:") || it.Status != "affected" || calendarVersion.MatchString(it.Version) {
-			continue
-		}
-		kept := it.AdvisoryRows[:0]
-		for _, row := range it.AdvisoryRows {
-			bounds := rangeVersion.FindAllString(strings.Join(row.Ranges, " "), -1)
-			other := len(bounds) > 0
-			for _, b := range bounds {
-				other = other && calendarVersion.MatchString(b)
-			}
-			if !other {
-				kept = append(kept, row)
-			}
-		}
-		dropped := len(it.AdvisoryRows) - len(kept)
-		if dropped == 0 {
-			continue
-		}
-		it.AdvisoryRows = kept
-		it.Advisories -= dropped
-		it.AdvisoryRowsTotal = max(it.AdvisoryRowsTotal-dropped, 0)
-		it.WorstSeverity = ""
-		for _, row := range kept {
-			if severityOrder[row.Severity] > severityOrder[it.WorstSeverity] {
-				it.WorstSeverity = row.Severity
-			}
-		}
-		if len(kept) == 0 && it.Advisories <= 0 {
-			it.Status, it.Advisories, it.FixedVersion, it.KnownExploited = "clean", 0, "", nil
-			res.Summary.Affected--
-			res.Summary.Clean++
-		}
-	}
 }

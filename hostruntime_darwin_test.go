@@ -44,7 +44,7 @@ func TestRuntimeSocketCommand(t *testing.T) {
 	if _, _, err := runRuntimeSocketCommand(ctx, "/usr/sbin/lsof", nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("%v", err)
 	}
-	var buf runtimeBuffer
+	buf := cappedBuffer{limit: runtimeOutputLimit}
 	input := bytes.Repeat([]byte{'x'}, (8<<20)+1)
 	if n, err := buf.Write(input); err != nil || n != len(input) || !buf.truncated || buf.Len() != 8<<20 {
 		t.Fatalf("bounded output: %d %v", n, err)

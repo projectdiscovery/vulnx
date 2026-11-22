@@ -27,7 +27,7 @@ func (h *hostReader) localModels() {
 	engines := 0
 	for _, dir := range h.glob(h.inHomes(".lmstudio/extensions/backends/*")...) {
 		var manifest struct{ Version, Engine string }
-		raw, err := os.ReadFile(filepath.Join(dir, "backend-manifest.json"))
+		raw, err := readCapped(filepath.Join(dir, "backend-manifest.json"), maxConfigFile)
 		if err != nil || json.Unmarshal(raw, &manifest) != nil || manifest.Engine == "" || manifest.Version == "" {
 			continue
 		}
@@ -145,7 +145,7 @@ func modelFindings(root string) modelFinding {
 		case ext == ".py":
 			python = append(python, rel)
 		case d.Name() == "config.json":
-			if raw, err := os.ReadFile(p); err == nil && bytes.Contains(raw, []byte(`"auto_map"`)) {
+			if raw, err := readCapped(p, maxConfigFile); err == nil && bytes.Contains(raw, []byte(`"auto_map"`)) {
 				automap = true
 			}
 		}
@@ -275,7 +275,10 @@ func stackGlobal(data []byte) string {
 }
 
 var (
-	ollamaHost      = regexp.MustCompile(`OLLAMA_HOST["']?\s*(?:=|\s)\s*["']?([^\s"'<>]+)`)
+	// an assignment (export OLLAMA_HOST=..., Environment="OLLAMA_HOST=...") or fish's and launchctl's
+	// set/setenv OLLAMA_HOST ...; a test or a read of the variable ([ -z "$OLLAMA_HOST" ]) sets nothing
+	ollamaHost = regexp.MustCompile(`(?:^|[\s;"'])OLLAMA_HOST=["']?([^\s"'<>;$]+)` +
+		`|\b(?:set(?:\s+-[a-zA-Z]+)*|setenv)\s+OLLAMA_HOST\s+["']?([^\s"'<>;$]+)`)
 	ollamaHostPlist = regexp.MustCompile(`<key>OLLAMA_HOST</key>\s*<string>([^<]+)</string>`)
 )
 
@@ -287,7 +290,7 @@ func (h *hostReader) exposedRuntimes() {
 	files = append(files, "etc/systemd/system/ollama.service", "etc/systemd/system/ollama.service.d/*.conf", "etc/default/ollama",
 		"usr/lib/systemd/system/ollama.service", "Library/LaunchDaemons/*ollama*.plist")
 	for _, path := range h.glob(files...) {
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err != nil {
 			continue
 		}
@@ -315,7 +318,7 @@ func (h *hostReader) exposedRuntimes() {
 	}
 	for _, path := range h.glob(h.inHomes(".lmstudio/.internal/http-server.json")...) {
 		var server struct{ Host string }
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err == nil && json.Unmarshal(raw, &server) == nil && server.Host != "" && !loopback(server.Host) {
 			h.risk(HostRisk{"exposed", "runtime", "LM Studio", h.label(path),
 				"its server listens on " + server.Host + ": anyone on the network who reaches the port can use the loaded models"})

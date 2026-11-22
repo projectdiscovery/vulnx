@@ -3,7 +3,6 @@ package vulnx
 import (
 	"cmp"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -212,12 +211,12 @@ func (h *hostReader) mcpServers() (out []mcpServer) {
 	}
 	for _, hn := range harnesses(h.goos) {
 		for _, path := range h.glob(h.inHomes(hn.mcp...)...) {
-			if raw, err := os.ReadFile(path); err == nil {
+			if raw, err := readCapped(path, maxConfigFile); err == nil {
 				read(path, launches(path, raw))
 			}
 		}
 		for _, path := range h.glob(h.inHomes(hn.mcpTOML...)...) {
-			raw, err := os.ReadFile(path)
+			raw, err := readCapped(path, maxConfigFile)
 			if err != nil {
 				continue
 			}
@@ -261,7 +260,7 @@ type loadedPackage struct{ harness, config, spec, purl, reason string }
 func (h *hostReader) loadedPackages() (out []loadedPackage) {
 	for _, hn := range harnesses(h.goos) {
 		for _, path := range h.glob(h.inHomes(hn.plugins...)...) {
-			raw, err := os.ReadFile(path)
+			raw, err := readCapped(path, maxConfigFile)
 			if err != nil {
 				continue
 			}

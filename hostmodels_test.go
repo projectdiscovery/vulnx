@@ -78,7 +78,9 @@ func TestLocalModels(t *testing.T) {
 	writeFile(t, root, "home/dev/.ollama/models/manifests/registry.ollama.ai/someone/tuned/v2", "{}")
 	writeFile(t, root, "home/dev/.lmstudio/extensions/backends/llama.cpp-linux-2.71.0/backend-manifest.json", `{"version": "2.71.0", "engine": "llama.cpp"}`)
 	writeFile(t, root, "home/dev/.lmstudio/.internal/http-server.json", `{"host": "0.0.0.0", "port": 1234}`)
-	writeFile(t, root, "home/dev/.zshrc", "# export OLLAMA_HOST=0.0.0.0\nexport OLLAMA_HOST=127.0.0.1:11434\n")
+	writeFile(t, root, "home/dev/.zshrc", "# export OLLAMA_HOST=0.0.0.0\nexport OLLAMA_HOST=127.0.0.1:11434\n"+
+		"[ -z \"$OLLAMA_HOST\" ] && echo unset\nOLLAMA_HOST=$BIND ollama serve\n")
+	writeFile(t, root, "home/dev/.config/fish/config.fish", "set -gx OLLAMA_HOST 10.0.0.2\n")
 	writeFile(t, root, "etc/systemd/system/ollama.service.d/override.conf", "[Service]\nEnvironment=\"OLLAMA_HOST=0.0.0.0:11434\"\n")
 	writeFile(t, root, "home/dev/Library/LaunchAgents/homebrew.mxcl.ollama.plist",
 		"<dict>\n<key>EnvironmentVariables</key>\n<dict>\n<key>OLLAMA_HOST</key>\n<string>192.168.1.5</string>\n</dict></dict>")
@@ -103,7 +105,7 @@ func TestLocalModels(t *testing.T) {
 		details[r.Risk+" "+r.Name] = r.Detail
 	}
 	sort.Strings(risks)
-	want := []string{"custom_code model Own/Code", "exposed runtime LM Studio", "exposed runtime Ollama", "exposed runtime Ollama",
+	want := []string{"custom_code model Own/Code", "exposed runtime LM Studio", "exposed runtime Ollama", "exposed runtime Ollama", "exposed runtime Ollama",
 		"model_runs_commands model Evil/Model", "pickle_format model Old/Torch"}
 	if !reflect.DeepEqual(risks, want) {
 		t.Fatalf("risks:\n got %q\nwant %q", risks, want)

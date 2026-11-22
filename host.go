@@ -24,6 +24,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
+	"context"
 	"debug/buildinfo"
 	"debug/elf"
 	"debug/gosym"
@@ -35,7 +36,7 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -114,10 +115,11 @@ type HostSource struct {
 // HostEntries reads what is installed on the machine (or on a Linux filesystem mounted at root).
 // Components with a known source repository and no product yet are returned in Pending: call ResolvePending (with
 // Client.ProductsByRepository's answer, or nil) before checking, or they are in neither Entries nor NotAssessed.
-func HostEntries(root string) (HostInventory, error) {
+func HostEntries(ctx context.Context, root string) (HostInventory, error) {
 	if root == "" {
 		root = "/"
 	}
+	root = filepath.Clean(root)
 	goos := runtime.GOOS
 	if root != "/" {
 		goos = "linux"
@@ -126,6 +128,7 @@ func HostEntries(root string) (HostInventory, error) {
 		return HostInventory{}, fmt.Errorf("--host reads Linux and macOS machines (this is %s); scan an SBOM of it instead", goos)
 	}
 	h := newHostReader(root, goos)
+	h.ctx = ctx
 	var err error
 	if goos == "darwin" {
 		err = h.macOS()
@@ -150,13 +153,21 @@ func HostEntries(root string) (HostInventory, error) {
 }
 
 func newHostReader(root, goos string) *hostReader {
-	return &hostReader{root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
+	h := &hostReader{ctx: context.Background(), root: root, goos: goos, seen: map[string]bool{}, binSeen: map[string]bool{},
 		inv: HostInventory{FoundIn: map[string][]string{}, GoBinaries: map[string][]HostBinary{}, Fixes: map[string]HostFix{}, Paths: map[string]string{},
 			EntrySource: map[string]string{}}}
+	if root == "/" {
+		if home, err := os.UserHomeDir(); err == nil {
+			h.home = filepath.ToSlash(filepath.Clean(home))
+		}
+	}
+	return h
 }
 
 type hostReader struct {
+	ctx        context.Context // bounds the programs a reader runs (sw_vers, plutil, rpm)
 	root, goos string
+	home       string // the scanning user's home, labelled ~; another user's is ~name
 	inv        HostInventory
 	seen       map[string]bool // entries already sent
 	binSeen    map[string]bool // executables already read, by real path: true when Go or Rust
@@ -214,14 +225,22 @@ func (h *hostReader) inHomes(rel ...string) []string {
 
 var homePrefix = regexp.MustCompile(`^/(Users|home)/[^/]+|^/root|^/var/root`)
 
-// label names a package directory for display: under a home as ~, cut at the interpreter's lib directory
-// (~/.pyenv/versions/3.10.7, /opt/homebrew).
+// label names a package directory, cut at the interpreter's lib directory (~/.pyenv/versions/3.10.7,
+// /opt/homebrew). A label is a key as well as a name: the scanning user's home reads ~ and another user's ~name,
+// so two users' places stay apart. Anything uploaded masks every home to ~ (maskHomes).
 func (h *hostReader) label(dir string) string {
 	rel, err := filepath.Rel(h.root, dir)
 	if err != nil {
 		rel = dir
 	}
-	p := homePrefix.ReplaceAllString("/"+filepath.ToSlash(rel), "~")
+	p := "/" + filepath.ToSlash(rel)
+	if home := homePrefix.FindString(p); home != "" {
+		user := "~" + path.Base(home)
+		if home == h.home {
+			user = "~"
+		}
+		p = user + p[len(home):]
+	}
 	for _, cut := range []string{"/lib/python", "/lib/node_modules", "/lib/ruby", "/specifications", "/site-packages"} {
 		if i := strings.Index(p, cut); i > 0 {
 			p = p[:i]
@@ -339,9 +358,12 @@ func (h *hostReader) note() string {
 	return note
 }
 
+// commandOutputCap bounds what vulnx reads from a program it runs (rpm -qa lists every package: a few MiB).
+const commandOutputCap = 64 << 20
+
 func (h *hostReader) macOS() error {
 	h.inv.Source = "sw_vers"
-	out, err := exec.Command("sw_vers", "-productVersion").Output()
+	out, err := runCapped(h.ctx, commandOutputCap, "/usr/bin/sw_vers", "-productVersion")
 	if err != nil {
 		return fmt.Errorf("sw_vers: %w", err)
 	}
@@ -354,17 +376,16 @@ func (h *hostReader) macOS() error {
 
 // osRelease reads ID and VERSION_ID from os-release.
 func osRelease(root string) (id, version string, err error) {
-	var f *os.File
+	var raw []byte
 	for _, p := range []string{"etc/os-release", "usr/lib/os-release"} {
-		if f, err = os.Open(filepath.Join(root, p)); err == nil {
+		if raw, err = readCapped(filepath.Join(root, p), maxConfigFile); err == nil {
 			break
 		}
 	}
-	if f == nil {
-		return "", "", fmt.Errorf("no os-release under %s: not a Linux root filesystem", root)
+	if raw == nil {
+		return "", "", fmt.Errorf("no readable os-release under %s: not a Linux root filesystem (%w)", root, err)
 	}
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for sc.Scan() {
 		k, v, ok := strings.Cut(sc.Text(), "=")
 		if !ok {
@@ -381,8 +402,13 @@ func osRelease(root string) (id, version string, err error) {
 	return id, version, sc.Err()
 }
 
-// distroQualifier is SecurityContext's distro= value and the purl namespace for a distribution release.
+// distroQualifier is SecurityContext's distro= value and the purl namespace for a distribution release. With no
+// release (an os-release without VERSION_ID: a rolling or testing release) there is no qualifier.
 func distroQualifier(id, version string) (namespace, qualifier string) {
+	if version == "" {
+		ns, _ := distroQualifier(id, "0")
+		return ns, ""
+	}
 	major := strings.SplitN(version, ".", 2)[0]
 	switch id {
 	case "debian":
@@ -413,12 +439,15 @@ func (h *hostReader) linuxOS() error {
 		return err
 	}
 	h.inv.OS = strings.TrimSpace(id + " " + version)
+	if version == "" {
+		h.inv.NotRead = append(h.inv.NotRead, "os-release names no VERSION_ID: OS packages are sent without a release and may come back undetermined")
+	}
 	switch id {
 	case "debian", "ubuntu", "rhel", "rocky", "almalinux", "alpine":
 	default:
 		h.inv.NotRead = append(h.inv.NotRead, fmt.Sprintf("SecurityContext has advisories for Debian, Ubuntu, Alpine, RHEL, Rocky and AlmaLinux; %s packages will come back undetermined", id))
 	}
-	source, entries, err := linuxPackages(h.root, id, version)
+	source, entries, err := linuxPackages(h.ctx, h.root, id, version)
 	if err != nil {
 		h.inv.NotRead = append(h.inv.NotRead, err.Error())
 		return nil
@@ -433,19 +462,20 @@ func (h *hostReader) linuxOS() error {
 	return nil
 }
 
-func linuxPackages(root, id, version string) (string, []string, error) {
+func linuxPackages(ctx context.Context, root, id, version string) (string, []string, error) {
 	ns, distro := distroQualifier(id, version)
 	var entries []string
 	q := func(extra url.Values) string {
-		v := url.Values{"distro": {distro}}
-		for k, vs := range extra {
-			v[k] = vs
+		if distro != "" {
+			extra.Set("distro", distro)
 		}
-		return v.Encode()
+		if len(extra) == 0 {
+			return ""
+		}
+		return "?" + extra.Encode()
 	}
-	if f, err := os.Open(filepath.Join(root, "var/lib/dpkg/status")); err == nil {
-		defer func() { _ = f.Close() }()
-		for _, p := range dpkgInstalled(f) {
+	if raw, err := readCapped(filepath.Join(root, "var/lib/dpkg/status"), maxPackageDB); err == nil {
+		for _, p := range dpkgInstalled(bytes.NewReader(raw)) {
 			extra := url.Values{}
 			if p.arch != "" {
 				extra.Set("arch", p.arch)
@@ -457,23 +487,27 @@ func linuxPackages(root, id, version string) (string, []string, error) {
 				}
 				extra.Set("upstream", up)
 			}
-			entries = append(entries, fmt.Sprintf("pkg:deb/%s/%s@%s?%s", ns, p.name, url.PathEscape(p.version), q(extra)))
+			entries = append(entries, fmt.Sprintf("pkg:deb/%s/%s@%s%s", ns, p.name, url.PathEscape(p.version), q(extra)))
 		}
 		return "dpkg", entries, nil
 	}
-	if f, err := os.Open(filepath.Join(root, "lib/apk/db/installed")); err == nil {
-		defer func() { _ = f.Close() }()
-		for _, p := range apkInstalled(f) {
+	if raw, err := readCapped(filepath.Join(root, "lib/apk/db/installed"), maxPackageDB); err == nil {
+		for _, p := range apkInstalled(bytes.NewReader(raw)) {
 			extra := url.Values{}
 			if p.source != "" && p.source != p.name {
 				extra.Set("upstream", p.source)
 			}
-			entries = append(entries, fmt.Sprintf("pkg:apk/alpine/%s@%s?%s", p.name, url.PathEscape(p.version), q(extra)))
+			entries = append(entries, fmt.Sprintf("pkg:apk/alpine/%s@%s%s", p.name, url.PathEscape(p.version), q(extra)))
 		}
 		return "apk", entries, nil
 	}
-	if root == "/" {
-		if out, err := exec.Command("rpm", "-qa", "--qf", "%{NAME}|%{EPOCHNUM}|%{VERSION}-%{RELEASE}|%{ARCH}|%{SOURCERPM}\\n").Output(); err == nil {
+	// a mounted root is asked with the host's rpm: --root reads the database under it
+	if _, err := os.Stat(filepath.Join(root, "var/lib/rpm")); err == nil || root == "/" {
+		args := []string{"-qa", "--qf", "%{NAME}|%{EPOCHNUM}|%{VERSION}-%{RELEASE}|%{ARCH}|%{SOURCERPM}\\n"}
+		if root != "/" {
+			args = append([]string{"--root", root}, args...)
+		}
+		if out, err := runCapped(ctx, commandOutputCap, "/usr/bin/rpm", args...); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				f := strings.Split(strings.TrimSpace(line), "|")
 				if len(f) != 5 || f[0] == "" || f[0] == "gpg-pubkey" {
@@ -489,7 +523,7 @@ func linuxPackages(root, id, version string) (string, []string, error) {
 				if f[4] != "" && f[4] != "(none)" {
 					extra.Set("upstream", f[4])
 				}
-				entries = append(entries, fmt.Sprintf("pkg:rpm/%s/%s@%s?%s", ns, f[0], url.PathEscape(f[2]), q(extra)))
+				entries = append(entries, fmt.Sprintf("pkg:rpm/%s/%s@%s%s", ns, f[0], url.PathEscape(f[2]), q(extra)))
 			}
 			return "rpm", entries, nil
 		}
@@ -681,12 +715,11 @@ func pythonPackages(dir string) []string {
 
 // pythonMetadata reads Name and Version from the header block of a core metadata file.
 func pythonMetadata(path string) (name, version string) {
-	f, err := os.Open(path)
+	raw, err := readCapped(path, maxConfigFile)
 	if err != nil {
 		return "", ""
 	}
-	defer func() { _ = f.Close() }()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for sc.Scan() && (name == "" || version == "") {
 		line := sc.Text()
 		if line == "" {
@@ -727,7 +760,7 @@ func nodePackages(dir string, depth int) []string {
 			}
 		}
 		for _, p := range pkgDirs {
-			raw, err := os.ReadFile(filepath.Join(p, "package.json"))
+			raw, err := readCapped(filepath.Join(p, "package.json"), maxConfigFile)
 			if err != nil {
 				continue
 			}
@@ -757,7 +790,7 @@ func rubyGems(dir string) []string {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".gemspec") {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		raw, err := readCapped(filepath.Join(dir, e.Name()), maxConfigFile)
 		if err != nil {
 			continue
 		}
@@ -1159,7 +1192,7 @@ var formulaSource = regexp.MustCompile(`(?m)^  (?:url|homepage|head)\s+"https?:/
 // formulaRepository is the source repository a keg's own formula file names (owner/name, lower-cased), from its
 // top-level url, homepage or head line only: a resource or test block names other projects' files.
 func formulaRepository(keg, formula string) string {
-	raw, err := os.ReadFile(filepath.Join(keg, ".brew", formula+".rb"))
+	raw, err := readCapped(filepath.Join(keg, ".brew", formula+".rb"), maxConfigFile)
 	if err != nil {
 		return ""
 	}
@@ -1288,14 +1321,14 @@ func (h *hostReader) applications() {
 	var notAssessed []HostComponent
 	bundles := h.glob(append([]string{"Applications/*.app", "Applications/Utilities/*.app"}, h.inHomes("Applications/*.app")...)...)
 	for _, b := range bundles {
-		info := appInfo(filepath.Join(b, "Contents", "Info.plist"))
+		info := h.appInfo(filepath.Join(b, "Contents", "Info.plist"))
 		id, ver := info["CFBundleIdentifier"], info["CFBundleShortVersionString"]
 		if ver == "" {
 			ver = info["CFBundleVersion"]
 		}
 		name := strings.TrimSuffix(filepath.Base(b), ".app")
 		h.at(name+".app", b)
-		bundled := electronContents(b)
+		bundled := h.electronContents(b)
 		if len(bundled) > 0 {
 			h.fix(name+".app", HostFix{Kind: "app", Target: name, Note: "update " + name})
 			entries = append(entries, foundIn(name+".app", bundled)...)
@@ -1318,14 +1351,14 @@ func (h *hostReader) applications() {
 }
 
 // appInfo reads the string values of an Info.plist's top-level dictionary. Binary property lists are converted
-// with plutil, which every macOS has.
-func appInfo(path string) map[string]string {
-	raw, err := os.ReadFile(path)
+// with plutil, which every macOS has; it reads the property list from its standard input, the bytes already read.
+func (h *hostReader) appInfo(path string) map[string]string {
+	raw, err := readCapped(path, maxConfigFile)
 	if err != nil {
 		return nil
 	}
 	if bytes.HasPrefix(raw, []byte("bplist")) {
-		if raw, err = exec.Command("plutil", "-convert", "xml1", "-o", "-", path).Output(); err != nil {
+		if raw, err = runCappedInput(h.ctx, raw, maxConfigFile, "/usr/bin/plutil", "-convert", "xml1", "-o", "-", "-"); err != nil {
 			return nil
 		}
 	}
@@ -1561,7 +1594,16 @@ type sbomPlace struct {
 	Fix  string `json:"fix,omitempty"`  // the command to run, else what to do in words
 }
 
-var homeAnywhere = regexp.MustCompile(`/(Users|home)/[^/\s)]+|/var/root|/root\b`)
+var (
+	homeAnywhere = regexp.MustCompile(`/(Users|home)/[^/\s)]+|/var/root|/root\b`)
+	userLabel    = regexp.MustCompile(`(^|[\s(])~[^/\s)]+`)
+)
+
+// maskHomes reads every home directory in a path, label or command as ~ (/Users/sam/go/bin, ~sam/.npm-global):
+// what leaves the machine names no user.
+func maskHomes(s string) string {
+	return userLabel.ReplaceAllString(homeAnywhere.ReplaceAllString(s, "~"), "${1}~")
+}
 
 // fixLine is a place's update action as one line: its command with what the command names, else its note.
 func fixLine(f HostFix) string {
@@ -1569,12 +1611,13 @@ func fixLine(f HostFix) string {
 	if f.Command != "" {
 		line = strings.TrimSpace(f.Command + " " + f.Target)
 	}
-	return homeAnywhere.ReplaceAllString(line, "~")
+	return maskHomes(line)
 }
 
 // CycloneDX is the inventory as a CycloneDX 1.5 JSON SBOM: one component per entry, by its purl or CPE, with where
 // it was found as properties, and each such place's disk location and update action on the document's subject. It
-// is what --host checked, in a form other tools read and SecurityContext stores.
+// is what --host checked, in a form other tools read and SecurityContext stores: homes read ~, and nothing seen
+// only by the runtime snapshot (its places, its source) is in it.
 func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 	type property struct {
 		Name  string `json:"name"`
@@ -1583,6 +1626,7 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 	type component struct {
 		Type       string     `json:"type"`
 		BOMRef     string     `json:"bom-ref"`
+		Group      string     `json:"group,omitempty"`
 		Name       string     `json:"name"`
 		Version    string     `json:"version,omitempty"`
 		PURL       string     `json:"purl,omitempty"`
@@ -1590,7 +1634,13 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 		Properties []property `json:"properties,omitempty"`
 	}
 	components := make([]component, 0, len(inv.Entries))
-	named := map[string]bool{}
+	named := map[string]string{} // masked place name -> its label
+	unescape := func(s string) string {
+		if u, err := url.PathUnescape(s); err == nil {
+			return u
+		}
+		return s
+	}
 	for _, e := range inv.Entries {
 		c := component{Type: "library", BOMRef: e}
 		if strings.HasPrefix(e, "cpe:2.3:") {
@@ -1606,26 +1656,30 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 			c.PURL = e
 			body, _, _ := strings.Cut(strings.TrimPrefix(e, "pkg:"), "?")
 			_, rest, _ := strings.Cut(body, "/")
-			c.Name = rest
 			if at := strings.LastIndex(rest, "@"); at > 0 {
-				c.Name, c.Version = rest[:at], rest[at+1:]
+				rest, c.Version = rest[:at], unescape(rest[at+1:])
 			}
-			if u, err := url.PathUnescape(c.Name); err == nil {
-				c.Name = u
+			// the namespace (a distribution, an npm scope, a Go module's path) is the group: deb, rpm and apk
+			// names are the package's own
+			if slash := strings.LastIndex(rest, "/"); slash >= 0 {
+				c.Group, rest = unescape(rest[:slash]), rest[slash+1:]
 			}
-			if u, err := url.PathUnescape(c.Version); err == nil {
-				c.Version = u
-			}
+			c.Name = unescape(rest)
 		}
-		if src := inv.EntrySource[e]; src != "" {
+		if src := inv.EntrySource[e]; src != "" && src != runtimeInventorySource {
 			c.Properties = append(c.Properties, property{"vulnx:source", src})
 		}
 		for _, in := range inv.FoundIn[e] {
 			if inv.runtimePlaces[in] {
 				continue
 			}
-			c.Properties = append(c.Properties, property{"vulnx:found_in", in})
-			named[in] = true
+			masked := maskHomes(in)
+			if !slices.ContainsFunc(c.Properties, func(p property) bool { return p.Name == "vulnx:found_in" && p.Value == masked }) {
+				c.Properties = append(c.Properties, property{"vulnx:found_in", masked})
+			}
+			if _, ok := named[masked]; !ok {
+				named[masked] = in
+			}
 		}
 		components = append(components, c)
 	}
@@ -1636,8 +1690,9 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 	sort.Strings(labels)
 	subject := map[string]any{"type": "device", "bom-ref": "host", "name": inv.OS}
 	var places []property
-	for _, label := range labels {
-		place := sbomPlace{Name: label, Path: homePrefix.ReplaceAllString(inv.Paths[label], "~")}
+	for _, name := range labels {
+		label := named[name]
+		place := sbomPlace{Name: name, Path: maskHomes(inv.Paths[label])}
 		if fix, ok := inv.Fixes[label]; ok {
 			place.Kind, place.Fix = fix.Kind, fixLine(fix)
 		}
@@ -1671,8 +1726,8 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 // (the app.asar archive, its unpacked directory, or a plain app directory). nil for any other application. The
 // browser engine inside the framework is not sent: the framework backports fixes, so its engine version says
 // nothing exact.
-func electronContents(bundle string) []string {
-	info := appInfo(filepath.Join(bundle, "Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"))
+func (h *hostReader) electronContents(bundle string) []string {
+	info := h.appInfo(filepath.Join(bundle, "Contents/Frameworks/Electron Framework.framework/Resources/Info.plist"))
 	version := info["CFBundleVersion"]
 	if version == "" {
 		return nil
@@ -1685,13 +1740,22 @@ func electronContents(bundle string) []string {
 }
 
 // asarPackages reads the npm packages inside an asar archive without unpacking it: the archive starts with a JSON
-// index of its files (offset and size each), and every package.json under a node_modules directory names one.
+// index of its files (offset and size each), and the package.json of each package directory under node_modules
+// (node_modules/<name>/package.json or node_modules/@scope/<name>/package.json) names one.
 func asarPackages(path string) []string {
-	f, err := os.Open(path)
+	f, err := openRegular(path)
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = f.Close() }()
+	out := asarIndexPackages(f)
+	if f.Close() != nil {
+		return nil
+	}
+	return out
+}
+
+// asarIndexPackages reads an open asar archive's index and the package.json files it names.
+func asarIndexPackages(f *os.File) []string {
 	var head [16]byte
 	if _, err := io.ReadFull(f, head[:]); err != nil {
 		return nil
@@ -1715,9 +1779,11 @@ func asarPackages(path string) []string {
 	}
 	base := int64(8) + int64(headerSize)
 	var out []string
-	var walk func(n *node, inModules bool, depth int)
-	walk = func(n *node, inModules bool, depth int) {
-		if n == nil || depth > 64 {
+	// dirs is the directory path below the archive's root: a package's own directory ends in node_modules/<name>
+	// or node_modules/@scope/<name>; a package.json deeper in it (a fixture, a template) names no installed package
+	var walk func(n *node, dirs []string)
+	walk = func(n *node, dirs []string) {
+		if n == nil || len(dirs) > 64 {
 			return
 		}
 		for name, child := range n.Files {
@@ -1725,11 +1791,11 @@ func asarPackages(path string) []string {
 				continue
 			}
 			if child.Files != nil {
-				walk(child, inModules || name == "node_modules", depth+1)
+				walk(child, append(dirs[:len(dirs):len(dirs)], name))
 				continue
 			}
 			// a file packed in the archive (one kept beside it has no offset and is read from the unpacked directory)
-			if !inModules || name != "package.json" || child.Offset == "" || child.Size <= 0 || child.Size > 1<<20 {
+			if !packageDir(dirs) || name != "package.json" || child.Offset == "" || child.Size <= 0 || child.Size > 1<<20 {
 				continue
 			}
 			offset, err := strconv.ParseInt(child.Offset, 10, 64)
@@ -1746,9 +1812,22 @@ func asarPackages(path string) []string {
 			}
 		}
 	}
-	walk(&root, false, 0)
+	walk(&root, nil)
 	sort.Strings(out)
 	return out
+}
+
+// packageDir is whether a directory path ends in a package's own directory: node_modules/<name> or
+// node_modules/@scope/<name>.
+func packageDir(dirs []string) bool {
+	n := len(dirs)
+	switch {
+	case n >= 2 && dirs[n-2] == "node_modules" && !strings.HasPrefix(dirs[n-1], "@"):
+		return true
+	case n >= 3 && dirs[n-3] == "node_modules" && strings.HasPrefix(dirs[n-2], "@"):
+		return true
+	}
+	return false
 }
 
 func npmPurl(name, version string) string {
@@ -1797,4 +1876,51 @@ func (inv *HostInventory) DropUnknownProducts(res *StackResult) {
 		}
 	}
 	inv.Entries = entries
+}
+
+var (
+	rangeVersion    = regexp.MustCompile(`\d[0-9A-Za-z.+-]*`)
+	calendarVersion = regexp.MustCompile(`^(19|20)\d\d\.\d{1,2}(\.|-|$)`)
+)
+
+// DropOtherSchemes removes, from a product's rows, the advisories whose every range bound is a date (2025.09.17)
+// where the installed version is not: one product can cover two programs numbered differently (an editor at 3.29
+// and its command-line agent at 2025.09.17), and a date bound compared with 3.29 reads affected whatever it says.
+// An item left with no row is clean.
+func DropOtherSchemes(res *StackResult) {
+	for i := range res.Items {
+		it := &res.Items[i]
+		if !strings.HasPrefix(it.Input, "cpe:") || it.Status != "affected" || calendarVersion.MatchString(it.Version) {
+			continue
+		}
+		kept := it.AdvisoryRows[:0]
+		for _, row := range it.AdvisoryRows {
+			bounds := rangeVersion.FindAllString(strings.Join(row.Ranges, " "), -1)
+			other := len(bounds) > 0
+			for _, b := range bounds {
+				other = other && calendarVersion.MatchString(b)
+			}
+			if !other {
+				kept = append(kept, row)
+			}
+		}
+		dropped := len(it.AdvisoryRows) - len(kept)
+		if dropped == 0 {
+			continue
+		}
+		it.AdvisoryRows = kept
+		it.Advisories -= dropped
+		it.AdvisoryRowsTotal = max(it.AdvisoryRowsTotal-dropped, 0)
+		it.WorstSeverity = ""
+		for _, row := range kept {
+			if it.WorstSeverity == "" || WorseSeverity(row.Severity, it.WorstSeverity) {
+				it.WorstSeverity = row.Severity
+			}
+		}
+		if len(kept) == 0 && it.Advisories <= 0 {
+			it.Status, it.Advisories, it.FixedVersion, it.KnownExploited = "clean", 0, "", nil
+			res.Summary.Affected--
+			res.Summary.Clean++
+		}
+	}
 }

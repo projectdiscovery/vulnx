@@ -21,10 +21,9 @@ func runtimeSocketCommand(ctx context.Context, args []string) ([]byte, bool, err
 }
 
 func runRuntimeSocketCommand(ctx context.Context, executable string, args []string) ([]byte, bool, error) {
-	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.WaitDelay = time.Second
-	var stdout, stderr runtimeBuffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd := newCommand(ctx, executable, args...)
+	stdout, stderr := &cappedBuffer{limit: runtimeOutputLimit}, &cappedBuffer{limit: runtimeOutputLimit}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err := cmd.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 && stdout.Len() == 0 && stderr.Len() == 0 && ctx.Err() == nil {

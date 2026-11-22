@@ -4,13 +4,13 @@ package clis
 // VEX output), on SecurityContext's /v1/stack.
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -88,200 +88,126 @@ vulnx scan --list versions.txt --vex cyclonedx -o versions.vex.json
 cat versions.txt | vulnx scan`,
 		Args: cobra.ArbitraryArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			if err := checkHostFlags(cmd.Flags(), args); err != nil {
+				gologger.Fatal().Msgf("%s", err)
+			}
 			if scanVEX != "" && scanVEX != "openvex" && scanVEX != "cyclonedx" {
 				gologger.Fatal().Msgf("--vex takes openvex or cyclonedx (got %s)", scanVEX)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), scanWait)
-			defer cancel()
-			show := scanShow
-			if scanShowAll {
-				show = 0
-			}
-			// an image by registry reference: pulled and scanned by SecurityContext
-			if scanImage != "" {
-				id, err := vulnxClient.ScanImage(ctx, scanImage, scanPlat)
+			if scanHost {
+				failed, err := runHostScan(ctx)
+				cancel()
 				if err != nil {
-					fatalAPI("scan", err)
+					fatalScan(err)
 				}
-				gologger.Info().Msgf("Scanning image %s (stack %s); pulling can take minutes", scanImage, id)
-				last := ""
-				res, err := vulnxClient.WaitStack(ctx, id, func(status string) {
-					if status != last && status != "ready" {
-						gologger.Info().Msgf("scan %s", status)
-						last = status
-					}
-				})
-				if err != nil {
-					fatalAPI("scan", err)
-				}
-				writeStackOutput(res, scanVEX, show)
-				return
-			}
-			// this machine (or a mounted root filesystem): what is installed on it, checked as a list
-			if scanHost || scanRoot != "" {
-				if !slices.Contains(hostViews, scanView) {
-					gologger.Fatal().Msgf("--view takes %s (got %s)", strings.Join(hostViews, ", "), scanView)
-				}
-				if scanFailOn != "" && !slices.Contains(failOnLevels, scanFailOn) {
-					gologger.Fatal().Msgf("--fail-on takes %s (got %s)", strings.Join(failOnLevels, ", "), scanFailOn)
-				}
-				if scanReport { // before the scan: a report that could not expire is never uploaded
-					if err := vulnxClient.StackExpirySupported(ctx); errkit.Is(err, vulnx.ErrExpiryUnsupported) {
-						gologger.Fatal().Msg("--report: this SecurityContext API cannot expire a report's link yet, so nothing was scanned or uploaded")
-					} else if err != nil {
-						fatalAPI("report", err)
-					}
-				}
-				start := time.Now()
-				hostProgress("Reading what is installed ...")
-				inv, err := vulnx.HostEntries(scanRoot)
-				if err != nil {
-					hostProgress("")
-					gologger.Fatal().Msgf("Failed to read the host: %s", err)
-				}
-				inv.CollectRuntimeIsolated(ctx, scanRoot)
-				if repos := inv.PendingRepositories(); len(repos) > 0 {
-					hostProgress("Looking up products by source repository ...")
-					products, _, err := vulnxClient.ProductsByRepository(ctx, repos)
-					if err != nil {
-						hostProgress("")
-						fatalAPI("scan", err)
-					}
-					inv.ResolvePending(products) // an API without the lookup resolves none: they stay not checked
-				}
-				hostProgress(fmt.Sprintf("Checking %s components ...", thousands(len(inv.Entries))))
-				res, err := vulnxClient.CheckManyWith(ctx, inv.Entries, vulnx.CheckOptions{Functions: true, Compact: true, Progress: func(done, total int) {
-					if done < total {
-						hostProgress(fmt.Sprintf("Checking %s components: %s done ...", thousands(total), thousands(done)))
-					}
-				}})
-				if err != nil {
-					hostProgress("")
-					fatalAPI("scan", err)
-				}
-				inv.DropUnknownProducts(&res)
-				inv.DropOtherSchemes(&res)
-				if len(inv.Extensions) > 0 {
-					hostProgress("Checking editor extensions against marketplace removals ...")
-					ext, checked, err := vulnxClient.CheckExtensions(ctx, inv.Extensions)
-					if err != nil {
-						hostProgress("")
-						fatalAPI("scan", err)
-					}
-					inv.AddExtensions(&res, ext, checked)
-				}
-				hostProgress("Checking which Go programs reach affected code ...")
-				inv.MarkReachability(&res)
-				inv.RefreshRuntimeMatches(ctx)
-				hostProgress("")
-				elapsed := time.Since(start)
-				if scanFull || scanVEX != "" {
-					fillProductCVEs(&res)
-				}
-				if scanVEX != "" || jsonOutput || outputFile != "" {
-					writeHostJSON(inv, res, scanVEX)
-					return
-				}
-				fmt.Print(renderHost(scanView, inv, res, elapsed, scanShowAll, colorConfig()))
-				jsonPath, err := writeHostReportJSON(inv, res)
-				if err != nil {
-					gologger.Fatal().Msgf("Failed to write the report: %s", err)
-				}
-				fmt.Printf("  Full report: %s\n", jsonPath)
-				if scanView == "grid" && !scanReport {
-					fmt.Println("  Report URL: --report (expires in 24 hours)")
-				}
-				if scanGraph {
-					path, err := writeHostGraph(inv, res)
-					if err != nil {
-						gologger.Fatal().Msgf("Failed to write the graph: %s", err)
-					}
-					fmt.Printf("  Graph: %s\n", path)
-				}
-				if scanSBOM != "" || scanReport {
-					path, err := writeHostSBOM(scanSBOM, inv)
-					if err != nil {
-						gologger.Fatal().Msgf("Failed to write the SBOM: %s", err)
-					}
-					fmt.Printf("  SBOM: %s\n", path)
-					if scanReport {
-						hostProgress("Uploading the SBOM to SecurityContext ...")
-						id, _, err := vulnxClient.ShareFile(ctx, path, shareExpiry)
-						if err == nil {
-							hostProgress("Waiting for SecurityContext to read it ...")
-							_, err = vulnxClient.WaitStackReady(ctx, id)
-						}
-						hostProgress("")
-						if errkit.Is(err, vulnx.ErrExpiryUnsupported) {
-							gologger.Fatal().Msg("--report: this SecurityContext API cannot expire a report's link yet, so nothing was uploaded")
-						}
-						if err != nil {
-							fatalAPI("report", err)
-						}
-						fmt.Printf("  Report: %s (expires in 24 hours)\n", vulnxClient.StackPage(id))
-					}
-				}
-				if scanView == "grid" {
-					fmt.Print(hostFooter(inv, elapsed, colorConfig()))
-				}
-				if failsOn(scanFailOn, inv, res) {
+				if failed {
 					os.Exit(2)
 				}
 				return
 			}
-			// package versions rather than a file: arguments that are not a file, --list, or stdin
-			if len(args) != 1 || !fileutil.FileExists(args[0]) || scanList != "" {
-				entries := scanEntries(args)
-				res, err := vulnxClient.CheckMany(ctx, entries)
-				if err != nil {
-					fatalAPI("scan", err)
-				}
-				if scanFull || scanVEX != "" {
-					fillProductCVEs(&res)
-				}
-				writeStackOutput(res, scanVEX, show)
-				return
-			}
-			// a JSON SBOM is read here and checked as a list (one request, answered at once)
-			if raw, err := os.ReadFile(args[0]); err == nil {
-				if entries, format, ok := vulnx.SBOMEntries(raw); ok {
-					if len(entries) == 0 {
-						gologger.Fatal().Msgf("%s is a %s SBOM with no component that has a purl or CPE", args[0], format)
-					}
-					gologger.Info().Msgf("Checking %d components of %s (%s SBOM)", len(entries), args[0], format)
-					res, err := vulnxClient.CheckMany(ctx, entries)
-					if err != nil {
-						fatalAPI("scan", err)
-					}
-					if scanFull || scanVEX != "" {
-						fillProductCVEs(&res) // a VEX states every CVE, not a product's 10 most urgent
-					}
-					writeStackOutput(res, scanVEX, show)
-					return
-				}
-			}
-			id, err := vulnxClient.ScanFile(ctx, args[0])
+			err := runStackScan(ctx, args)
+			cancel()
 			if err != nil {
-				fatalAPI("scan", err)
+				fatalScan(err)
 			}
-			gologger.Info().Msgf("Uploaded %s (stack %s); waiting for the scan", args[0], id)
-			last := ""
-			res, err := vulnxClient.WaitStack(ctx, id, func(status string) {
-				if status != last && status != "ready" {
-					gologger.Info().Msgf("scan %s", status)
-					last = status
-				}
-			})
-			if err != nil {
-				fatalAPI("scan", err)
-			}
-			writeStackOutput(res, scanVEX, show)
 		},
 	}
 )
 
+// runStackScan scans an image, a file or package versions and writes the result.
+func runStackScan(ctx context.Context, args []string) error {
+	show := scanShow
+	if scanShowAll {
+		show = 0
+	}
+	// an image by registry reference: pulled and scanned by SecurityContext
+	if scanImage != "" {
+		id, err := vulnxClient.ScanImage(ctx, scanImage, scanPlat)
+		if err != nil {
+			return fmt.Errorf("failed to scan: %w", err)
+		}
+		gologger.Info().Msgf("Scanning image %s (stack %s); pulling can take minutes", scanImage, id)
+		return waitAndWrite(ctx, id, show)
+	}
+	// package versions rather than a file: arguments that are not a file, --list, or stdin
+	if len(args) != 1 || !fileutil.FileExists(args[0]) || scanList != "" {
+		if len(args) == 1 && scanList == "" && !looksLikeEntry(args[0]) {
+			return fmt.Errorf("no such file: %s (a package version is ecosystem/name@version, a pkg: purl or a cpe:)", args[0])
+		}
+		entries, err := scanEntries(args)
+		if err != nil {
+			return err
+		}
+		res, err := vulnxClient.CheckMany(ctx, entries)
+		if err != nil {
+			return fmt.Errorf("failed to scan: %w", err)
+		}
+		return writeChecked(ctx, res, show)
+	}
+	// a JSON SBOM is read here and checked as a list (one request, answered at once)
+	if raw, err := vulnx.ReadUpload(args[0]); err == nil {
+		if entries, format, ok := vulnx.SBOMEntries(raw); ok {
+			if len(entries) == 0 {
+				return fmt.Errorf("%s is a %s SBOM with no component that has a purl or CPE", args[0], format)
+			}
+			gologger.Info().Msgf("Checking %d components of %s (%s SBOM)", len(entries), args[0], format)
+			res, err := vulnxClient.CheckMany(ctx, entries)
+			if err != nil {
+				return fmt.Errorf("failed to scan: %w", err)
+			}
+			return writeChecked(ctx, res, show)
+		}
+	}
+	id, err := vulnxClient.ScanFile(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("failed to scan: %w", err)
+	}
+	gologger.Info().Msgf("Uploaded %s (stack %s); waiting for the scan", args[0], id)
+	return waitAndWrite(ctx, id, show)
+}
+
+// looksLikeEntry is whether a lone argument that is not a file can be a package version: a name with a
+// version, a purl, a CPE or a comma list. Anything else is taken as a mistyped file name, not sent.
+func looksLikeEntry(arg string) bool {
+	return strings.Contains(arg, "@") || strings.Contains(arg, ",") || strings.HasPrefix(arg, "pkg:") || strings.HasPrefix(arg, "cpe:")
+}
+
+// waitAndWrite follows a queued stack until it is read and writes its result.
+func waitAndWrite(ctx context.Context, id string, show int) error {
+	last := ""
+	res, err := vulnxClient.WaitStack(ctx, id, func(status string) {
+		if status != last && status != "ready" {
+			gologger.Info().Msgf("scan %s", status)
+			last = status
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("failed to scan: %w", err)
+	}
+	return writeChecked(ctx, res, show)
+}
+
+// writeChecked writes a result, with every CVE of each product version first when --full or --vex asks.
+func writeChecked(ctx context.Context, res vulnx.StackResult, show int) error {
+	if scanFull || scanVEX != "" {
+		if err := fillProductCVEs(ctx, &res, scanVEX != ""); err != nil {
+			return err
+		}
+	}
+	return writeStackOutput(res, scanVEX, show)
+}
+
+// fatalScan ends a scan that failed; a rate limit says when to retry.
+func fatalScan(err error) {
+	if errkit.Is(err, vulnx.ErrTooManyRequests) {
+		handleRateLimitError()
+	}
+	gologger.Fatal().Msgf("%s", err)
+}
+
 // scanEntries collects package versions from arguments (comma lists too), --list and stdin.
-func scanEntries(args []string) []string {
+func scanEntries(args []string) ([]string, error) {
 	var entries []string
 	for _, a := range args {
 		for _, e := range strings.Split(a, ",") {
@@ -291,61 +217,48 @@ func scanEntries(args []string) []string {
 		}
 	}
 	if scanList != "" {
-		fromFile, err := readEntries(scanList)
+		f, err := os.Open(scanList)
 		if err != nil {
-			gologger.Fatal().Msgf("Failed to read %s: %s", scanList, err)
+			return nil, err
+		}
+		fromFile, err := readEntries(f)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", scanList, err)
 		}
 		entries = append(entries, fromFile...)
 	}
 	if len(entries) == 0 && fileutil.HasStdin() {
-		fromStdin, err := readEntriesFrom(os.Stdin)
+		fromStdin, err := readEntries(os.Stdin)
 		if err != nil {
-			gologger.Fatal().Msgf("Failed to read stdin: %s", err)
+			return nil, fmt.Errorf("failed to read stdin: %w", err)
 		}
 		entries = append(entries, fromStdin...)
 	}
 	if len(entries) == 0 {
-		gologger.Fatal().Msg("Nothing to scan: give a file, package versions as arguments, --list, or stdin")
+		return nil, errors.New("nothing to scan: give a file, package versions as arguments, --list, or stdin")
 	}
-	return removeDuplicates(entries)
+	return removeDuplicates(entries), nil
 }
 
-func fatalAPI(what string, err error) {
-	if strings.Contains(err.Error(), "too many requests") {
-		handleRateLimitError()
-	}
-	gologger.Fatal().Msgf("Failed to %s: %s", what, err)
-}
-
-func readEntries(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	return readEntriesFrom(f)
-}
-
-func readEntriesFrom(f *os.File) ([]string, error) {
+// readEntries reads package versions one per line or comma-separated; a line starting with # is a comment.
+func readEntries(r io.Reader) ([]string, error) {
 	var out []string
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	for e, err := range fileutil.LinesReader(r, fileutil.WithComment("#"), fileutil.WithSplit(','), fileutil.WithTrimSpace(), fileutil.WithSkipEmpty()) {
+		if err != nil {
+			return nil, err
 		}
-		for _, e := range strings.Split(line, ",") {
-			if e = strings.TrimSpace(e); e != "" {
-				out = append(out, e)
-			}
-		}
+		out = append(out, e)
 	}
-	return out, sc.Err()
+	return out, nil
 }
 
 // fillProductCVEs replaces a product item's top rows with its full CVE list (a stack item carries the 10 most
-// urgent; /v1/products/.../versions/... pages through all of them).
-func fillProductCVEs(res *vulnx.StackResult) {
+// urgent; /v1/products/.../versions/... pages through all of them). With strict (a VEX, which states every CVE)
+// a list that cannot be read fails the scan; otherwise the item keeps its top rows and a warning says so.
+func fillProductCVEs(ctx context.Context, res *vulnx.StackResult, strict bool) error {
 	for i := range res.Items {
 		it := &res.Items[i]
 		key, isProduct := strings.CutPrefix(it.Package, "cpe/")
@@ -356,20 +269,24 @@ func fillProductCVEs(res *vulnx.StackResult) {
 		if !ok {
 			continue
 		}
-		rows, err := vulnxClient.ProductVersionCVEs(context.Background(), vendor, product, it.Version)
+		rows, err := vulnxClient.ProductVersionCVEs(ctx, vendor, product, it.Version)
+		if err != nil && strict {
+			return fmt.Errorf("failed to read every CVE of %s %s: %w", key, it.Version, err)
+		}
 		if err != nil {
 			gologger.Warning().Msgf("full CVE list for %s %s: %s", key, it.Version, err)
 			continue
 		}
 		it.AdvisoryRows = rows
 	}
+	return nil
 }
 
 var severityRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4, "": 5}
 
 // writeStackOutput prints or writes a stack result: JSON (--json / -o file.json), a VEX document (--vex), or text.
 // show caps the CVEs listed per package in text output (0: all).
-func writeStackOutput(res vulnx.StackResult, vex string, show int) {
+func writeStackOutput(res vulnx.StackResult, vex string, show int) error {
 	var data []byte
 	var err error
 	switch {
@@ -379,22 +296,27 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) {
 		data, err = vulnx.CycloneDXVEX(res, time.Now())
 	case jsonOutput || outputFile != "":
 		data, err = json.MarshalIndent(res, "", "  ")
+	default:
+		fmt.Print(renderStackText(res, show))
+		return nil
 	}
 	if err != nil {
-		gologger.Fatal().Msgf("Failed to render output: %s", err)
+		return fmt.Errorf("failed to render output: %w", err)
 	}
-	if data != nil {
-		if outputFile != "" {
-			if err := writeNewFile(outputFile, data); err != nil {
-				gologger.Fatal().Msgf("%s", err)
-			}
-			gologger.Info().Msgf("Wrote %s", outputFile)
-			return
-		}
-		_, _ = os.Stdout.Write(append(data, '\n'))
-		return
+	return writeData(data)
+}
+
+// writeData writes a rendered document to -o's file, which must not exist yet, or to stdout.
+func writeData(data []byte) error {
+	if outputFile == "" {
+		_, err := os.Stdout.Write(append(data, '\n'))
+		return err
 	}
-	fmt.Print(renderStackText(res, show))
+	if err := writeNewFile(outputFile, data); err != nil {
+		return err
+	}
+	gologger.Info().Msgf("Wrote %s", outputFile)
+	return nil
 }
 
 // shortOSPackageName shows an OS package purl as name@version

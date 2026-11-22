@@ -1,10 +1,8 @@
 package vulnx
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,16 +105,5 @@ func TestRuntimePrivacyShape(t *testing.T) {
 		if strings.Contains(string(raw), key) {
 			t.Fatalf("unexpected field %s", key)
 		}
-	}
-}
-
-func TestRuntimeBufferCopy(t *testing.T) {
-	var buf runtimeBuffer
-	payload := bytes.Repeat([]byte{'x'}, (8<<20)+1024)
-	if _, err := io.Copy(&buf, struct{ io.Reader }{bytes.NewReader(payload)}); err != nil {
-		t.Fatal(err)
-	}
-	if buf.Len() != 8<<20 || !buf.truncated {
-		t.Fatalf("cap bypass: len=%d truncated=%v", buf.Len(), buf.truncated)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -107,11 +106,10 @@ func (inv *HostInventory) collectRuntimeWorker(ctx context.Context, executable s
 		fail("runtime worker input exceeds limit")
 		return
 	}
-	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd := newCommand(ctx, executable, args...)
 	cmd.Stdin = bytes.NewReader(input)
-	var stdout, stderr runtimeBuffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = 250 * time.Millisecond
+	stdout, stderr := &cappedBuffer{limit: runtimeOutputLimit}, &cappedBuffer{limit: runtimeOutputLimit}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	finished := make(chan error, 1)
 	go func() { finished <- cmd.Run() }()
 	var runErr error

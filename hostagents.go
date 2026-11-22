@@ -138,7 +138,7 @@ func sideloaded(dir string) map[string]bool {
 		Metadata   struct{ Source string }
 	}
 	out := map[string]bool{}
-	raw, err := os.ReadFile(filepath.Join(dir, "extensions.json"))
+	raw, err := readCapped(filepath.Join(dir, "extensions.json"), maxConfigFile)
 	if err != nil || json.Unmarshal(raw, &list) != nil {
 		return out
 	}
@@ -213,7 +213,7 @@ func (h *hostReader) skills() {
 		var installed struct {
 			Plugins map[string][]struct{ Version string }
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err != nil || json.Unmarshal(raw, &installed) != nil {
 			continue
 		}
@@ -229,7 +229,7 @@ func (h *hostReader) skills() {
 		}
 	}
 	for _, path := range h.glob(h.inHomes(".codex/config.toml", ".codex-*/config.toml")...) {
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err != nil {
 			continue
 		}
@@ -272,7 +272,7 @@ func (h *hostReader) scan(root, kind, name, where string) {
 		if err != nil || !info.Mode().IsRegular() || info.Size() > skillFileCap {
 			return nil
 		}
-		raw, err := os.ReadFile(p)
+		raw, err := readCapped(p, maxConfigFile)
 		if err != nil {
 			return nil
 		}
@@ -324,7 +324,7 @@ func (h *hostReader) hooks() {
 		}
 		seen[path] = true
 		var f struct{ Hooks map[string][]command }
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err != nil || json.Unmarshal(stripJSONComments(raw), &f) != nil {
 			continue
 		}
@@ -366,13 +366,13 @@ func (h *hostReader) approvals() {
 		var s struct {
 			Permissions struct{ DefaultMode string }
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err == nil && json.Unmarshal(stripJSONComments(raw), &s) == nil && s.Permissions.DefaultMode == "bypassPermissions" {
 			h.risk(HostRisk{"approvals_off", "agent", "Claude Code", h.label(path), "permissions.defaultMode is bypassPermissions: every session runs tools without asking"})
 		}
 	}
 	for _, path := range h.glob(h.inHomes(".codex/config.toml")...) {
-		raw, err := os.ReadFile(path)
+		raw, err := readCapped(path, maxConfigFile)
 		if err == nil && codexNever.Match(raw) && codexDanger.Match(raw) {
 			h.risk(HostRisk{"approvals_off", "agent", "Codex", h.label(path), "approval_policy is never with sandbox_mode danger-full-access: commands run unasked and unconfined"})
 		}

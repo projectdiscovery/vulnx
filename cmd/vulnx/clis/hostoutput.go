@@ -4,32 +4,24 @@ package clis
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
 // writeHostJSON writes a host scan as the stack result with the inventory beside it, or as VEX.
-func writeHostJSON(inv vulnx.HostInventory, res vulnx.StackResult, vex string) {
+func writeHostJSON(inv vulnx.HostInventory, res vulnx.StackResult, vex string) error {
 	if vex != "" {
-		writeStackOutput(res, vex, 0)
-		return
+		return writeStackOutput(res, vex, 0)
 	}
 	data, err := hostJSON(inv, res)
 	if err != nil {
-		gologger.Fatal().Msgf("Failed to render output: %s", err)
+		return fmt.Errorf("failed to render output: %w", err)
 	}
-	if outputFile != "" {
-		if err := writeNewFile(outputFile, data); err != nil {
-			gologger.Fatal().Msgf("%s", err)
-		}
-		gologger.Info().Msgf("Wrote %s", outputFile)
-		return
-	}
-	_, _ = os.Stdout.Write(append(data, '\n'))
+	return writeData(data)
 }
 
 // failOnLevels are --fail-on's values.
