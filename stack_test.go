@@ -441,3 +441,34 @@ func TestWaitStackTransient(t *testing.T) {
 		t.Fatalf("a refusal is not retried: err %v, calls %d", err, calls)
 	}
 }
+
+// TestCountVerdicts counts a package the index has no record of as unseen, not clean as well: the counts are
+// disjoint and add up.
+func TestCountVerdicts(t *testing.T) {
+	res := StackResult{Total: 4, Summary: StackSummary{Packages: 4, Clean: 3, Unseen: 1, Affected: 1}, Items: []StackItem{
+		{Status: "clean", Seen: "none"}, {Status: "clean", Seen: "package"}, {Status: "affected", Seen: "version"}, {Status: "unseen"}}}
+	countVerdicts(&res)
+	if s := res.Summary; s.Packages != 4 || s.Clean != 1 || s.Unseen != 2 || s.Affected != 1 || s.Undetermined != 0 {
+		t.Errorf("%+v", s)
+	}
+	partial := StackResult{Total: 9, Summary: StackSummary{Clean: 7}, Items: []StackItem{{Status: "clean", Seen: "none"}}}
+	if countVerdicts(&partial); partial.Summary.Clean != 7 {
+		t.Error("a partial result's summary was recounted from a part of its items")
+	}
+}
+
+// TestWaitStackFailed says why a stored stack failed when the API does.
+func TestWaitStackFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id": "x", "status": "failed", "error": "the registry refused the image: it is private or does not exist"}`))
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.WaitStack(context.Background(), "x", nil)
+	if !errors.Is(err, ErrStackFailed) || !strings.Contains(err.Error(), "the registry refused the image") {
+		t.Errorf("%v", err)
+	}
+}

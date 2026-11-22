@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
+	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
 	"github.com/spf13/cobra"
 )
 
@@ -88,6 +90,9 @@ cat versions.txt | vulnx scan`,
 			if scanVEX != "" && scanVEX != "openvex" && scanVEX != "cyclonedx" {
 				gologger.Fatal().Msgf("--vex takes openvex or cyclonedx (got %s)", scanVEX)
 			}
+			if err := checkScanOutput(); err != nil {
+				gologger.Fatal().Msgf("%s", err)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), scanWait)
 			if scanHost {
 				failed, err := runHostScan(ctx)
@@ -109,6 +114,21 @@ cat versions.txt | vulnx scan`,
 	}
 )
 
+// checkScanOutput refuses an -o file whose extension names no format a scan writes: .json, or .csv for the result
+// as a table (a VEX document is JSON).
+func checkScanOutput() error {
+	if outputFile == "" {
+		return nil
+	}
+	switch ext := strings.ToLower(filepath.Ext(outputFile)); {
+	case ext == ".csv" && scanVEX != "":
+		return errors.New("--vex writes JSON: give -o a .json file")
+	case ext != ".json" && ext != ".csv":
+		return errors.New("-o takes a .json or .csv file")
+	}
+	return nil
+}
+
 // runStackScan scans an image, a file or package versions and writes the result.
 func runStackScan(ctx context.Context, args []string) error {
 	show := scanShow
@@ -129,7 +149,7 @@ func runStackScan(ctx context.Context, args []string) error {
 		if len(args) == 1 && scanList == "" && !looksLikeEntry(args[0]) {
 			return fmt.Errorf("no such file: %s (a package version is ecosystem/name@version, a pkg: purl or a cpe:)", args[0])
 		}
-		entries, err := scanEntries(args)
+		entries, err := scanEntries(args, os.Stdin)
 		if err != nil {
 			return err
 		}
@@ -162,9 +182,9 @@ func runStackScan(ctx context.Context, args []string) error {
 }
 
 // looksLikeEntry is whether a lone argument that is not a file can be a package version: a name with a
-// version, a purl, a CPE or a comma list. Anything else is taken as a mistyped file name, not sent.
+// version, a purl, a CPE or a comma list, or - for stdin. Anything else is taken as a mistyped file name, not sent.
 func looksLikeEntry(arg string) bool {
-	return strings.Contains(arg, "@") || strings.Contains(arg, ",") || strings.HasPrefix(arg, "pkg:") || strings.HasPrefix(arg, "cpe:")
+	return arg == "-" || strings.Contains(arg, "@") || strings.Contains(arg, ",") || strings.HasPrefix(arg, "pkg:") || strings.HasPrefix(arg, "cpe:")
 }
 
 // waitAndWrite follows a queued stack until it is read and writes its result.
@@ -200,17 +220,23 @@ func fatalScan(err error) {
 	gologger.Fatal().Msgf("%s", err)
 }
 
-// scanEntries collects package versions from arguments (comma lists too), --list and stdin.
-func scanEntries(args []string) ([]string, error) {
+// scanEntries collects package versions from arguments (comma lists too), --list and stdin; "-" as an argument
+// or as --list's file is stdin.
+func scanEntries(args []string, stdin io.Reader) ([]string, error) {
 	var entries []string
+	fromStdin := scanList == "-"
 	for _, a := range args {
+		if a == "-" {
+			fromStdin = true
+			continue
+		}
 		for _, e := range strings.Split(a, ",") {
 			if e = strings.TrimSpace(e); e != "" {
 				entries = append(entries, e)
 			}
 		}
 	}
-	if scanList != "" {
+	if scanList != "" && scanList != "-" {
 		f, err := os.Open(scanList)
 		if err != nil {
 			return nil, err
@@ -224,8 +250,8 @@ func scanEntries(args []string) ([]string, error) {
 		}
 		entries = append(entries, fromFile...)
 	}
-	if len(entries) == 0 && fileutil.HasStdin() {
-		fromStdin, err := readEntries(os.Stdin)
+	if fromStdin || len(entries) == 0 && fileutil.HasStdin() {
+		fromStdin, err := readEntries(stdin)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read stdin: %w", err)
 		}
@@ -286,6 +312,8 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) error {
 		data, err = vulnx.OpenVEX(res, scanAuthor, time.Now())
 	case vex == "cyclonedx":
 		data, err = vulnx.CycloneDXVEX(res, time.Now())
+	case outputFile != "" && isCSVOutput():
+		data, err = renderer.RenderStackCSV(res)
 	case jsonOutput || outputFile != "":
 		data, err = json.MarshalIndent(res, "", "  ")
 	default:
@@ -328,13 +356,22 @@ func shortOSPackageName(in string) string {
 	return path[strings.LastIndex(path, "/")+1:] + "@" + version
 }
 
+// verdict is an item's status as shown: unseen for a package the index has no record of, which the API answers
+// clean.
+func verdict(it vulnx.StackItem) string {
+	if it.Unseen() {
+		return "unseen"
+	}
+	return it.Status
+}
+
 func renderStackText(res vulnx.StackResult, show int) string {
 	var b strings.Builder
 	items := append([]vulnx.StackItem(nil), res.Items...)
 	statusRank := map[string]int{"affected": 0, "undetermined": 1, "unseen": 2, "clean": 3}
 	sort.SliceStable(items, func(i, j int) bool {
-		if statusRank[items[i].Status] != statusRank[items[j].Status] {
-			return statusRank[items[i].Status] < statusRank[items[j].Status]
+		if a, z := statusRank[verdict(items[i])], statusRank[verdict(items[j])]; a != z {
+			return a < z
 		}
 		return vulnx.WorseSeverity(items[i].WorstSeverity, items[j].WorstSeverity)
 	})
@@ -344,7 +381,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 		if name == "" {
 			name = strings.TrimPrefix(it.Package, "cpe/") + "@" + it.Version
 		}
-		line := fmt.Sprintf("[%s] %s", strings.ToUpper(termtext.Clean(it.Status)), termtext.Clean(name))
+		line := fmt.Sprintf("[%s] %s", strings.ToUpper(termtext.Clean(verdict(it))), termtext.Clean(name))
 		if it.Status == "affected" {
 			n := it.AdvisoryRowsTotal
 			if n == 0 {
@@ -424,7 +461,8 @@ func renderStackText(res vulnx.StackResult, show int) string {
 			poc++
 		}
 	}
-	fmt.Fprintf(&b, "\n%d packages: %d affected, %d clean, %d undetermined, %d unseen", s.Packages, s.Affected, s.Clean, s.Undetermined, s.Unseen)
+	fmt.Fprintf(&b, "\n%s: %d affected, %d clean, %d undetermined, %d unseen", plural(s.Packages, "package", "packages"),
+		s.Affected, s.Clean, s.Undetermined, s.Unseen)
 	if kev > 0 || poc > 0 {
 		fmt.Fprintf(&b, " (%d with a known exploited CVE, %d with a public exploit)", kev, poc)
 	}

@@ -743,11 +743,12 @@ func TestDropUnknownProducts(t *testing.T) {
 	res := StackResult{Total: 3, Summary: StackSummary{Packages: 3, Clean: 3}, Items: []StackItem{
 		{Input: unknown, Package: "cpe/nosuch:thing", Version: "1.0", Status: "clean", Seen: "none"},
 		{Input: known, Package: "cpe/haxx:curl", Version: "8.18.0", Status: "clean", Seen: "version"},
-		// a registry package the index has not seen is clean: no advisory names it
+		// a registry package the index has not seen stays, as unseen
 		{Input: "pkg:npm/never-heard-of@1.0.0", Status: "clean", Seen: "none"}}}
+	countVerdicts(&res) // as CheckManyWith answers
 	inv.DropUnknownProducts(&res)
-	if len(res.Items) != 2 || res.Summary.Clean != 2 || res.Total != 2 || len(inv.Entries) != 2 {
-		t.Errorf("items %d clean %d entries %d", len(res.Items), res.Summary.Clean, len(inv.Entries))
+	if s := res.Summary; len(res.Items) != 2 || s.Clean != 1 || s.Unseen != 1 || s.Packages != 2 || res.Total != 2 || len(inv.Entries) != 2 {
+		t.Errorf("items %d summary %+v entries %d", len(res.Items), s, len(inv.Entries))
 	}
 	want := "[{thing (formula) 1.0 homebrew its product (nosuch:thing) is not in the index}]"
 	if fmt.Sprint(inv.NotAssessed) != want || inv.Sources[0] != (HostSource{Name: "homebrew", Sent: 1, NotAssessed: 1}) {

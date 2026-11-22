@@ -1876,7 +1876,7 @@ func (inv *HostInventory) DropUnknownProducts(res *StackResult) {
 			s.Sent--
 			s.NotAssessed++
 		}
-		res.Summary.Clean--
+		res.Summary.Unseen--
 		res.Summary.Packages--
 		res.Total--
 	}

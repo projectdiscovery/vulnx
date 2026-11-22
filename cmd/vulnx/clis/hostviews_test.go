@@ -35,7 +35,7 @@ func TestRenderHostText(t *testing.T) {
 		"macOS 26.4 · 3 components checked · 1 not checked",
 		"go binaries           2             -  3 binaries",
 		"Not read: virtualenvs",
-		"2 affected · 0 undetermined · 1 clean",
+		"2 affected · 0 undetermined · 1 clean · 0 not in the index",
 		"Fix first · 1 affected component\n",
 		"high         go      golang.org/x/net                 2 versions            9 0.38.0       -       caddy, act, gh",
 		"high         caddy                                       1 golang.org/x/net",

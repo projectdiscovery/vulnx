@@ -89,8 +89,8 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	}
 	s := res.Summary
 	title("Result")
-	fmt.Fprintf(&b, "  %s affected · %s undetermined · %s clean\n",
-		c.Colorize(formatNumber(s.Affected), renderer.Bold+renderer.Red), formatNumber(s.Undetermined), formatNumber(s.Clean))
+	fmt.Fprintf(&b, "  %s affected · %s undetermined · %s clean · %s not in the index\n",
+		c.Colorize(formatNumber(s.Affected), renderer.Bold+renderer.Red), formatNumber(s.Undetermined), formatNumber(s.Clean), formatNumber(s.Unseen))
 	if kev > 0 || poc > 0 {
 		fmt.Fprintf(&b, "  %s with a known exploited CVE · %s more with a public exploit\n",
 			c.Colorize(formatNumber(kev), renderer.Bold+renderer.BrightRed), formatNumber(poc))

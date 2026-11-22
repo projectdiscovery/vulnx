@@ -13,9 +13,10 @@ import (
 	"github.com/projectdiscovery/vulnx/v2"
 )
 
-// writeHostJSON writes a host scan as the stack result with the inventory beside it, or as VEX.
+// writeHostJSON writes a host scan as the stack result with the inventory beside it, or as VEX, or as CSV for -o
+// file.csv (the result's rows: the inventory is no table).
 func writeHostJSON(inv vulnx.HostInventory, res vulnx.StackResult, vex string) error {
-	if vex != "" {
+	if vex != "" || outputFile != "" && isCSVOutput() {
 		return writeStackOutput(res, vex, 0)
 	}
 	data, err := hostJSON(inv, res)

@@ -105,6 +105,34 @@ type StackRemoval struct {
 	ListURL     string `json:"list_url,omitempty"`
 }
 
+// Unseen is whether the index has no record of the item's package or product: the API answers such an item
+// clean (no advisory names it) with seen none, which says nothing about whether it is safe.
+func (it StackItem) Unseen() bool {
+	return it.Status == "unseen" || it.Status == "clean" && it.Seen == "none"
+}
+
+// countVerdicts recounts a whole result's affected, clean, undetermined and unseen items from the items, each in
+// one of them: the API counts an item it has no record of as clean and as unseen both.
+func countVerdicts(res *StackResult) {
+	if len(res.Items) == 0 || len(res.Items) < res.Total {
+		return
+	}
+	s := &res.Summary
+	s.Packages, s.Affected, s.Clean, s.Undetermined, s.Unseen = len(res.Items), 0, 0, 0, 0
+	for _, it := range res.Items {
+		switch {
+		case it.Unseen():
+			s.Unseen++
+		case it.Status == "affected":
+			s.Affected++
+		case it.Status == "undetermined":
+			s.Undetermined++
+		case it.Status == "clean":
+			s.Clean++
+		}
+	}
+}
+
 // StackSummary counts a stack's items.
 type StackSummary struct {
 	Packages            int            `json:"packages"`
@@ -157,6 +185,7 @@ type stackPage struct {
 	Total     int          `json:"total"`
 	Cursor    string       `json:"cursor"`
 	ExpiresAt string       `json:"expires_at"`
+	Error     string       `json:"error"` // why a stored stack failed (an image the registry refused, ...)
 	Functions GoFunctions  `json:"go_functions"`
 	// Advisories is a compact answer's shared row content, by ref.
 	Advisories map[string]StackAdvisory `json:"advisories"`
@@ -425,6 +454,18 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 }
 
 // ErrExpiryUnsupported: the API cannot expire a stored stack, so nothing was uploaded.
+// ErrStackFailed: SecurityContext could not read a stored stack (an image it could not pull, a file it could not
+// parse); the error carries its reason when the API gives one.
+var ErrStackFailed = errors.New("the scan failed")
+
+// stackFailed is ErrStackFailed with the stack's own reason.
+func stackFailed(stack *StackInfo) error {
+	if stack == nil || stack.Error == "" {
+		return ErrStackFailed
+	}
+	return wrapErr(ErrStackFailed, errors.New(stack.Error))
+}
+
 var ErrExpiryUnsupported = errors.New("this SecurityContext API cannot expire a stored report's link, so nothing was uploaded")
 
 // ShareFile uploads a file as a stored stack whose link expires: after expires it stops answering (SecurityContext
@@ -610,13 +651,13 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 		failures = 0
 		res.Stack, res.Summary, res.Total = p.Stack, p.Summary, p.Total
 		if res.Stack == nil {
-			res.Stack = &StackInfo{ID: p.ID, Status: p.Status}
+			res.Stack = &StackInfo{ID: p.ID, Status: p.Status, Error: p.Error}
 		}
 		switch res.Stack.Status {
 		case "", "ready":
 			return res, nil
 		case "failed":
-			return res, wrapErr(ErrRequestFailed, fmt.Errorf("the stack could not be read: %s", res.Stack.Error))
+			return res, stackFailed(res.Stack)
 		}
 		if err := sleepCtx(ctx, stackReadyPoll); err != nil {
 			return res, err
@@ -673,7 +714,7 @@ func (c *Client) getStack(ctx context.Context, id string) (StackResult, error) {
 		if page == 0 {
 			res.Stack = p.Stack
 			if res.Stack == nil {
-				res.Stack = &StackInfo{ID: p.ID, Status: p.Status}
+				res.Stack = &StackInfo{ID: p.ID, Status: p.Status, Error: p.Error}
 			}
 			res.Summary, res.Total = p.Summary, p.Total
 			if res.Stack.Status != "" && res.Stack.Status != "ready" {
@@ -714,13 +755,10 @@ func (c *Client) WaitStack(ctx context.Context, id string, progress func(status 
 		}
 		switch status {
 		case "ready", "":
+			countVerdicts(&res)
 			return res, nil
 		case "failed":
-			msg := "the scan failed"
-			if res.Stack != nil && res.Stack.Error != "" {
-				msg = res.Stack.Error
-			}
-			return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s", msg))
+			return res, stackFailed(res.Stack)
 		}
 		if err := sleepCtx(ctx, delay); err != nil {
 			return res, err
@@ -922,6 +960,7 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 			opts.Progress(end, len(entries))
 		}
 	}
+	countVerdicts(&all)
 	return all, nil
 }
 
