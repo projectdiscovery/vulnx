@@ -3,6 +3,7 @@ package vulnx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +13,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 // newTestClient returns a client for srv with no key from the environment and a short retry wait.
@@ -150,7 +149,7 @@ func TestResponseBodyCap(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, err := newTestClient(t, srv).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
-	if !errkit.Is(err, ErrDecodeResponse) || !strings.Contains(err.Error(), "larger than") {
+	if !errors.Is(err, ErrDecodeResponse) || !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("oversized body: %v", err)
 	}
 }
@@ -162,7 +161,7 @@ func TestErrorMessageCleaned(t *testing.T) {
 	}))
 	defer srv.Close()
 	_, err := newTestClient(t, srv).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
-	if !errkit.Is(err, ErrBadRequest) {
+	if !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("400: %v", err)
 	}
 	if strings.ContainsAny(err.Error(), "\x1b\u202e") || !strings.Contains(err.Error(), "bad [31mquery") {
@@ -224,7 +223,7 @@ func TestRetry(t *testing.T) {
 			}
 			var out map[string]any
 			err = client.do(req, &out)
-			if c.wantErr == nil && err != nil || c.wantErr != nil && !errkit.Is(err, c.wantErr) {
+			if c.wantErr == nil && err != nil || c.wantErr != nil && !errors.Is(err, c.wantErr) {
 				t.Errorf("err = %v, want %v", err, c.wantErr)
 			}
 			if *calls != c.wantCalls {
@@ -242,7 +241,7 @@ func TestRetryWaitCancelled(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := c.GetVulnerabilityByID(ctx, "CVE-2021-44228", nil)
-	if !errkit.Is(err, ErrRequestFailed) || time.Since(start) > 5*time.Second {
+	if !errors.Is(err, ErrRequestFailed) || time.Since(start) > 5*time.Second {
 		t.Errorf("cancelled wait: err %v after %s", err, time.Since(start))
 	}
 	if *calls != 1 {
@@ -373,7 +372,7 @@ func TestSearchWindowLimits(t *testing.T) {
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	c := newTestClient(t, srv)
-	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(100), Offset: Ptr(MaxResultWindow - 99)}); !errkit.Is(err, ErrUnsupportedQuery) {
+	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(100), Offset: Ptr(MaxResultWindow - 99)}); !errors.Is(err, ErrUnsupportedQuery) {
 		t.Errorf("offset + limit past the window: %v", err)
 	}
 	if len(s.queries) != 0 {
@@ -383,7 +382,7 @@ func TestSearchWindowLimits(t *testing.T) {
 		t.Errorf("limit at the window: %v", err)
 	}
 	_, err := c.SearchVulnerabilities(context.Background(), SearchParams{All: true})
-	if !errkit.Is(err, ErrUnsupportedQuery) || !strings.Contains(err.Error(), strconv.Itoa(scMaxAll)) {
+	if !errors.Is(err, ErrUnsupportedQuery) || !strings.Contains(err.Error(), strconv.Itoa(scMaxAll)) {
 		t.Errorf("--all past the cap: %v", err)
 	}
 }
@@ -408,7 +407,7 @@ func TestSearchCVEIDs(t *testing.T) {
 	if err != nil || r.Count != 0 {
 		t.Errorf("offset onto a missing id: %+v %v", r.Results, err)
 	}
-	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr("cve_id:CVE-2021-44228 && severity:high")}); !errkit.Is(err, ErrUnsupportedQuery) {
+	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr("cve_id:CVE-2021-44228 && severity:high")}); !errors.Is(err, ErrUnsupportedQuery) {
 		t.Errorf("cve_id with another filter: %v", err)
 	}
 }
@@ -430,7 +429,7 @@ func TestSearchBareProduct(t *testing.T) {
 			defer srv.Close()
 			_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr("product:log4j")})
 			if c.wantErr != nil {
-				if !errkit.Is(err, c.wantErr) {
+				if !errors.Is(err, c.wantErr) {
 					t.Errorf("err = %v, want %v", err, c.wantErr)
 				}
 				return
@@ -460,7 +459,7 @@ func TestSearchRejectsBeforeRequest(t *testing.T) {
 		{TermFacets: []string{"tags"}},
 		{RangeFacets: []string{"cvss_score"}},
 	} {
-		if _, err := c.SearchVulnerabilities(context.Background(), p); !errkit.Is(err, ErrUnsupportedQuery) {
+		if _, err := c.SearchVulnerabilities(context.Background(), p); !errors.Is(err, ErrUnsupportedQuery) {
 			t.Errorf("%+v: %v", p, err)
 		}
 	}
@@ -474,7 +473,7 @@ func TestGetVulnerabilityByIDRejectsNonCVE(t *testing.T) {
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	_, err := newTestClient(t, srv).GetVulnerabilityByID(context.Background(), "php-xdebug-rce", nil)
-	if !errkit.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "not a CVE id") {
+	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "not a CVE id") {
 		t.Errorf("template id: %v", err)
 	}
 	if len(s.queries) != 0 {
@@ -492,5 +491,36 @@ func TestRetryAfter(t *testing.T) {
 		if _, ok := retryAfter(in); ok {
 			t.Errorf("%q accepted", in)
 		}
+	}
+}
+
+func TestAPIErrorsDoNotAccumulate(t *testing.T) {
+	msgs := []string{"invalid cursor", "unknown body field(s) ['functions']"}
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(t, w, map[string]string{"error": msgs[n%len(msgs)]})
+		n++
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	sentinel := ErrBadRequest.Error()
+	var errs []error
+	for range msgs {
+		_, err := c.GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
+		errs = append(errs, err)
+	}
+	if strings.Contains(errs[1].Error(), msgs[0]) {
+		t.Errorf("second error carries the first one's message: %v", errs[1])
+	}
+	if ErrBadRequest.Error() != sentinel {
+		t.Errorf("sentinel modified: %q", ErrBadRequest.Error())
+	}
+	var apiErr *APIError
+	if !errors.As(errs[1], &apiErr) || apiErr.StatusCode != http.StatusBadRequest || apiErr.Message != msgs[1] || !errors.Is(errs[1], ErrBadRequest) {
+		t.Errorf("APIError not exposed: %#v", errs[1])
+	}
+	if _, err := translateQuery("cvss_score:>7"); err == nil || strings.Contains(err.Error(), msgs[0]) {
+		t.Errorf("unsupported query error: %v", err)
 	}
 }

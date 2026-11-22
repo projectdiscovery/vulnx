@@ -10,6 +10,7 @@ package vulnx
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,8 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 const cpeMaxRows = 5000 // 50 requests: a whole version list is fetched only when filters or a sort need it
@@ -79,17 +78,17 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 		}
 		req, err := c.newRequest(ctx, http.MethodGet, path, q, nil)
 		if err != nil {
-			return resp, errkit.Append(ErrRequestBuildFailure, err)
+			return resp, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var p cpePage
 		if err := c.do(req, &p); err != nil {
-			if errkit.Is(err, ErrNotFound) {
-				return resp, errkit.Append(ErrNotFound, fmt.Errorf("NVD has no product %s:%s", ref.vendor, ref.product))
+			if errors.Is(err, ErrNotFound) {
+				return resp, wrapErr(ErrNotFound, fmt.Errorf("NVD has no product %s:%s", ref.vendor, ref.product))
 			}
-			return resp, errkit.Append(ErrRequestFailed, err)
+			return resp, err
 		}
 		if !p.Found {
-			return resp, errkit.Append(ErrNotFound, fmt.Errorf("NVD has no product %s:%s (check the vendor and product names)", ref.vendor, ref.product))
+			return resp, wrapErr(ErrNotFound, fmt.Errorf("NVD has no product %s:%s (check the vendor and product names)", ref.vendor, ref.product))
 		}
 		if resp.Total == 0 {
 			resp.Total = p.AdvisoriesTotal

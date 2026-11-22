@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -16,12 +17,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 // ErrUnsupportedQuery: the query asks for something the SecurityContext API does not filter, sort or facet on.
-var ErrUnsupportedQuery = errkit.New("unsupported query")
+var ErrUnsupportedQuery = errors.New("unsupported query")
 
 const (
 	scMaxPage    = 100  // /v1/cves answers at most 100 rows a page
@@ -38,7 +37,7 @@ var cveIDPattern = regexp.MustCompile(scCVEPattern)
 func IsCVEID(id string) bool { return cveIDPattern.MatchString(strings.TrimSpace(id)) }
 
 func unsupported(format string, args ...any) error {
-	return errkit.Append(ErrUnsupportedQuery, fmt.Errorf(format, args...))
+	return wrapErr(ErrUnsupportedQuery, fmt.Errorf(format, args...))
 }
 
 // setParam sets a /v1/cves parameter, rejecting a second, different value for it: the API takes one.

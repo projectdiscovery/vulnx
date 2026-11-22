@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 func TestTranslateQuery(t *testing.T) {
@@ -88,7 +86,7 @@ func TestTranslateQueryRejects(t *testing.T) {
 			t.Errorf("%q: accepted, want an error", q)
 			continue
 		}
-		if !errors.Is(err, ErrUnsupportedQuery) && !errkit.Is(err, ErrUnsupportedQuery) {
+		if !errors.Is(err, ErrUnsupportedQuery) {
 			t.Errorf("%q: %v is not ErrUnsupportedQuery", q, err)
 		}
 	}

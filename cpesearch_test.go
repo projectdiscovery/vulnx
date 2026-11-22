@@ -2,6 +2,7 @@ package vulnx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 // versionServer serves one product version's CVE list: row i has CVSS 10 - i/10, published in 2020 + i%5.
@@ -105,7 +104,7 @@ func TestSearchCPEErrors(t *testing.T) {
 		_, err := c.SearchVulnerabilities(context.Background(), p)
 		return err
 	}
-	if err := search(tomcatCPE+" && severity:high", SearchParams{}); !errkit.Is(err, ErrUnsupportedQuery) || !strings.Contains(err.Error(), strconv.Itoa(cpeMaxRows)) {
+	if err := search(tomcatCPE+" && severity:high", SearchParams{}); !errors.Is(err, ErrUnsupportedQuery) || !strings.Contains(err.Error(), strconv.Itoa(cpeMaxRows)) {
 		t.Errorf("filter on a version past the cap: %v", err)
 	}
 	if n := len(s.limits); n != 1 {
@@ -120,12 +119,12 @@ func TestSearchCPEErrors(t *testing.T) {
 		{tomcatCPE, SearchParams{SortDesc: Ptr("trending")}},
 		{tomcatCPE, SearchParams{TermFacets: []string{"severity"}}},
 	} {
-		if err := search(bad.q, bad.p); !errkit.Is(err, ErrUnsupportedQuery) {
+		if err := search(bad.q, bad.p); !errors.Is(err, ErrUnsupportedQuery) {
 			t.Errorf("%s %+v: %v", bad.q, bad.p, err)
 		}
 	}
 	s.found = false
-	if err := search(tomcatCPE, SearchParams{}); !errkit.Is(err, ErrNotFound) {
+	if err := search(tomcatCPE, SearchParams{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown product: %v", err)
 	}
 }

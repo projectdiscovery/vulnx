@@ -48,7 +48,6 @@ import (
 
 	"github.com/projectdiscovery/gologger"
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
-	"github.com/projectdiscovery/utils/errkit"
 	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 )
 
@@ -75,18 +74,18 @@ const (
 
 // Client errors
 var (
-	ErrBadRequest          = errkit.New("bad request: client sent an invalid request")
-	ErrUnauthorized        = errkit.New("unauthorized: invalid or missing API key")
-	ErrNotFound            = errkit.New("not found: resource does not exist")
-	ErrTooManyRequests     = errkit.New("too many requests: SecurityContext allows anonymous callers a limited number of requests a minute per address")
-	ErrInternalServerError = errkit.New("internal server error: something went wrong on the server")
-	ErrUnknownAPIError     = errkit.New("unknown api error")
+	ErrBadRequest          = errors.New("bad request: client sent an invalid request")
+	ErrUnauthorized        = errors.New("unauthorized: invalid or missing API key")
+	ErrNotFound            = errors.New("not found: resource does not exist")
+	ErrTooManyRequests     = errors.New("too many requests: SecurityContext allows anonymous callers a limited number of requests a minute per address")
+	ErrInternalServerError = errors.New("internal server error: something went wrong on the server")
+	ErrUnknownAPIError     = errors.New("unknown api error")
 
-	ErrRequestBuildFailure = errkit.New("failed to build request")
-	ErrRequestFailed       = errkit.New("request failed")
-	ErrMarshalBody         = errkit.New("failed to marshal request body")
-	ErrCreateHTTPRequest   = errkit.New("failed to create http request")
-	ErrDecodeResponse      = errkit.New("failed to decode response")
+	ErrRequestBuildFailure = errors.New("failed to build request")
+	ErrRequestFailed       = errors.New("request failed")
+	ErrMarshalBody         = errors.New("failed to marshal request body")
+	ErrCreateHTTPRequest   = errors.New("failed to create http request")
+	ErrDecodeResponse      = errors.New("failed to decode response")
 )
 
 // Option represents a functional option that mutates a *Client* during
@@ -287,7 +286,7 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 		var list scList
 		req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves", query, nil)
 		if err != nil {
-			return resp, errkit.Append(ErrRequestBuildFailure, err)
+			return resp, wrapErr(ErrRequestBuildFailure, err)
 		}
 		if err := c.do(req, &list); err != nil {
 			return resp, err
@@ -341,7 +340,7 @@ func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, 
 	// offset and limit page through the ids asked for, so a missing id leaves its page short
 	for _, id := range ids[min(offset, len(ids)):min(offset+limit, len(ids))] {
 		one, err := c.GetVulnerabilityByID(ctx, id, nil)
-		if errkit.Is(err, ErrNotFound) {
+		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
@@ -357,7 +356,7 @@ func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, 
 func (c *Client) resolveProduct(ctx context.Context, name string) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/products", url.Values{"q": {name}, "limit": {strconv.Itoa(scMaxPage)}, "fields": {"product,name"}}, nil)
 	if err != nil {
-		return "", errkit.Append(ErrRequestBuildFailure, err)
+		return "", wrapErr(ErrRequestBuildFailure, err)
 	}
 	var list struct {
 		Items []struct {
@@ -376,7 +375,7 @@ func (c *Client) resolveProduct(ctx context.Context, name string) (string, error
 	}
 	switch len(keys) {
 	case 0:
-		return "", errkit.Append(ErrNotFound, fmt.Errorf("NVD has no product named %s; give the product as vendor:product, or filter by vendor", termtext.Clean(name)))
+		return "", wrapErr(ErrNotFound, fmt.Errorf("NVD has no product named %s; give the product as vendor:product, or filter by vendor", termtext.Clean(name)))
 	case 1:
 		return keys[0], nil
 	}
@@ -389,12 +388,12 @@ func (c *Client) GetVulnerabilityByID(ctx context.Context, id string, params *Ge
 	var resp VulnerabilityResponse
 	id = strings.TrimSpace(id)
 	if !IsCVEID(id) {
-		return resp, errkit.Append(ErrNotFound, fmt.Errorf("%s is not a CVE id; only CVE records are supported", id))
+		return resp, wrapErr(ErrNotFound, fmt.Errorf("%s is not a CVE id; only CVE records are supported", id))
 	}
 	var rec scCVE
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves/"+url.PathEscape(strings.ToUpper(id)), nil, nil)
 	if err != nil {
-		return resp, errkit.Append(ErrRequestBuildFailure, err)
+		return resp, wrapErr(ErrRequestBuildFailure, err)
 	}
 	if err := c.do(req, &rec); err != nil {
 		return resp, err
@@ -425,13 +424,13 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, errkit.Append(ErrMarshalBody, err)
+			return nil, wrapErr(ErrMarshalBody, err)
 		}
 		reader = strings.NewReader(string(b))
 	}
 	req, err := http.NewRequestWithContext(ctx, method, requestURL, reader)
 	if err != nil {
-		return nil, errkit.Append(ErrCreateHTTPRequest, err)
+		return nil, wrapErr(ErrCreateHTTPRequest, err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -493,19 +492,19 @@ func (c *Client) do(req *http.Request, out any) error {
 		select {
 		case <-req.Context().Done():
 			timer.Stop()
-			return errkit.Append(ErrRequestFailed, req.Context().Err())
+			return wrapErr(ErrRequestFailed, req.Context().Err())
 		case <-timer.C:
 		}
 		retry := req.Clone(req.Context())
 		if req.GetBody != nil {
 			if retry.Body, err = req.GetBody(); err != nil {
-				return errkit.Append(ErrRequestFailed, err)
+				return wrapErr(ErrRequestFailed, err)
 			}
 		}
 		resp, err = c.send(retry)
 	}
 	if err != nil {
-		return errkit.Append(ErrRequestFailed, err)
+		return wrapErr(ErrRequestFailed, err)
 	}
 	if c.debugResponse != nil {
 		c.debugResponse(resp)
@@ -520,13 +519,13 @@ func (c *Client) do(req *http.Request, out any) error {
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return errkit.Append(ErrRequestFailed, err)
+		return wrapErr(ErrRequestFailed, err)
 	}
 	if len(b) > maxResponseBytes {
-		return errkit.Append(ErrDecodeResponse, fmt.Errorf("response is larger than %d MiB", maxResponseBytes>>20))
+		return wrapErr(ErrDecodeResponse, fmt.Errorf("response is larger than %d MiB", maxResponseBytes>>20))
 	}
 	if err := json.Unmarshal(b, out); err != nil {
-		return errkit.Append(ErrDecodeResponse, err)
+		return wrapErr(ErrDecodeResponse, err)
 	}
 	return nil
 }
@@ -571,9 +570,20 @@ func (c *Client) handleAPIError(resp *http.Response) error {
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrNotFound
 	}
+	kind := ErrUnknownAPIError
+	switch resp.StatusCode {
+	case http.StatusBadRequest:
+		kind = ErrBadRequest
+	case http.StatusUnauthorized:
+		kind = ErrUnauthorized
+	case http.StatusTooManyRequests:
+		kind = ErrTooManyRequests
+	case http.StatusInternalServerError:
+		kind = ErrInternalServerError
+	}
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	if err != nil {
-		return errkit.Wrap(ErrUnknownAPIError, fmt.Sprintf("api error (failed to read response body): %s", resp.Status))
+		return &APIError{StatusCode: resp.StatusCode, Message: "could not read the response body: " + err.Error(), kind: kind}
 	}
 	msg := strings.TrimSpace(string(bodyBytes))
 	var errorBody map[string]any
@@ -589,20 +599,28 @@ func (c *Client) handleAPIError(resp *http.Response) error {
 	if r := []rune(msg); len(r) > maxErrorMessage {
 		msg = string(r[:maxErrorMessage]) + "..."
 	}
-	detailedErr := errkit.New("api error", "status_code", resp.StatusCode, "error", msg)
+	return &APIError{StatusCode: resp.StatusCode, Message: msg, kind: kind}
+}
 
-	switch resp.StatusCode {
-	case http.StatusBadRequest:
-		return errkit.Append(ErrBadRequest, detailedErr)
-	case http.StatusUnauthorized:
-		return errkit.Append(ErrUnauthorized, detailedErr)
-	case http.StatusTooManyRequests:
-		return errkit.Append(ErrTooManyRequests, detailedErr)
-	case http.StatusInternalServerError:
-		return errkit.Append(ErrInternalServerError, detailedErr)
-	default:
-		return errkit.Append(ErrUnknownAPIError, detailedErr)
-	}
+// APIError is a non-2xx answer from the API. errors.Is matches it against the sentinel for its status
+// (ErrBadRequest, ErrUnauthorized, ...); Message is the server's message, cleaned for a terminal.
+type APIError struct {
+	StatusCode int
+	Message    string
+	kind       error
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s (HTTP %d): %s", e.kind, e.StatusCode, e.Message)
+}
+
+func (e *APIError) Unwrap() error { return e.kind }
+
+// wrapErr returns an error that matches sentinel and cause under errors.Is. It never modifies sentinel:
+// errkit.Append adds the cause to the package-level sentinel itself, so its text would accumulate every
+// earlier error in the process.
+func wrapErr(sentinel, cause error) error {
+	return fmt.Errorf("%w: %w", sentinel, cause)
 }
 
 // retryAfter reads a Retry-After header given in seconds.
