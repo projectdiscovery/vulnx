@@ -24,21 +24,6 @@ func TestComponentParts(t *testing.T) {
 	}
 }
 
-func TestVersionLess(t *testing.T) {
-	for _, c := range []struct {
-		a, b string
-		less bool
-	}{
-		{"v1.9.2", "v1.10.0", true},
-		{"0.62.0", "0.38.0", false},
-		{"0.58.1-0.20250101-abc", "0.58.1", true}, // the release wins over its pseudo-version
-	} {
-		if versionLess(c.a, c.b) != c.less {
-			t.Errorf("%s < %s should be %v", c.a, c.b, c.less)
-		}
-	}
-}
-
 // hostFixture is a small host scan: macOS with a known exploited CVE, Chrome, two formulae (one reached through its
 // Go binary), a Go tool from ~/go/bin, a pip site with two packages, and a module version no binary reaches.
 func hostFixture() (vulnx.HostInventory, vulnx.StackResult) {

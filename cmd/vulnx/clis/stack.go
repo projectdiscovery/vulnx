@@ -1,7 +1,7 @@
 package clis
 
-// vulnx scan: scan a lockfile, SBOM, Compose file or Dockerfile, or a list of package versions (issue #385, with
-// VEX output), on SecurityContext's /v1/stack.
+// vulnx scan: scan a lockfile, SBOM, Compose file or Dockerfile, a list of package versions, an image or this
+// machine (hostscan.go), on SecurityContext's /v1/stack.
 
 import (
 	"context"
@@ -46,9 +46,10 @@ var (
 		Long: `Scan with SecurityContext and list each package as affected, clean, undetermined or unseen.
 
 A file is recognised by name: package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock, uv.lock, poetry.lock,
-Cargo.lock, go.mod, Gemfile.lock, composer.lock, packages.lock.json, gradle.lockfile, a CycloneDX or SPDX JSON
-SBOM, compose.yaml / docker-compose.yml (each service's image is pulled and scanned), or a Dockerfile (its base
-image and the packages its RUN lines install).
+Cargo.lock, go.mod, Gemfile.lock, composer.lock, packages.lock.json, gradle.lockfile, compose.yaml /
+docker-compose.yml (each service's image is pulled and scanned), or a Dockerfile (its base image and the packages
+its RUN lines install). The file is uploaded to SecurityContext and scanned there. A CycloneDX or SPDX JSON SBOM is
+read here instead and its components checked as a list.
 
 Or give package versions directly (arguments, --list file, or stdin), checked in one request:
   ecosystem/name@version          npm/lodash@4.17.20, pypi/django@3.2.0, maven/org.apache.logging.log4j:log4j-core@2.14.1
@@ -56,21 +57,14 @@ Or give package versions directly (arguments, --list file, or stdin), checked in
   vendor:product@version or cpe:  an NVD product version, e.g. apache:tomcat@8.5.62
 
 Or an operating system:
-  --image ghcr.io/owner/name:tag  a public container image: SecurityContext pulls it and reads its OS packages,
-                                  language manifests and bundled libraries (--platform linux/arm64)
-  --host                          this machine: Linux packages from dpkg, apk or rpm with the release from
-                                  /etc/os-release, judged by the distribution's own advisories (macOS: its
-                                  version); Python, npm and Ruby packages installed outside the distribution;
-                                  the modules of Go and Rust binaries on PATH; on macOS, Homebrew formulae and
-                                  applications with a known product; AI tools: assistant apps, agent CLIs,
-                                  AI editor extensions and the packages MCP servers are started from.
-                                  Anything read but not judged is listed.
-                                  --root reads a mounted Linux filesystem instead. The terminal shows one
-                                  screen: findings per source and severity (--view for other views). --report
-                                  prints a report URL that auto-expires in 24 hours; the full result is written
-                                  as vulnx-host-<date>.json, with a passive snapshot of visible listening
-                                  sockets and owner processes;
-                                  --fail-on kev|critical|high exits 2 on a reachable finding of that level or worse.
+  --image ghcr.io/owner/name:tag  a public container image, pulled and read by SecurityContext
+  --host                          this machine, or with --root a mounted Linux filesystem: OS packages, Python,
+                                  npm and Ruby packages, Go and Rust binaries, on macOS Homebrew formulae and
+                                  applications, and AI tools (assistant apps, agent CLIs, editor extensions, MCP
+                                  servers). The names and versions of what it finds, editor extensions and MCP
+                                  server packages included, are sent to SecurityContext; paths, configuration and
+                                  the runtime snapshot of listening sockets stay on this machine. The terminal
+                                  shows one screen and the full result is written as vulnx-host-<date>.json.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
 "affected" / "exploitable" with the fixed version when known, undetermined rows "under_investigation" / "in_triage".`,
@@ -282,8 +276,6 @@ func fillProductCVEs(ctx context.Context, res *vulnx.StackResult, strict bool) e
 	return nil
 }
 
-var severityRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4, "": 5}
-
 // writeStackOutput prints or writes a stack result: JSON (--json / -o file.json), a VEX document (--vex), or text.
 // show caps the CVEs listed per package in text output (0: all).
 func writeStackOutput(res vulnx.StackResult, vex string, show int) error {
@@ -344,7 +336,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 		if statusRank[items[i].Status] != statusRank[items[j].Status] {
 			return statusRank[items[i].Status] < statusRank[items[j].Status]
 		}
-		return severityRank[items[i].WorstSeverity] < severityRank[items[j].WorstSeverity]
+		return vulnx.WorseSeverity(items[i].WorstSeverity, items[j].WorstSeverity)
 	})
 	for _, it := range items {
 		name := it.Input
@@ -448,16 +440,16 @@ func init() {
 	scanCmd.Flags().StringVar(&scanVEX, "vex", "", "write a VEX document instead: openvex or cyclonedx")
 	scanCmd.Flags().StringVar(&scanAuthor, "vex-author", "vulnx", "author of the OpenVEX document")
 	scanCmd.Flags().DurationVar(&scanWait, "wait", 20*time.Minute, "how long to wait for the scan (image pulls can take minutes)")
-	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output (with --host: every affected component and every one not assessed)")
+	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output (with --host: every affected component and every one not checked)")
 	scanCmd.Flags().StringVar(&scanImage, "image", "", "scan a public container image by reference (e.g. debian:12-slim, ghcr.io/owner/name:tag)")
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
-	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine: OS packages, language packages, Go and Rust binaries, AI tools, and on macOS Homebrew and applications; the local JSON report also snapshots visible listening sockets and their owner processes")
+	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine; sends the names and versions it finds to SecurityContext")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
-	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM file (--sbom=path.cdx.json to name it); local runtime observations are not included")
+	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM (--sbom=path to name it; an existing file is not overwritten)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
 	scanCmd.Flags().BoolVar(&scanGraph, "graph", false, "with --host: also write a local graph page of the findings (opens in a browser, nothing uploaded)")
-	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: print a report URL that auto-expires in 24 hours; local runtime observations are not uploaded")
-	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 when a reachable finding is kev (known exploited), critical or high; a higher level, such as --fail-on critical, fails only on that level or worse")
-	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of / (no live runtime snapshot is taken)")
+	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: upload the SBOM and print a report link that expires in 24 hours (the runtime snapshot stays local)")
+	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 if a reachable finding is at or above this level: kev (known exploited), critical or high")
+	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of this machine (no runtime snapshot)")
 	rootCmd.AddCommand(scanCmd)
 }

@@ -24,8 +24,8 @@ type HostAgentItem struct {
 // HostRisk is a fact about how one of them is set up that lets someone else decide what runs on this machine. It
 // is read from the files: a risk, never a verdict that the thing is hostile.
 type HostRisk struct {
-	Risk   string `json:"risk"` // removed_malware, removed, unpinned, unverified_source, plaintext, sideloaded, lookalike, pipe_to_shell, hidden_text, approvals_off
-	Kind   string `json:"kind"` // HostAgentItem.Kind, or agent
+	Risk   string `json:"risk"` // a key of RiskText
+	Kind   string `json:"kind"` // what it is about: a HostAgentItem.Kind, or agent for an agent's own settings
 	Name   string `json:"name"`
 	Where  string `json:"where"`
 	Detail string `json:"detail"`

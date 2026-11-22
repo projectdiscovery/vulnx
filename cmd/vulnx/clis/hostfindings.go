@@ -5,10 +5,8 @@ package clis
 import (
 	"net/url"
 	"path"
-	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/projectdiscovery/vulnx/v2"
@@ -59,25 +57,6 @@ func advisoryCount(it vulnx.StackItem) int {
 	return it.Advisories
 }
 
-var versionNumbers = regexp.MustCompile(`\d+`)
-
-// versionLess orders versions by their first three numbers (v1.10.0 after v1.9.2), and on a tie puts the longer
-// one first, so a release wins over a pseudo-version of it: close enough to show a component's highest fix.
-func versionLess(a, b string) bool {
-	x, y := versionNumbers.FindAllString(a, 3), versionNumbers.FindAllString(b, 3)
-	for i := 0; i < len(x) && i < len(y); i++ {
-		xi, _ := strconv.Atoi(x[i])
-		yi, _ := strconv.Atoi(y[i])
-		if xi != yi {
-			return xi < yi
-		}
-	}
-	if len(x) != len(y) {
-		return len(x) < len(y)
-	}
-	return len(a) > len(b)
-}
-
 // unreachable is a host scan's Go item that no binary carrying it can run: each one was checked and links none of
 // the functions its advisories name.
 func unreachable(it vulnx.StackItem) bool {
@@ -95,7 +74,7 @@ func liveSeverity(it vulnx.StackItem) (string, int) {
 			continue
 		}
 		n++
-		if worst == "" || severityRank[a.Severity] < severityRank[worst] {
+		if worst == "" || vulnx.WorseSeverity(a.Severity, worst) {
 			worst = a.Severity
 		}
 	}
@@ -168,7 +147,7 @@ func findings(inv vulnx.HostInventory, res vulnx.StackResult) []finding {
 		if out[i].tier != out[j].tier {
 			return out[i].tier < out[j].tier
 		}
-		return severityRank[out[i].worst] < severityRank[out[j].worst]
+		return vulnx.WorseSeverity(out[i].worst, out[j].worst)
 	})
 	return out
 }
@@ -276,7 +255,7 @@ func hostActions(inv vulnx.HostInventory, fs []finding) []hostAction {
 			} else if f.tier < prev {
 				tierOf[t] = f.tier
 			}
-			if severityRank[f.worst] < severityRank[worst[t]] {
+			if vulnx.WorseSeverity(f.worst, worst[t]) {
 				worst[t] = f.worst
 			}
 			reason := f.short()
@@ -318,7 +297,7 @@ func hostActions(inv vulnx.HostInventory, fs []finding) []hostAction {
 		}
 		a.targets = append(a.targets, t.name)
 		a.why[t.name] = why[t]
-		if severityRank[worst[t]] < severityRank[a.worst] {
+		if vulnx.WorseSeverity(worst[t], a.worst) {
 			a.worst = worst[t]
 		}
 	}
@@ -338,5 +317,5 @@ func hostActions(inv vulnx.HostInventory, fs []finding) []hostAction {
 // actionRank orders a tier's actions: the system first, then package managers, then programs one by one.
 func actionRank(kind string) int {
 	return slices.Index([]string{"macos", "apt", "dnf", "apk", "app", "brew", "pip", "npm", "gem", "go-install", "cargo",
-		"binary", "system", "other"}, kind)
+		"binary", "system", "pin", "other"}, kind)
 }

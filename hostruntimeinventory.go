@@ -204,7 +204,7 @@ func (inv *HostInventory) runtimeAdditions(ctx context.Context, read func(*os.Fi
 		}
 	}
 	a.Read = len(r.Processes) > 0
-	a.Detail = fmt.Sprintf("%d executable files identified, %d not assessed", identified, len(a.Unassessed))
+	a.Detail = fmt.Sprintf("%d executable files identified, %d not checked", identified, len(a.Unassessed))
 	return a
 }
 
@@ -259,7 +259,6 @@ func (inv *HostInventory) applyRuntimeAdditions(a runtimeAdditions) {
 		}
 		h.add(runtimeInventorySource, a.Detail, found, a.Unassessed)
 	}
-	h.inv.Note = h.note()
 	*inv = h.inv
 }
 

@@ -250,7 +250,9 @@ and sorting work with `--cpe`; keywords, vendor and facets do not.
 
 **Scan a dependency file or a list of package versions:** lockfiles (package-lock.json, yarn.lock,
 pnpm-lock.yaml, poetry.lock, uv.lock, Cargo.lock, go.mod, Gemfile.lock, composer.lock, ...), CycloneDX / SPDX JSON
-SBOMs, compose.yaml or a Dockerfile; or versions given directly:
+SBOMs, compose.yaml or a Dockerfile; or versions given directly. A file is uploaded to SecurityContext and scanned
+there; an SBOM is read locally and its components checked as a list. OS packages in CycloneDX and SPDX SBOMs are
+judged by their distribution's advisories, as with `--host`:
 ```bash
 vulnx scan package-lock.json
 vulnx scan npm/lodash@4.17.20 pypi/django@3.2.0 apache:tomcat@8.5.62
@@ -265,100 +267,78 @@ vulnx scan --image ghcr.io/owner/name:tag --platform linux/arm64
 vulnx scan --host                                       # this machine
 vulnx scan --host --root /mnt/rootfs                    # a mounted Linux filesystem
 ```
-`--host` reads Linux packages from dpkg, apk or rpm with the release from `/etc/os-release` (Debian, Ubuntu,
-Alpine, RHEL, Rocky Linux, AlmaLinux), judged by the distribution's own advisories, so backported fixes count;
-on macOS it checks the macOS version against Apple's per-release fixes. It also reads what is installed beside the
-OS packages: Python, npm and Ruby packages outside the distribution's own directories, the modules linked into Go
-binaries on PATH and the crates Rust binaries embed, and on macOS Homebrew formulae and applications. Homebrew
-formulae and applications have no package ecosystem, so only those with a known product are judged; the rest are
-listed as not assessed, with a count per source. Only names and versions are sent.
+`--host` reads what is installed:
 
-Live host scans also save a passive `host.runtime` snapshot in the local JSON report: TCP listeners, bound UDP
-endpoints, visible owner processes, numeric account IDs and executable paths. Exact executable-path matches link
-back to inventory entries; they do not prove that dependencies are loaded or exploitable. Collection is time-bounded
-and permission-limited, with timestamps, scope and explicit gaps; mounted-root scans skip it. The CLI runs runtime
-collection and metadata parsing in a separate worker with a deadline, retaining a completed socket snapshot if later
-enrichment cannot finish. Wildcard and specific
-bind addresses do not establish internet access. No services are contacted, privileges elevated, or process arguments,
-environments or secret contents collected. Runtime observations are not sent to the API or included in shared SBOMs.
+- OS packages: on Linux from dpkg, apk or rpm, with the release from `/etc/os-release` (Debian, Ubuntu, Alpine,
+  RHEL, Rocky Linux, AlmaLinux), judged by the distribution's own advisories, so backported fixes count; on macOS
+  the macOS version, against Apple's per-release fixes.
+- Python, npm and Ruby packages outside the distribution's own directories, `uv tool` and `pipx` environments
+  included.
+- The modules linked into Go binaries on PATH and the crates Rust binaries embed.
+- On macOS, Homebrew formulae and applications. They have no package ecosystem, so only those with a known product
+  are judged: a formula whose own source repository a product lists, an application by its bundle, an Electron
+  application by its framework version and the npm packages in its bundle. The rest are listed as not checked.
+- AI tools: assistant and editor applications, agent command-line tools, AI editor extensions, and the packages
+  MCP servers are started from (`npx server@1.2.0`, `uvx server==1.2.0`) in each agent's configuration. A server
+  with no version pinned, or one that is a local program, is listed as not checked. The harnesses read are Claude
+  Code and Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Qwen Code, OpenCode, Copilot CLI, Goose,
+  Amp, Droid, Kiro, Amazon Q, Zed, Crush, Junie, LM Studio, Continue, and the Cline, Roo Code and Kilo Code
+  extensions.
+- Local models: the models in the Hugging Face cache, LM Studio's and Ollama's stores and the PyTorch hub cache.
 
-Verified listening executables outside the usual installation paths are also read for embedded Go module or Rust
-crate versions. Their package identifiers join the normal vulnerability checks under `runtime binaries`; unsupported
-or changed executables remain unassessed. Files are never started to discover a version. The JSON distinguishes exact
-component matches from `contained_in` installation relationships: an app helper or language runtime can reside in a
-known installation without proving which packages it loaded. Runtime-discovered executable locations remain local
-when exporting a shared SBOM. Inventory totals and findings can grow; the terminal format and original graph layout
-stay the same. The local JSON contains paths and addresses: review it before sharing.
+**What is sent:** the names and versions of the components it finds, editor extensions and MCP server packages
+included, are sent to SecurityContext to be checked. From a configuration only a package's name and version are
+read, never its environment or headers. Paths, where each component was found and the runtime snapshot stay on this
+machine, in the local JSON.
 
-AI tools are read as a source of their own: assistant and editor applications, an agent command-line tool that
-updates itself, AI editor extensions, and the packages MCP servers are started from (`npx server@1.2.0`,
-`uvx server==1.2.0`) in each agent's configuration. A server with no version pinned, or one that is a local program,
-is listed as not assessed. Only the package name and version are read from a configuration, never its environment.
-Python tools installed in their own environment (`uv tool`, `pipx`) are read with the other Python packages.
+**The terminal** shows one screen, the grid: per source, the findings a program can reach by worst severity, with
+the number known to be exploited and the number of components checked. Under it, `Agent setup` counts what coding
+agents and editors load and run for you (editor extensions, skills, plugins, hooks, MCP servers) and lists the
+ones whose setup lets someone else decide what runs on the machine: an MCP server with no version pinned, fetched
+from a git URL or another registry, or reached over plain http; an extension installed from a file, named like a
+well-known one from another publisher, or removed by its marketplace as malware, an impersonation or
+untrustworthy; a skill or hook that downloads code and runs it, or whose instructions carry invisible characters;
+an agent set to run commands without asking; a model file that imports something that runs commands when loaded;
+Ollama or LM Studio set to listen beyond this machine. These are read from the files and are risks, not verdicts:
+the JSON lists them under `host.agent_surface` and `host.risks`, apart from the vulnerabilities.
 
-`--graph` also writes `vulnx-host-<date>.graph.html`: one local page, with no network and nothing uploaded, that
-draws the findings as a graph of where things are installed, the affected components there and the advisories that
-affect them. It lists the advisories that reach the most places and the places with the most findings, and a click
-shows what a node connects to and how to update it.
-
-The harnesses read: Claude Code and Claude Desktop, Codex, Cursor, VS Code, Windsurf, Gemini CLI, Qwen Code,
-OpenCode (its `plugin` packages and local plugin files too), Copilot CLI, Goose, Amp, Droid, Kiro, Amazon Q, Zed,
-Crush, Junie, LM Studio, Continue, and the Cline, Roo Code and Kilo Code extensions. One that is not installed
-reads nothing.
-
-Local models are read too: the models in the Hugging Face cache, LM Studio's and Ollama's stores and the PyTorch
-hub cache. A model file that is a pickle can run code when it is loaded (safetensors and GGUF cannot): one whose
-pickle imports something that runs commands is flagged, the others are counted. Also said: a model that ships its
-own code, and Ollama or LM Studio set to listen beyond this machine, since neither asks for a login. The runtimes
-themselves (Ollama, llama.cpp, vLLM, MLX) are checked with the binaries, formulae and Python packages.
-
-Under the grid, `Agent setup` counts what coding agents and editors load and run for you: editor extensions, skills,
-plugins, hooks and MCP servers. It then lists the ones whose setup lets someone else decide what runs on the
-machine: an MCP server with no version pinned, fetched from a git URL or another registry, or reached over plain
-http; an extension installed from a file or named like a well-known one from another publisher; a skill or hook
-that downloads code and runs it, or whose instructions carry invisible characters; an agent set to run commands
-without asking. Every installed editor extension is also checked against the marketplaces' own removal lists (the Visual Studio
-Marketplace's and Open VSX's): one removed as malware, as an impersonation or as untrustworthy is named there.
-An extension on no list is counted as checked, which says only that no marketplace removed it.
-These are read from the files and are risks, not verdicts: they are listed in the JSON report
-under `host.agent_surface` and `host.risks`, apart from the vulnerabilities.
-
-A formula is judged by product when its own source repository is the one the product lists: vulnx reads the
-repository from the formula's own file and asks SecurityContext which products list it, keeping only a product that
-lists that repository alone. An application built
-on the Electron framework is judged by the framework's version and the npm packages in its bundle. A product the
-index turns out not to know is listed as not checked instead of clean, and a formula with nothing that runs
-(certificates, headers) is left out as data.
-
-For Go binaries it also checks reachability: SecurityContext returns the functions each Go advisory names as affected,
-and vulnx looks them up in each binary's own function table (present in stripped binaries too). A finding is
-reachable when the binary links a listed function, and not reachable when it links no function of any affected
-package; it stays unknown when the package is linked but no listed function is, since the compiler may have inlined
-it. "Fix first" leaves out module versions no binary can reach and shows, per component, how many of the binaries
-carrying it link an affected function (LINKED).
-
-The terminal shows one screen: the reachable findings per source and severity. Every scan also writes the full
-result as `vulnx-host-<date>.json` in the current directory: every component with its advisories, where it was
-found, how to update it, Go reachability, the runtime snapshot and what was not checked.
+A scan printed to the terminal also writes the full result as `vulnx-host-<date>.json` in the current directory
+(readable by you only): every component with its advisories, where it was found, how to update it, Go reachability,
+the runtime snapshot and what was not checked. `--json`, `-o` and `--vex` write the result instead.
 ```bash
-vulnx scan --host                       # one screen, and the full result as vulnx-host-<date>.json
-vulnx scan --host --report              # also a report URL that auto-expires in 24 hours
-vulnx scan --host --sbom                # also write what was checked as a CycloneDX SBOM (vulnx-host-<date>.cdx.json)
-vulnx scan --host --view actions        # in the terminal: what to update, most urgent first
+vulnx scan --host                       # the grid, and the full result as vulnx-host-<date>.json
+vulnx scan --host --view actions        # what to update, most urgent first, as commands
 vulnx scan --host --view details        # per component (also: brief, programs, markdown)
 vulnx scan --host --json                # the full result on stdout (-o names a file)
-vulnx scan --host --fail-on kev         # exit 2 when a reachable finding is known exploited, critical or high
+vulnx scan --host --sbom                # also write what was checked as a CycloneDX SBOM (vulnx-host-<date>.cdx.json)
+vulnx scan --host --graph               # also write a local graph page of the findings
+vulnx scan --host --report              # also upload the SBOM and print a link that expires in 24 hours
+vulnx scan --host --fail-on kev         # exit 2 if a reachable finding is known exploited
+vulnx scan --host --fail-on high        # exit 2 if one is known exploited, critical or high
 ```
 
-The SBOM names, for each component, how it was installed and the places that hold it, and for each such place where
-it is on disk and how it is updated (`brew upgrade caddy`, `go install ...@latest`, an application to update); home
-directories read `~`. Places seen only through the runtime snapshot stay out of it.
+**Go reachability:** SecurityContext returns the functions each Go advisory names as affected, and vulnx looks them
+up in each binary's own function table (present in stripped binaries too). A finding is reachable when the binary
+links a listed function and not reachable when it links no function of any affected package; it stays unknown when
+the package is linked but no listed function is, since the compiler may have inlined it. Module versions no program
+can reach are not counted.
 
-`--report` is the one option that uploads more than a check does: it stores the machine's component names and
-versions on SecurityContext under an unlisted link, which anyone who has the link can read. The link works for a
-day. After that it stops answering; SecurityContext keeps the names and versions for analysis, no longer tied to who
-sent them. Against an API that cannot expire a link, `--report` uploads nothing. The hosted page shows the verdicts;
-where each component was found, Go reachability and the runtime snapshot are in the local JSON. OS packages in CycloneDX and SPDX SBOMs are judged the same way.
+**Runtime snapshot:** a scan of this machine also records, in the local JSON only, a passive snapshot under
+`host.runtime`: TCP listeners, bound UDP endpoints, the visible processes that own them, their numeric account IDs
+and executable paths. It is collected in a separate worker with a deadline, limited by what the account may see,
+and states its scope and gaps. No service is contacted, no privilege raised, and no process arguments,
+environments or secrets read; a listening executable's embedded Go or Rust package versions are read from the file,
+never by running it. Wildcard and specific bind addresses do not establish internet access. `--root` skips it.
+
+`--sbom` names, for each component, the source that read it and the places that hold it, and for each place where
+it is on disk and how it is updated; home directories read `~`, and places seen only by the runtime snapshot are
+left out. `--graph` writes `vulnx-host-<date>.graph.html`: one page that loads nothing from the network, drawing
+the places things are installed in, the affected components there and the advisories that affect them.
+
+`--report` uploads the SBOM: it stores the machine's component names and versions, with the places above, on
+SecurityContext under an unlisted link, which anyone who has the link can read. The link works for a day; after
+that it stops answering, and SecurityContext keeps the names and versions for analysis, no longer tied to who sent
+them. Against an API that cannot expire a link, `--report` uploads nothing.
 
 A VEX document has one statement per package and CVE: affected (with the fixed version when known) or under
 investigation (with the reason). Clean packages get no statement.

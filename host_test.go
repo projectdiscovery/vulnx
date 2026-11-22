@@ -357,11 +357,18 @@ func TestHostLinuxSources(t *testing.T) {
 	if inv.Source != "dpkg" || len(inv.NotAssessed) != 0 {
 		t.Errorf("source %q, not assessed %v", inv.Source, inv.NotAssessed)
 	}
-	for _, want := range []string{"dpkg 1", "python 3 (2 site-packages dirs)", "npm 4 (2 global node_modules)",
-		"gems 2 (1 gem dir)", "go binaries", "(1 binary)", "rust binaries 1 (1 binary)", "not read: "} {
-		if !strings.Contains(inv.Note, want) {
-			t.Errorf("note lacks %q:\n%s", want, inv.Note)
+	sources := map[string]string{}
+	for _, s := range inv.Sources {
+		sources[s.Name] = fmt.Sprintf("%d (%s)", s.Sent, s.Detail)
+	}
+	for name, want := range map[string]string{"dpkg": "1 ()", "python": "3 (2 site-packages dirs)", "npm": "4 (2 global node_modules)",
+		"gems": "2 (1 gem dir)", "rust binaries": "1 (1 binary)"} {
+		if sources[name] != want {
+			t.Errorf("%s: %q, want %q", name, sources[name], want)
 		}
+	}
+	if !strings.HasSuffix(sources["go binaries"], "(1 binary)") || len(inv.NotRead) == 0 {
+		t.Errorf("go binaries %q, not read %q", sources["go binaries"], inv.NotRead)
 	}
 }
 
@@ -374,8 +381,8 @@ func TestHostNoPackageDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(inv.Entries, ",") != "pkg:pypi/flask@2.0.0" || !strings.Contains(inv.Note, "no dpkg, apk or rpm package database") {
-		t.Errorf("%v\n%s", inv.Entries, inv.Note)
+	if strings.Join(inv.Entries, ",") != "pkg:pypi/flask@2.0.0" || !strings.Contains(strings.Join(inv.NotRead, "\n"), "no dpkg, apk or rpm package database") {
+		t.Errorf("%v\n%s", inv.Entries, inv.NotRead)
 	}
 	if _, err := HostEntries(context.Background(), t.TempDir()); err == nil {
 		t.Error("a root without os-release should fail")
@@ -442,8 +449,8 @@ func TestHostHomebrew(t *testing.T) {
 	if fmt.Sprint(h.inv.DataOnly) != "[{ca-certificates 2026-10-20 homebrew }]" {
 		t.Errorf("data only: %v", h.inv.DataOnly)
 	}
-	if n := h.note(); !strings.Contains(n, "8 formulae: 2 by product, 4 by their packages or binaries), 1 not assessed") {
-		t.Errorf("note: %s", n)
+	if s := h.inv.Sources[len(h.inv.Sources)-1]; s.Name != "homebrew" || s.Detail != "8 formulae: 2 by product, 4 by their packages or binaries" || s.NotAssessed != 1 {
+		t.Errorf("source: %+v", s)
 	}
 }
 
@@ -469,8 +476,8 @@ func TestHostApplications(t *testing.T) {
 	if fmt.Sprint(h.inv.NotAssessed) != "[{Broken  applications } {Editor 2.1 (300) applications }]" {
 		t.Errorf("not assessed: %v", h.inv.NotAssessed)
 	}
-	if n := h.note(); !strings.Contains(n, "applications 2 (4 bundles), 2 not assessed") {
-		t.Errorf("note: %s", n)
+	if s := h.inv.Sources[0]; s.Name != "applications" || s.Sent != 2 || s.Detail != "4 bundles" || s.NotAssessed != 2 {
+		t.Errorf("source: %+v", s)
 	}
 }
 

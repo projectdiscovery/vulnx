@@ -8,13 +8,13 @@
 <style>
 :root {
   --surface: #fcfcfb; --panel: #f4f3f0; --line: #e2e1dc; --text: #0b0b0b; --text-2: #52514e; --text-3: #8a8983;
-  --place: #2a78d6; --critical: #d03b3b; --high: #ec835a; --medium: #fab219; --low: #8a8983; --unrated: #b9b8b1;
+  --place: #2a78d6; --critical: #d03b3b; --high: #ec835a; --medium: #fab219; --low: #4f9a6a; --unrated: #b9b8b1;
   --edge: rgba(82, 81, 78, .22); --edge-strong: rgba(11, 11, 11, .55);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --surface: #1a1a19; --panel: #232322; --line: #383835; --text: #f0efec; --text-2: #c3c2b7; --text-3: #8a8983;
-    --place: #3987e5; --low: #8a8983; --unrated: #5e5d58;
+    --place: #3987e5; --low: #62b07e; --unrated: #5e5d58;
     --edge: rgba(195, 194, 183, .18); --edge-strong: rgba(240, 239, 236, .6);
   }
 }
@@ -58,7 +58,6 @@ aside h2:first-child { margin-top: 0; }
 .row .n { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .row .bar { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--place); opacity: .75; }
 .row small { color: var(--text-3); grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pill { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--text-2); margin-right: 4px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 #detail .title { font-size: 14px; font-weight: 600; word-break: break-word; }
 #detail .kv { color: var(--text-2); margin: 2px 0 8px; }
@@ -103,14 +102,14 @@ body.table #tableview { display: block; }
     <canvas id="c"></canvas>
     <div id="tip"></div>
     <div id="legend">
-      <span><i class="sq"></i>where it is installed</span>
+      <span><i class="sq"></i>place</span>
       <span><i class="ci" style="background:var(--text-3)"></i>component</span>
       <span><i class="di" style="background:var(--text-3)"></i>advisory</span>
       <span><i class="ci" style="background:var(--critical)"></i>critical</span>
       <span><i class="ci" style="background:var(--high)"></i>high</span>
       <span><i class="ci" style="background:var(--medium)"></i>medium</span>
       <span><i class="ci" style="background:var(--low)"></i>low</span>
-      <span><i class="ring"></i>known-exploited advisory</span>
+      <span><i class="ring"></i>known exploited advisory</span>
     </div>
   </div>
   <div id="tableview"><table><thead><tr><th>Component</th><th>Severity</th><th>Installed in</th><th>Advisories</th><th>Fixed in</th></tr></thead><tbody id="tbody"></tbody></table></div>
@@ -196,7 +195,7 @@ function fit() {
   view = { k, x: -(x0 + x1) / 2 * k, y: -(y0 + y1) / 2 * k - 16 };
 }
 
-// ---- layout: springs on links, repulsion through a grid, a pull to the centre
+// ---- layout: springs on links, repulsion through a grid, a pull to the center
 function step() {
   const cell = 90, grid = new Map();
   for (const n of nodes) {
@@ -244,14 +243,12 @@ function palette() {
   colors = {};
   for (const k of ["surface", "text", "text-2", "text-3", "place", "critical", "high", "medium", "low", "unrated", "edge", "edge-strong", "line"]) colors[k] = css("--" + k);
 }
-function lit() { // the focused (or hovered) node and what it connects to, two steps out
+function lit() { // the focused (or hovered) node and what it connects to: a component's places and advisories, any other node's two steps out
   const id = state.focus || (state.hover && state.hover.id);
   if (!id) return null;
   const set = new Set([id]);
-  for (const a of adj.get(id) || []) { set.add(a); for (const b of adj.get(a) || []) set.add(b); }
-  if (byId.get(id) && byId.get(id).type === "comp") { // a component: its places and its advisories only
-    set.clear(); set.add(id); for (const a of adj.get(id)) set.add(a);
-  }
+  const twoSteps = !(byId.get(id) && byId.get(id).type === "comp");
+  for (const a of adj.get(id) || []) { set.add(a); if (twoSteps) for (const b of adj.get(a) || []) set.add(b); }
   return set;
 }
 function matches(n) { return state.q && n.label.toLowerCase().includes(state.q); }
@@ -348,9 +345,9 @@ function tip(n, ev) {
 }
 
 // ---- side panel
-function focus(id, centre) {
+function focus(id, center) {
   state.focus = id;
-  if (id && centre) { const n = byId.get(id); if (n) { view.x = -n.x * view.k; view.y = -n.y * view.k; } }
+  if (id && center) { const n = byId.get(id); if (n) { view.x = -n.x * view.k; view.y = -n.y * view.k; } }
   detail(); draw();
 }
 function sevDot(sev) { const d = el("span", "dot"); d.style.background = `var(--${SEV.includes(sev) ? sev : "unrated"})`; return d; }
@@ -382,7 +379,7 @@ function detail() {
   const d = $("detail"); d.replaceChildren();
   const n = state.focus && byId.get(state.focus);
   if (!n) { d.append(el("div", "note", "Click a node, or a row below, to see what it connects to.")); return; }
-  d.append(el("h2", "", n.type === "place" ? "Where it is installed" : n.type === "adv" ? "Advisory" : "Component"));
+  d.append(el("h2", "", n.type === "place" ? "Place" : n.type === "adv" ? "Advisory" : "Component"));
   d.append(el("div", "title", n.label));
   if (n.type === "place" && n.ref.path) d.append(el("small", "path", n.ref.path));
   d.append(el("div", "kv", n.type === "place" ? `${n.deg} affected component${n.deg === 1 ? "" : "s"} · ${n.ref.source}` : describe(n)));
@@ -443,7 +440,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { pa
 (function init() {
   $("sub").textContent = `${D.os} · scanned ${D.date} · ${fmt(D.checked)} components checked`;
   const count = (f) => D.comps.filter(f).length;
-  [[D.comps.length, "affected components"], [count((c) => c.mark === "KEV"), "with a known-exploited advisory"], [count((c) => c.sev === "critical"), "critical"],
+  [[D.comps.length, "affected components"], [count((c) => c.mark === "KEV"), "with a known exploited advisory"], [count((c) => c.sev === "critical"), "critical"],
    [D.advs.length, "distinct advisories"], [D.places.length, "places they are installed in"]].forEach(([n, t]) => { const s = el("div", "stat"); s.append(el("b", "", fmt(n)), el("span", "", t)); $("stats").append(s); });
   const src = $("source"); src.append(new Option("All sources", ""));
   [...new Set(D.comps.map((c) => c.source))].sort().forEach((s) => src.append(new Option(s, s)));

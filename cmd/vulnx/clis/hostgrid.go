@@ -25,7 +25,7 @@ var gridSeverities = []string{"critical", "high", "medium", "low"}
 // gridBar draws a grid bar: a block a little short of the line's height, so bars in adjacent rows stay apart.
 const gridBar = "▆"
 
-// gridColors are the bars' colors: red, orange, yellow, green, as the report's.
+// gridColors are the bars' 256-color codes: red, orange, yellow and green, the hues the graph page uses.
 var gridColors = map[string]string{"critical": "\033[38;5;203m", "high": "\033[38;5;208m", "medium": "\033[38;5;178m", "low": "\033[38;5;71m"}
 
 // hostCounts are a host scan's headline numbers.
@@ -82,7 +82,7 @@ func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, t
 
 // hostFooter is the last line of the grid view, after any report links: what was scanned and how long it took.
 func hostFooter(inv vulnx.HostInventory, elapsed time.Duration, c *renderer.ColorConfig) string {
-	line := fmt.Sprintf("%s: %s components scanned", termClean(inv.OS), thousands(len(inv.Entries)))
+	line := fmt.Sprintf("%s: %s components scanned", termClean(inv.OS), formatNumber(len(inv.Entries)))
 	if elapsed > 0 {
 		line += " in " + elapsed.Round(time.Second).String()
 	}
@@ -95,8 +95,8 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
 	rows, total, n := hostGrid(inv, res)
 	fmt.Fprintf(&b, "\n  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
-		c.Colorize(thousands(n.Affected), renderer.Bold), c.Colorize(thousands(n.Reachable), renderer.Bold),
-		c.Colorize(thousands(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(thousands(n.PublicExploit), renderer.Bold))
+		c.Colorize(formatNumber(n.Affected), renderer.Bold), c.Colorize(formatNumber(n.Reachable), renderer.Bold),
+		c.Colorize(formatNumber(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(formatNumber(n.PublicExploit), renderer.Bold))
 
 	width := len("SOURCE")
 	peak := 1
@@ -123,7 +123,7 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 			if bars {
 				b.WriteString("  " + cell(v, gridSeverities[i]))
 			} else {
-				fmt.Fprintf(&b, "  %4s%7s", thousands(v), "")
+				fmt.Fprintf(&b, "  %4s%7s", formatNumber(v), "")
 			}
 		}
 		exploited := fmt.Sprintf("%9s", "-")
@@ -132,7 +132,7 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 		} else {
 			exploited = dim(exploited)
 		}
-		fmt.Fprintf(&b, "  %s  %8s\n", exploited, thousands(r.Checked))
+		fmt.Fprintf(&b, "  %s  %8s\n", exploited, formatNumber(r.Checked))
 	}
 	for _, r := range rows {
 		line(r, true)
@@ -148,10 +148,10 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 				parts = append(parts, fmt.Sprintf("%d %s", s.NotAssessed, s.Name))
 			}
 		}
-		b.WriteString(dim(fmt.Sprintf("  Not checked: %s with no exact identifier (%s)", thousands(len(inv.NotAssessed)), strings.Join(parts, ", "))) + "\n")
+		b.WriteString(dim(fmt.Sprintf("  Not checked: %s with no exact identifier (%s)", formatNumber(len(inv.NotAssessed)), strings.Join(parts, ", "))) + "\n")
 	}
 	if n.NotLinked > 0 {
-		b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", thousands(n.NotLinked))) + "\n")
+		b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", formatNumber(n.NotLinked))) + "\n")
 	}
 	if res.FunctionsUnavailable {
 		b.WriteString(dim("  Go reachability was not checked (the API does not serve affected functions yet)") + "\n")
@@ -197,16 +197,16 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 	}
 	var b strings.Builder
 	head := "  Agent setup: " + strings.Join(parts, ", ")
-	findings := 0
+	risky := 0
 	for _, r := range inv.Risks {
 		if !infoRisks[r.Risk] {
-			findings++
+			risky++
 		}
 	}
 	if len(inv.Risks) == 0 {
 		return dim(head+", no risky setup found") + "\n"
 	}
-	if findings == 0 {
+	if risky == 0 {
 		head += ", no risky setup found"
 	}
 	b.WriteString(head + "\n")

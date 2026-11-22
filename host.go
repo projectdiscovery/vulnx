@@ -32,6 +32,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -64,7 +65,6 @@ type HostInventory struct {
 	EntrySource map[string]string       `json:"-"`                   // entry -> the source (HostSource.Name) that counted it
 	DataOnly    []HostComponent         `json:"data_only"`           // installed, but nothing in them runs: nothing to check
 	Pending     []HostPending           `json:"-"`                   // read with a source repository but no product yet: ResolvePending decides
-	Note        string                  `json:"-"`                   // per source counts, and what is not read, as text
 	// AgentSurface is what coding agents and editors load and run on the user's behalf: editor extensions, skills,
 	// plugins, hooks and MCP servers. Risks are the ones whose setup lets someone else change what runs here.
 	AgentSurface []HostAgentItem `json:"agent_surface"`
@@ -79,7 +79,7 @@ type HostInventory struct {
 // HostFix is how to update what was found in one place (a FoundIn label): a command the components or Target are
 // appended to, or, with no command, Note says what to do.
 type HostFix struct {
-	Kind    string `json:"kind"`              // macos, app, brew, go-install, cargo, binary, pip, npm, gem, apt, dnf, apk, system
+	Kind    string `json:"kind"`              // macos, app, brew, go-install, cargo, binary, pip, npm, gem, apt, dnf, apk, system, pin
 	Command string `json:"command,omitempty"` // "brew upgrade", "/opt/homebrew/bin/python3.12 -m pip install -U", ...
 	Target  string `json:"target,omitempty"`  // what the command names for this place (a formula, a Go package); empty: the components
 	Note    string `json:"note,omitempty"`    // what to do when there is no command ("update Wireshark")
@@ -170,7 +170,6 @@ func HostEntries(ctx context.Context, root string) (HostInventory, error) {
 	}
 	h.aiTools()
 	h.localModels()
-	h.inv.Note = h.note()
 	return h.inv, nil
 }
 
@@ -359,25 +358,6 @@ func (h *hostReader) add(name, detail string, entries []found, notAssessed []Hos
 		h.inv.NotAssessed = append(h.inv.NotAssessed, c)
 	}
 	h.inv.Sources = append(h.inv.Sources, src) // a reader that found nothing is reported too
-}
-
-func (h *hostReader) note() string {
-	var parts []string
-	for _, s := range h.inv.Sources {
-		p := fmt.Sprintf("%s %d", s.Name, s.Sent)
-		if s.Detail != "" {
-			p += " (" + s.Detail + ")"
-		}
-		if s.NotAssessed > 0 {
-			p += fmt.Sprintf(", %d not assessed", s.NotAssessed)
-		}
-		parts = append(parts, p)
-	}
-	note := "read: " + strings.Join(parts, "; ")
-	if len(h.inv.NotRead) > 0 {
-		note += "\nnot read: " + strings.Join(h.inv.NotRead, "; ")
-	}
-	return note
 }
 
 // commandOutputCap bounds what vulnx reads from a program it runs (rpm -qa lists every package: a few MiB).
@@ -1582,33 +1562,35 @@ func (g goFunctions) verdict(lists []AffectedPackage) string {
 
 // pclntab returns a Go executable's pclntab section and the address of its text section (ELF, Mach-O, universal).
 func pclntab(path string) (tab []byte, text uint64, err error) {
-	if f, err := elf.Open(path); err == nil {
-		defer func() { _ = f.Close() }()
+	if f, openErr := elf.Open(path); openErr == nil {
 		s, t := f.Section(".gopclntab"), f.Section(".text")
 		if s == nil || t == nil {
-			return nil, 0, fmt.Errorf("%s: no Go function table", path)
+			return nil, 0, errors.Join(fmt.Errorf("%s: no Go function table", path), f.Close())
 		}
-		tab, err := s.Data()
-		return tab, t.Addr, err
+		tab, err = s.Data()
+		return tab, t.Addr, errors.Join(err, f.Close())
 	}
-	var mf *macho.File
-	if ff, err := macho.OpenFat(path); err == nil {
-		defer func() { _ = ff.Close() }()
-		if len(ff.Arches) > 0 {
-			mf = ff.Arches[0].File
+	if ff, openErr := macho.OpenFat(path); openErr == nil {
+		if len(ff.Arches) == 0 {
+			return nil, 0, errors.Join(fmt.Errorf("%s: an empty universal binary", path), ff.Close())
 		}
-	} else if f, err := macho.Open(path); err == nil {
-		defer func() { _ = f.Close() }()
-		mf = f
+		tab, text, err = machoPclntab(path, ff.Arches[0].File)
+		return tab, text, errors.Join(err, ff.Close())
 	}
-	if mf == nil {
+	f, err := macho.Open(path)
+	if err != nil {
 		return nil, 0, fmt.Errorf("%s: not an ELF or Mach-O executable", path)
 	}
+	tab, text, err = machoPclntab(path, f)
+	return tab, text, errors.Join(err, f.Close())
+}
+
+func machoPclntab(path string, mf *macho.File) ([]byte, uint64, error) {
 	s, t := mf.Section("__gopclntab"), mf.Section("__text")
 	if s == nil || t == nil {
 		return nil, 0, fmt.Errorf("%s: no Go function table", path)
 	}
-	tab, err = s.Data()
+	tab, err := s.Data()
 	return tab, t.Addr, err
 }
 

@@ -23,15 +23,6 @@ func colorConfig() *renderer.ColorConfig {
 	return renderer.DefaultColorConfig()
 }
 
-// thousands formats n with comma separators.
-func thousands(n int) string {
-	s := fmt.Sprint(n)
-	for i := len(s) - 3; i > 0; i -= 3 {
-		s = s[:i] + "," + s[i:]
-	}
-	return s
-}
-
 // hostFixFirst is how many affected components a host report lists before --show-all.
 const hostFixFirst = 25
 
@@ -70,18 +61,18 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
 
 	notAssessed := len(inv.NotAssessed)
-	title(fmt.Sprintf("%s · %s components checked · %s not assessed", termClean(inv.OS), thousands(len(inv.Entries)), thousands(notAssessed)))
-	b.WriteString("  " + dim(fmt.Sprintf("%-14s %8s %13s  %s", "SOURCE", "CHECKED", "NOT ASSESSED", "READ FROM")) + "\n")
+	title(fmt.Sprintf("%s · %s components checked · %s not checked", termClean(inv.OS), formatNumber(len(inv.Entries)), formatNumber(notAssessed)))
+	b.WriteString("  " + dim(fmt.Sprintf("%-14s %8s %13s  %s", "SOURCE", "CHECKED", "NOT CHECKED", "READ FROM")) + "\n")
 	for _, s := range inv.Sources {
 		na := "-"
 		if s.NotAssessed > 0 {
-			na = thousands(s.NotAssessed)
+			na = formatNumber(s.NotAssessed)
 		}
 		detail := s.Detail
 		if detail == "" {
 			detail = s.Name
 		}
-		fmt.Fprintf(&b, "  %-14s %8s %13s  %s\n", s.Name, thousands(s.Sent), na, termClean(detail))
+		fmt.Fprintf(&b, "  %-14s %8s %13s  %s\n", s.Name, formatNumber(s.Sent), na, termClean(detail))
 	}
 	if len(inv.NotRead) > 0 {
 		b.WriteString(dim("  Not read: "+termClean(strings.Join(inv.NotRead, "; "))) + "\n")
@@ -114,15 +105,15 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	s := res.Summary
 	title("Result")
 	fmt.Fprintf(&b, "  %s affected · %s undetermined · %s clean\n",
-		c.Colorize(thousands(s.Affected), renderer.Bold+renderer.Red), thousands(s.Undetermined), thousands(s.Clean))
+		c.Colorize(formatNumber(s.Affected), renderer.Bold+renderer.Red), formatNumber(s.Undetermined), formatNumber(s.Clean))
 	if kev > 0 || poc > 0 {
 		fmt.Fprintf(&b, "  %s with a known exploited CVE · %s more with a public exploit\n",
-			c.Colorize(thousands(kev), renderer.Bold+renderer.BrightRed), thousands(poc))
+			c.Colorize(formatNumber(kev), renderer.Bold+renderer.BrightRed), formatNumber(poc))
 	}
 	var sev []string
 	for _, k := range []string{"critical", "high", "medium", "low"} {
 		if n := s.BySeverity[k]; n > 0 {
-			sev = append(sev, c.ColorSeverity(k)+" "+thousands(n))
+			sev = append(sev, c.ColorSeverity(k)+" "+formatNumber(n))
 		}
 	}
 	if len(sev) > 0 {
@@ -174,14 +165,14 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 			g.open += len(r.Unknown)
 			g.carriers += len(r.Reachable) + len(r.NotReachable) + len(r.Unknown)
 		}
-		if severityRank[worst] < severityRank[g.worst] {
+		if vulnx.WorseSeverity(worst, g.worst) {
 			g.worst = worst
 		}
 		if m := exploit[it.Input]; exploitRank[m] < exploitRank[g.mark] {
 			g.mark = m
 		}
 		g.cves = max(g.cves, cves)
-		if g.fix == "" || versionLess(g.fix, it.FixedVersion) {
+		if g.fix == "" || vulnx.VersionLess(g.fix, it.FixedVersion) {
 			g.fix = it.FixedVersion
 		}
 		for _, in := range inv.FoundIn[it.Input] {
@@ -198,7 +189,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 				placeOrder = append(placeOrder, p)
 			}
 			p.components[name] = true
-			if severityRank[worst] < severityRank[p.worst] {
+			if vulnx.WorseSeverity(worst, p.worst) {
 				p.worst = worst
 			}
 			if m := exploit[it.Input]; exploitRank[m] < exploitRank[p.mark] {
@@ -210,8 +201,8 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 		if exploitRank[m1] != exploitRank[m2] {
 			return exploitRank[m1] < exploitRank[m2]
 		}
-		if severityRank[w1] != severityRank[w2] {
-			return severityRank[w1] < severityRank[w2]
+		if vulnx.SeverityRank(w1) != vulnx.SeverityRank(w2) {
+			return vulnx.WorseSeverity(w1, w2)
 		}
 		return n1 > n2
 	}
@@ -280,10 +271,10 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 			kinds[i] = fmt.Sprintf("%s %d", k, byKind[k])
 		}
 		b.WriteString(dim("  by type: "+strings.Join(kinds, " · ")) + "\n")
-		b.WriteString(dim("  LINKED: binaries that link a function the advisories name as affected, of those carrying it; ? some are "+
+		b.WriteString(dim("  LINKED: programs that link a function the advisories name as affected, of those carrying it; ? some are "+
 			"unknown (no function list, or the package is linked but no listed function by name: it may be inlined)") + "\n")
 		if notLinked > 0 {
-			b.WriteString(dim(fmt.Sprintf("  left out: %s Go module versions whose binaries link none of the affected functions", thousands(notLinked))) + "\n")
+			b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", formatNumber(notLinked))) + "\n")
 		}
 	}
 	if len(placeOrder) > 0 {
@@ -309,7 +300,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 		}
 	}
 	if s.Undetermined > 0 {
-		title(fmt.Sprintf("Undetermined · %s", thousands(s.Undetermined)))
+		title(fmt.Sprintf("Undetermined · %s", formatNumber(s.Undetermined)))
 		// answers merged from several requests repeat a reason once per request
 		counts, why := map[string]int{}, map[string]string{}
 		var reasons []string
@@ -325,7 +316,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 		}
 	}
 	if notAssessed > 0 {
-		title(fmt.Sprintf("Not assessed · %s with no exact identifier, so not checked", thousands(notAssessed)))
+		title(fmt.Sprintf("Not checked · %s with no exact identifier", formatNumber(notAssessed)))
 		var order []string
 		bySource := map[string][]string{}
 		for _, na := range inv.NotAssessed {
@@ -352,7 +343,7 @@ func plural(n int, one, many string) string {
 	if n == 1 {
 		return "1 " + one
 	}
-	return thousands(n) + " " + many
+	return formatNumber(n) + " " + many
 }
 
 // reachabilityLine counts Go module versions by binary: how many copies link an affected function.
@@ -369,14 +360,14 @@ func reachabilityLine(res vulnx.StackResult) string {
 	if reach+not+unknown == 0 {
 		return ""
 	}
-	return fmt.Sprintf("Go reachability: of %s affected module copies in binaries, %s link an affected function, %s link none, %s unknown",
-		thousands(reach+not+unknown), thousands(reach), thousands(not), thousands(unknown))
+	return fmt.Sprintf("Go reachability: of %s affected module copies in programs, %s link an affected function, %s link none, %s unknown",
+		formatNumber(reach+not+unknown), formatNumber(reach), formatNumber(not), formatNumber(unknown))
 }
 
 // hostViews are the --view terminal views of a host scan.
 var hostViews = []string{"grid", "actions", "brief", "programs", "details", "markdown"}
 
-// renderHost renders a host scan in one of hostReports.
+// renderHost renders a host scan in one of hostViews.
 func renderHost(view string, inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, all bool, c *renderer.ColorConfig) string {
 	switch view {
 	case "brief":
@@ -412,10 +403,10 @@ func headline(inv vulnx.HostInventory, res vulnx.StackResult, fs []finding) stri
 	}
 	reach := ""
 	if len(fs) != res.Summary.Affected {
-		reach = fmt.Sprintf(" (%s a program can reach)", thousands(len(fs)))
+		reach = fmt.Sprintf(" (%s a program can reach)", formatNumber(len(fs)))
 	}
-	return fmt.Sprintf("%s · %s components · %s affected%s · %s known exploited", termClean(inv.OS), thousands(len(inv.Entries)),
-		thousands(res.Summary.Affected), reach, thousands(kev))
+	return fmt.Sprintf("%s · %s components · %s affected%s · %s known exploited", termClean(inv.OS), formatNumber(len(inv.Entries)),
+		formatNumber(res.Summary.Affected), reach, formatNumber(kev))
 }
 
 // wrapWords joins words into lines of at most width runes, the first prefixed by first and the rest by rest.
@@ -438,7 +429,7 @@ func wrapWords(words []string, first, rest string, width int) []string {
 
 const hostWidth = 110
 
-// renderHostActions is the default view: the updates to make, most urgent first, as commands where one exists.
+// renderHostActions is the updates to make, most urgent first, as commands where one exists.
 func renderHostActions(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c *renderer.ColorConfig) string {
 	var b strings.Builder
 	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
@@ -503,7 +494,7 @@ func renderHostActions(inv vulnx.HostInventory, res vulnx.StackResult, all bool,
 		}
 	}
 	if notLinked > 0 {
-		b.WriteString(dim(fmt.Sprintf("  Skipped: %s Go module versions no binary can reach (it links none of the affected code)", thousands(notLinked))) + "\n")
+		b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", formatNumber(notLinked))) + "\n")
 	}
 	b.WriteString(dim("  "+notCheckedLine(inv)) + "\n")
 	b.WriteString(dim("  More: --view programs | details | brief | markdown · --json for everything") + "\n")
@@ -521,46 +512,51 @@ func notCheckedLine(inv vulnx.HostInventory) string {
 			parts = append(parts, fmt.Sprintf("%d %s", s.NotAssessed, s.Name))
 		}
 	}
-	return fmt.Sprintf("Not checked: %s without an exact identifier (%s; --view details names them)",
-		thousands(len(inv.NotAssessed)), strings.Join(parts, ", "))
+	return fmt.Sprintf("Not checked: %s with no exact identifier (%s; --view details names them)",
+		formatNumber(len(inv.NotAssessed)), strings.Join(parts, ", "))
 }
 
-// renderHostBrief is a few lines: what was checked and, per tier, what kind of updates it takes.
+// briefNouns name what an update of each kind updates, one and many, for the brief view's counts.
+var briefNouns = map[string][2]string{
+	"brew": {"Homebrew formula", "Homebrew formulae"}, "pip": {"Python package", "Python packages"},
+	"npm": {"npm package", "npm packages"}, "gem": {"gem", "gems"}, "go-install": {"Go tool", "Go tools"},
+	"cargo": {"Rust tool", "Rust tools"}, "binary": {"other program", "other programs"},
+	"apt": {"OS package", "OS packages"}, "dnf": {"OS package", "OS packages"}, "apk": {"OS package", "OS packages"},
+	"system": {"part of the system", "parts of the system"}, "pin": {"MCP server or plugin to pin", "MCP servers or plugins to pin"},
+	"app": {"application or extension", "applications or extensions"}, "other": {"other place", "other places"},
+}
+
+// renderHostBrief is a few lines: what was checked and, per tier, what the updates are: Software Update and the
+// applications by name, everything else counted by kind.
 func renderHostBrief(inv vulnx.HostInventory, res vulnx.StackResult, c *renderer.ColorConfig) string {
 	var b strings.Builder
 	fs := findings(inv, res)
 	b.WriteString(c.Colorize(headline(inv, res, fs), renderer.Bold+renderer.BrightWhite) + "\n")
 	actions := hostActions(inv, fs)
 	for tier := tierKEV; tier <= tierRest; tier++ {
-		var parts []string
+		var named, kinds []string
 		counts := map[string]int{}
-		var kinds []string
 		for _, a := range actions {
-			if a.tier != tier {
-				continue
-			}
-			switch a.fix.Kind {
-			case "macos", "npm":
-				parts = append(parts, strings.SplitN(a.line(), " (", 2)[0])
-			case "system": // "comes with the Command Line Tools: ..." -> "Command Line Tools"
-				what, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a.fix.Note, "comes with "), "the "), ":")
-				parts = append(parts, what)
-			case "app":
-				parts = append(parts, strings.TrimPrefix(a.fix.Note, "update "))
+			switch {
+			case a.tier != tier:
+			case a.fix.Kind == "macos":
+				named = append(named, "Software Update")
+			case a.fix.Kind == "app" && a.fix.Target != "":
+				named = append(named, termClean(a.fix.Target))
 			default:
-				if counts[a.fix.Kind] == 0 {
-					kinds = append(kinds, a.fix.Kind)
+				noun := a.fix.Kind
+				if _, ok := briefNouns[noun]; !ok {
+					noun = "other"
 				}
-				counts[a.fix.Kind] += len(a.targets)
+				if counts[noun] == 0 {
+					kinds = append(kinds, noun)
+				}
+				counts[noun] += len(a.targets)
 			}
 		}
-		names := map[string][2]string{"brew": {"Homebrew formula", "Homebrew formulae"}, "pip": {"Python package", "Python packages"},
-			"gem": {"gem", "gems"}, "go-install": {"Go tool", "Go tools"}, "cargo": {"Rust tool", "Rust tools"},
-			"binary": {"other program", "other programs"}, "apt": {"package", "packages"}, "dnf": {"package", "packages"},
-			"apk": {"package", "packages"}, "other": {"other place", "other places"}}
+		parts := named
 		for _, k := range kinds {
-			n := names[k]
-			parts = append(parts, plural(counts[k], n[0], n[1]))
+			parts = append(parts, plural(counts[k], briefNouns[k][0], briefNouns[k][1]))
 		}
 		if len(parts) == 0 {
 			continue
@@ -568,7 +564,7 @@ func renderHostBrief(inv vulnx.HostInventory, res vulnx.StackResult, c *renderer
 		title, _, _ := strings.Cut(tierTitles[tier], " · ")
 		fmt.Fprintf(&b, "  %-11s %s\n", title+":", strings.Join(parts, ", "))
 	}
-	b.WriteString(c.Colorize("  vulnx scan --host shows the commands", renderer.Gray) + "\n")
+	b.WriteString(c.Colorize("  vulnx scan --host --view actions shows the commands", renderer.Gray) + "\n")
 	return b.String()
 }
 
@@ -602,8 +598,8 @@ func renderHostPrograms(inv vulnx.HostInventory, res vulnx.StackResult, all bool
 		if a.tier != z.tier {
 			return a.tier < z.tier
 		}
-		if severityRank[a.worst] != severityRank[z.worst] {
-			return severityRank[a.worst] < severityRank[z.worst]
+		if vulnx.SeverityRank(a.worst) != vulnx.SeverityRank(z.worst) {
+			return vulnx.WorseSeverity(a.worst, z.worst)
 		}
 		return len(a.items) > len(z.items)
 	})

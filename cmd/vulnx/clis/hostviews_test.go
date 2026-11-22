@@ -32,7 +32,7 @@ func TestRenderHostText(t *testing.T) {
 	}
 	out := renderHostText(inv, res, false, renderer.NoColorConfig())
 	for _, want := range []string{
-		"macOS 26.4 · 3 components checked · 1 not assessed",
+		"macOS 26.4 · 3 components checked · 1 not checked",
 		"go binaries           2             -  3 binaries",
 		"Not read: virtualenvs",
 		"2 affected · 0 undetermined · 1 clean",
@@ -73,12 +73,12 @@ func TestRenderHostReachability(t *testing.T) {
 	}
 	out := renderHostText(inv, res, false, renderer.NoColorConfig())
 	for _, want := range []string{
-		"Go reachability: of 5 affected module copies in binaries, 1 link an affected function, 3 link none, 1 unknown",
+		"Go reachability: of 5 affected module copies in programs, 1 link an affected function, 3 link none, 1 unknown",
 		// the critical row no binary runs no longer sets the severity; one of two binaries links the medium one, and
 		// it comes before an equally severe one no binary is shown to link
 		"medium       go      golang.org/x/net                 v0.7.0                1              1/2     caddy\n" +
 			"  medium       go      github.com/c/d                   v2.0.0                1              0/2?    tool3",
-		"left out: 1 Go module versions whose binaries link none of the affected functions",
+		"Not counted: 1 Go module versions no program can reach",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
@@ -96,7 +96,7 @@ func TestRenderHostTextColorAligns(t *testing.T) {
 	inv := vulnx.HostInventory{OS: "macOS", Sources: []vulnx.HostSource{{Name: "python", Sent: 1, Detail: "1 dir"}}}
 	out := renderHostText(inv, vulnx.StackResult{}, false, renderer.DefaultColorConfig())
 	plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(out, "")
-	if !strings.Contains(plain, "  SOURCE          CHECKED  NOT ASSESSED  READ FROM\n") {
+	if !strings.Contains(plain, "  SOURCE          CHECKED   NOT CHECKED  READ FROM\n") {
 		t.Errorf("header misaligned:\n%s", plain)
 	}
 }
@@ -108,8 +108,8 @@ func TestHostReports(t *testing.T) {
 		"actions": {"macOS 26.4 · 9 components · 7 affected (6 a program can reach) · 3 known exploited",
 			"Update now · known exploited\n  Software Update (softwareupdate --install --all)\n      macOS 26.4 → 26.7.3\n",
 			"  go install github.com/air-verse/air@latest\n      air: x/net\n",
-			"Later: 1 more update for medium and low findings", "Skipped: 1 Go module versions no binary can reach",
-			"Not checked: 1 without an exact identifier (1 homebrew"},
+			"Later: 1 more update for medium and low findings", "Not counted: 1 Go module versions no program can reach",
+			"Not checked: 1 with no exact identifier (1 homebrew"},
 		"brief": {"Update now: Software Update, Google Chrome, 1 Homebrew formula, 1 Go tool",
 			"Next:       1 Homebrew formula", "Then:       1 Python package"},
 		"programs": {"critical caddy KEV  brew upgrade caddy\n    critical x/net v0.7.0\n",

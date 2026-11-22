@@ -304,3 +304,24 @@ func TestRuntimeDoesNotTrustDisplayNameJoins(t *testing.T) {
 		t.Fatalf("false exact association: %+v", matches)
 	}
 }
+
+// TestRefreshRuntimeMatches keeps, of each process's matches, only the components still in the inventory (one
+// dropped as an unknown product is gone), and a match left with none is dropped.
+func TestRefreshRuntimeMatches(t *testing.T) {
+	inv := HostInventory{Entries: []string{"pkg:golang/a@v1", "pkg:golang/b@v1"}, Runtime: &HostRuntime{Status: "collected", Processes: []HostProcess{
+		{PID: 1, Matches: []HostRuntimeMatch{{Place: "x", Components: []string{"pkg:golang/a@v1", "cpe:2.3:a:gone:gone:1:*:*:*:*:*:*:*"}},
+			{Place: "y", Components: []string{"cpe:2.3:a:gone:gone:1:*:*:*:*:*:*:*"}}}},
+		{PID: 2, Matches: []HostRuntimeMatch{}}}}}
+	inv.RefreshRuntimeMatches(context.Background())
+	p := inv.Runtime.Processes
+	if len(p[0].Matches) != 1 || p[0].Matches[0].Place != "x" || strings.Join(p[0].Matches[0].Components, ",") != "pkg:golang/a@v1" ||
+		p[1].Matches == nil {
+		t.Fatalf("%+v", p)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	inv.RefreshRuntimeMatches(ctx)
+	if len(inv.Runtime.Gaps) == 0 {
+		t.Error("a cancelled refresh is not recorded as a gap")
+	}
+}

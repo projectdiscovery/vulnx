@@ -143,7 +143,7 @@ func (h *hostReader) aiTools() {
 		switch {
 		case s.url != "": // reached over the network: nothing of it is installed here
 		case s.purl != "":
-			h.fix(s.config, HostFix{Kind: "system", Note: "pin a fixed version in the MCP server's command"})
+			h.fix(s.config, HostFix{Kind: "pin", Note: "pin a fixed version in the MCP server's command"})
 			entries = append(entries, found{s.purl, s.config})
 		case !listed[s.name+"\x00"+s.spec]: // the same server in two agents' configurations is one thing not checked
 			listed[s.name+"\x00"+s.spec] = true
@@ -158,7 +158,7 @@ func (h *hostReader) aiTools() {
 	for _, p := range loaded {
 		h.inv.AgentSurface = append(h.inv.AgentSurface, HostAgentItem{Kind: "plugin", Name: p.spec, Where: p.config, Detail: "an npm package " + p.harness + " loads"})
 		if p.purl != "" {
-			h.fix(p.config, HostFix{Kind: "system", Note: "pin a fixed version in the plugin list"})
+			h.fix(p.config, HostFix{Kind: "pin", Note: "pin a fixed version in the plugin list"})
 			entries = append(entries, found{p.purl, p.config})
 			continue
 		}
