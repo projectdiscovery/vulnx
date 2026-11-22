@@ -262,7 +262,7 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 	}
 
 	if !params.All && offset+limit > MaxResultWindow {
-		return resp, unsupported("offset + limit can be at most %d (SecurityContext pages by cursor, %d rows a request); use --all to fetch every result", MaxResultWindow, scMaxPage)
+		return resp, unsupported("offset + limit can be at most %d (SecurityContext pages by cursor, %d rows a request); set All (vulnx search --all) to fetch every result", MaxResultWindow, scMaxPage)
 	}
 	query := tq.params
 	if sortKey != "" {
@@ -441,7 +441,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 			req.Header.Set(apiKeyHeader, c.apiKey)
 		} else {
 			c.keyWarn.Do(func() {
-				gologger.Warning().Msgf("%s is not sent to %s: an API key goes only over https or to a loopback host", APIKeyEnvVar, req.URL.Host)
+				gologger.Error().Msgf("the API key is not sent to %s: a key goes only over https or to a loopback host", req.URL.Host)
 			})
 		}
 	}
@@ -488,7 +488,7 @@ func (c *Client) do(req *http.Request, out any) error {
 			reason = resp.Status
 			c.discard(resp)
 		}
-		gologger.Warning().Msgf("SecurityContext: %s; retrying in %s", reason, wait.Round(100*time.Millisecond))
+		gologger.Info().Msgf("SecurityContext: %s; retrying in %s", reason, wait.Round(100*time.Millisecond))
 		timer := time.NewTimer(wait)
 		select {
 		case <-req.Context().Done():

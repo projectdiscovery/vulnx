@@ -81,6 +81,7 @@ func TestTranslateQueryRejects(t *testing.T) {
 		"h1.reports:>0",
 		"is_kev:true && is_kev:false",
 		"(severity:high",
+		"apache NOT tomcat",
 	} {
 		_, err := translateQuery(q)
 		if err == nil {

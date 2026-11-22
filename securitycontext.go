@@ -181,6 +181,9 @@ func translateQuery(q string) (*scQuery, error) {
 			if t.neg {
 				return nil, unsupported("NOT on a keyword (%q) is not supported", t.value)
 			}
+			if slices.Contains(strings.Fields(t.value), "NOT") {
+				return nil, unsupported("NOT on a keyword (%q) is not supported", t.value)
+			}
 			words = append(words, strings.Fields(t.value)...)
 			continue
 		}

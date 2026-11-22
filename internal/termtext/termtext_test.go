@@ -9,8 +9,8 @@ func TestClean(t *testing.T) {
 		"\x1b[31mred\x1b[0m":   "[31mred[0m",
 		"bell\a and \r return": "bell and  return",
 		"c1 \u009b control":    "c1  control",
-		"evil‮gnp.exe":         "evilgnp.exe",
-		"zero​width⁦iso":       "zerowidthiso",
+		"evil\u202egnp.exe":         "evilgnp.exe",
+		"zero\u200bwidth\u2066iso":       "zerowidthiso",
 		"café ünïcode 漢字":      "café ünïcode 漢字",
 		"invalid \xff utf8":    "invalid  utf8",
 	} {

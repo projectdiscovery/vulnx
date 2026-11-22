@@ -158,14 +158,14 @@ func TestResponseBodyCap(t *testing.T) {
 func TestErrorMessageCleaned(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(t, w, map[string]string{"error": "bad \x1b[31mquery‮"})
+		writeJSON(t, w, map[string]string{"error": "bad \x1b[31mquery\u202e"})
 	}))
 	defer srv.Close()
 	_, err := newTestClient(t, srv).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
 	if !errkit.Is(err, ErrBadRequest) {
 		t.Fatalf("400: %v", err)
 	}
-	if strings.ContainsAny(err.Error(), "\x1b‮") || !strings.Contains(err.Error(), "bad [31mquery") {
+	if strings.ContainsAny(err.Error(), "\x1b\u202e") || !strings.Contains(err.Error(), "bad [31mquery") {
 		t.Errorf("server message not cleaned: %q", err)
 	}
 }
