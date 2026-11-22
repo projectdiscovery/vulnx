@@ -849,3 +849,18 @@ func TestShellQuote(t *testing.T) {
 		t.Errorf("Line %s", got)
 	}
 }
+
+// TestHostRPMRoot asks rpm about a root with an RPM database: when the host's rpm cannot read it, the gap says so
+// rather than that there is no database.
+func TestHostRPMRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "etc/os-release", "ID=rocky\nVERSION_ID=9.4\n")
+	writeFile(t, root, "var/lib/rpm/rpmdb.sqlite", "")
+	inv, err := HostEntries(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if notRead := strings.Join(inv.NotRead, "\n"); inv.Source != "rpm" && !strings.Contains(notRead, "an RPM database is under") {
+		t.Errorf("source %q, not read %q", inv.Source, notRead)
+	}
+}

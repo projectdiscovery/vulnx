@@ -524,33 +524,39 @@ func linuxPackages(ctx context.Context, root, id, version string) (string, []str
 		return "apk", entries, nil
 	}
 	// a mounted root is asked with the host's rpm: --root reads the database under it
-	if _, err := os.Stat(filepath.Join(root, "var/lib/rpm")); err == nil || root == "/" {
-		args := []string{"-qa", "--qf", "%{NAME}|%{EPOCHNUM}|%{VERSION}-%{RELEASE}|%{ARCH}|%{SOURCERPM}\\n"}
-		if root != "/" {
-			args = append([]string{"--root", root}, args...)
-		}
-		if out, err := runCapped(ctx, commandOutputCap, "/usr/bin/rpm", args...); err == nil {
-			for _, line := range strings.Split(string(out), "\n") {
-				f := strings.Split(strings.TrimSpace(line), "|")
-				if len(f) != 5 || f[0] == "" || f[0] == "gpg-pubkey" {
-					continue
-				}
-				extra := url.Values{}
-				if f[1] != "" && f[1] != "0" {
-					extra.Set("epoch", f[1])
-				}
-				if f[3] != "" && f[3] != "(none)" {
-					extra.Set("arch", f[3])
-				}
-				if f[4] != "" && f[4] != "(none)" {
-					extra.Set("upstream", f[4])
-				}
-				entries = append(entries, fmt.Sprintf("pkg:rpm/%s/%s@%s%s", ns, f[0], url.PathEscape(f[2]), q(extra)))
-			}
-			return "rpm", entries, nil
-		}
+	db := slices.ContainsFunc([]string{"var/lib/rpm", "usr/lib/sysimage/rpm"}, func(rel string) bool {
+		_, err := os.Stat(filepath.Join(root, rel))
+		return err == nil
+	})
+	if !db {
+		return "", nil, fmt.Errorf("OS packages: no dpkg, apk or rpm package database under %s", root)
 	}
-	return "", nil, fmt.Errorf("OS packages: no dpkg, apk or rpm package database under %s", root)
+	args := []string{"-qa", "--qf", "%{NAME}|%{EPOCHNUM}|%{VERSION}-%{RELEASE}|%{ARCH}|%{SOURCERPM}\\n"}
+	if root != "/" {
+		args = append([]string{"--root", root}, args...)
+	}
+	out, err := runCapped(ctx, commandOutputCap, "/usr/bin/rpm", args...)
+	if err != nil {
+		return "", nil, fmt.Errorf("OS packages: an RPM database is under %s, and rpm could not read it (%w)", root, err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Split(strings.TrimSpace(line), "|")
+		if len(f) != 5 || f[0] == "" || f[0] == "gpg-pubkey" {
+			continue
+		}
+		extra := url.Values{}
+		if f[1] != "" && f[1] != "0" {
+			extra.Set("epoch", f[1])
+		}
+		if f[3] != "" && f[3] != "(none)" {
+			extra.Set("arch", f[3])
+		}
+		if f[4] != "" && f[4] != "(none)" {
+			extra.Set("upstream", f[4])
+		}
+		entries = append(entries, fmt.Sprintf("pkg:rpm/%s/%s@%s%s", ns, f[0], url.PathEscape(f[2]), q(extra)))
+	}
+	return "rpm", entries, nil
 }
 
 type osPackage struct{ name, version, arch, source, sourceVersion string }
