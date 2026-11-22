@@ -426,6 +426,18 @@ func TestGoFunctionTable(t *testing.T) {
 			t.Errorf("%s not in the table", f)
 		}
 	}
+	// the linker writes this package as gopkg.in/yaml%2ev3
+	if !fns.packages["gopkg.in/yaml.v3"] || fns.packages["gopkg.in/yaml"] || fns.packages["gopkg.in/yaml%2ev3"] {
+		t.Error("a package whose last path element has a dot is not read back by its import path")
+	}
+	if got := fns.verdict([]AffectedPackage{{Package: "gopkg.in/yaml.v3", Functions: []string{"Node.ShortTag"}}}); got != "reachable" {
+		t.Errorf("yaml.v3 Node.ShortTag: %s", got)
+	}
+	escaped := goFunctions{funcs: map[string]bool{}, packages: map[string]bool{}}
+	escaped.add("gopkg.in/yaml%2ev3.(*decoder).unmarshal")
+	if !escaped.packages["gopkg.in/yaml.v3"] || !escaped.funcs["gopkg.in/yaml.v3.decoder.unmarshal"] {
+		t.Errorf("escaped symbol: %+v", escaped)
+	}
 	// a function inlined at every call has no entry: why a linked package with no listed function is unknown
 	if fns.funcs["strings.Contains"] || !fns.packages["strings"] {
 		t.Error("strings.Contains is expected to be inlined away while package strings is linked")
@@ -478,6 +490,24 @@ func TestMarkReachability(t *testing.T) {
 	inv.MarkReachability(&res)
 	if r := res.Items[0].Reachability; fmt.Sprint(r.Unknown) != "[tool]" || len(r.NotReachable) != 0 {
 		t.Errorf("item: %+v", r)
+	}
+	// every listed row unreachable: not reachable, unless rows were left out of the answer or none was listed
+	for _, c := range []struct {
+		rows  []StackAdvisory
+		total int
+		want  string
+	}{
+		{[]StackAdvisory{{AdvisoryID: "GO-NOT"}}, 1, "[] [tool] []"},
+		{[]StackAdvisory{{AdvisoryID: "GO-NOT"}}, 11, "[] [] [tool]"},
+		{nil, 0, "[] [] [tool]"},
+		{[]StackAdvisory{{AdvisoryID: "GO-NOT"}, {AdvisoryID: "GO-LINKED"}}, 11, "[tool] [] []"},
+	} {
+		res.Items[0].AdvisoryRows, res.Items[0].AdvisoryRowsTotal, res.Items[0].Reachability = c.rows, c.total, nil
+		inv.MarkReachability(&res)
+		r := res.Items[0].Reachability
+		if got := fmt.Sprint(r.Reachable, r.NotReachable, r.Unknown); got != c.want {
+			t.Errorf("%d of %d rows: %s, want %s", len(c.rows), c.total, got, c.want)
+		}
 	}
 }
 

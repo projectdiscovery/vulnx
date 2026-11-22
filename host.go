@@ -1376,7 +1376,8 @@ func plistStrings(raw []byte) map[string]string {
 // (res.GoFunctions). A row is reachable when a binary carrying the module version links a function its advisory
 // names as affected, and not_reachable when none of those binaries links any function of the packages it names; it
 // stays unmarked (unknown) without a list, or when a binary links the package but none of the functions by name
-// (goFunctions.verdict). Each item gets, per binary, reachable / not_reachable / unknown. Binaries are read one at
+// (goFunctions.verdict). A binary is not_reachable only when every row of the item was answered and none is
+// reachable: an item whose rows were cut (AdvisoryRowsTotal above the rows listed) or that lists none is unknown. Each item gets, per binary, reachable / not_reachable / unknown. Binaries are read one at
 // a time: a large Go binary links tens of thousands of functions.
 func (inv HostInventory) MarkReachability(res *StackResult) {
 	type use struct {
@@ -1404,7 +1405,12 @@ func (inv HostInventory) MarkReachability(res *StackResult) {
 			if rowState[u.item] == nil {
 				rowState[u.item] = map[int]string{}
 			}
-			state := "not_reachable" // the binary's: the most reachable of its rows
+			// the binary's verdict: the most reachable of its rows; rows the answer left out may name a function
+			// it links, so without every row it is never not_reachable
+			state := "not_reachable"
+			if len(it.AdvisoryRows) == 0 || it.AdvisoryRowsTotal > len(it.AdvisoryRows) {
+				state = "unknown"
+			}
 			for r, row := range it.AdvisoryRows {
 				v := "unknown"
 				if lists, ok := res.GoFunctions[it.Package][row.AdvisoryID]; ok && err == nil {
@@ -1454,20 +1460,38 @@ func goFunctionTable(path string) (goFunctions, error) {
 	}
 	out := goFunctions{funcs: map[string]bool{}, packages: map[string]bool{}}
 	for _, f := range t.Funcs {
-		// "net/http.(*Client).Do" -> "net/http.Client.Do"; "pkg.Map[...].Get" -> "pkg.Map.Get"; a closure
-		// ("pkg.F.func1") or method value ("pkg.T.M-fm") counts as its function
-		name := strings.NewReplacer("(*", "", ")", "").Replace(goTypeParams.ReplaceAllString(f.Name, ""))
-		name = strings.TrimSuffix(name, "-fm")
-		if i := strings.Index(name, ".func"); i > 0 {
-			name = name[:i]
-		}
-		out.funcs[name] = true
-		slash := strings.LastIndex(name, "/")
-		if dot := strings.Index(name[slash+1:], "."); dot > 0 {
-			out.packages[name[:slash+1+dot]] = true
-		}
+		out.add(f.Name)
 	}
 	return out, nil
+}
+
+// add records one symbol table name as advisories name functions: "net/http.(*Client).Do" as net/http.Client.Do,
+// "pkg.Map[...].Get" as pkg.Map.Get, a closure ("pkg.F.func1") or method value ("pkg.T.M-fm") as its function.
+// The linker escapes a dot in an import path's last element
+// (gopkg.in/yaml%2ev3.Unmarshal), so the package ends at the first dot after the last slash of the escaped name and
+// is unescaped after.
+func (g goFunctions) add(symbol string) {
+	name := strings.NewReplacer("(*", "", ")", "").Replace(goTypeParams.ReplaceAllString(symbol, ""))
+	name = strings.TrimSuffix(name, "-fm")
+	if i := strings.Index(name, ".func"); i > 0 {
+		name = name[:i]
+	}
+	slash := strings.LastIndex(name, "/")
+	if dot := strings.Index(name[slash+1:], "."); dot > 0 {
+		g.packages[goUnescape(name[:slash+1+dot])] = true
+	}
+	g.funcs[goUnescape(name)] = true
+}
+
+// goUnescape undoes the linker's %xx escaping of an import path; a name that is not valid escaping is kept as is.
+func goUnescape(name string) string {
+	if !strings.Contains(name, "%") {
+		return name
+	}
+	if u, err := url.PathUnescape(name); err == nil {
+		return u
+	}
+	return name
 }
 
 // verdict is what the binary's function table says of an advisory's lists: reachable when it links a listed
