@@ -404,13 +404,8 @@ func osRelease(root string) (id, version string, err error) {
 	return id, version, sc.Err()
 }
 
-// distroQualifier is SecurityContext's distro= value and the purl namespace for a distribution release. With no
-// release (an os-release without VERSION_ID: a rolling or testing release) there is no qualifier.
+// distroQualifier is SecurityContext's distro= value and the purl namespace for a distribution release.
 func distroQualifier(id, version string) (namespace, qualifier string) {
-	if version == "" {
-		ns, _ := distroQualifier(id, "0")
-		return ns, ""
-	}
 	major := strings.SplitN(version, ".", 2)[0]
 	switch id {
 	case "debian":
@@ -441,13 +436,14 @@ func (h *hostReader) linuxOS() error {
 		return err
 	}
 	h.inv.OS = strings.TrimSpace(id + " " + version)
-	if version == "" {
-		h.inv.NotRead = append(h.inv.NotRead, "os-release names no VERSION_ID: OS packages are sent without a release and may come back undetermined")
-	}
-	switch id {
-	case "debian", "ubuntu", "rhel", "rocky", "almalinux", "alpine":
-	default:
-		h.inv.NotRead = append(h.inv.NotRead, fmt.Sprintf("SecurityContext has advisories for Debian, Ubuntu, Alpine, RHEL, Rocky and AlmaLinux; %s packages will come back undetermined", id))
+	// a distribution's advisories are per release, and the API refuses a package of any other: such packages are
+	// read and listed, not sent
+	unjudged := ""
+	switch {
+	case !slices.Contains([]string{"debian", "ubuntu", "rhel", "rocky", "almalinux", "alpine"}, id):
+		unjudged = "SecurityContext has advisories for Debian, Ubuntu, Alpine, RHEL, Rocky and AlmaLinux, not " + id
+	case version == "":
+		unjudged = "os-release names no VERSION_ID: the release is unknown"
 	}
 	source, entries, err := linuxPackages(h.ctx, h.root, id, version)
 	if err != nil {
@@ -455,6 +451,15 @@ func (h *hostReader) linuxOS() error {
 		return nil
 	}
 	h.inv.Source = source
+	if unjudged != "" {
+		notChecked := make([]HostComponent, len(entries))
+		for i, e := range entries {
+			_, name, version := purlParts(e)
+			notChecked[i] = HostComponent{Name: name, Version: version, Reason: unjudged}
+		}
+		h.add(source, "", nil, notChecked)
+		return nil
+	}
 	h.fix(source, map[string]HostFix{
 		"dpkg": {Kind: "apt", Command: "sudo apt-get install --only-upgrade"},
 		"rpm":  {Kind: "dnf", Command: "sudo dnf upgrade"},
@@ -464,16 +469,31 @@ func (h *hostReader) linuxOS() error {
 	return nil
 }
 
+// purlParts is a purl's namespace, name and version, unescaped (pkg:deb/debian/libc6@2.36-9?... gives debian,
+// libc6 and 2.36-9).
+func purlParts(purl string) (namespace, name, version string) {
+	unescape := func(s string) string {
+		if u, err := url.PathUnescape(s); err == nil {
+			return u
+		}
+		return s
+	}
+	body, _, _ := strings.Cut(strings.TrimPrefix(purl, "pkg:"), "?")
+	_, rest, _ := strings.Cut(body, "/")
+	if at := strings.LastIndex(rest, "@"); at > 0 {
+		rest, version = rest[:at], unescape(rest[at+1:])
+	}
+	if slash := strings.LastIndex(rest, "/"); slash >= 0 {
+		namespace, rest = unescape(rest[:slash]), rest[slash+1:]
+	}
+	return namespace, unescape(rest), version
+}
+
 func linuxPackages(ctx context.Context, root, id, version string) (string, []string, error) {
 	ns, distro := distroQualifier(id, version)
 	var entries []string
 	q := func(extra url.Values) string {
-		if distro != "" {
-			extra.Set("distro", distro)
-		}
-		if len(extra) == 0 {
-			return ""
-		}
+		extra.Set("distro", distro)
 		return "?" + extra.Encode()
 	}
 	if raw, err := readCapped(filepath.Join(root, "var/lib/dpkg/status"), maxPackageDB); err == nil {
@@ -1640,12 +1660,6 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 	}
 	components := make([]component, 0, len(inv.Entries))
 	named := map[string]string{} // masked place name -> its label
-	unescape := func(s string) string {
-		if u, err := url.PathUnescape(s); err == nil {
-			return u
-		}
-		return s
-	}
 	for _, e := range inv.Entries {
 		c := component{Type: "library", BOMRef: e}
 		if strings.HasPrefix(e, "cpe:2.3:") {
@@ -1658,18 +1672,10 @@ func (inv HostInventory) CycloneDX(now time.Time) ([]byte, error) {
 				}
 			}
 		} else {
-			c.PURL = e
-			body, _, _ := strings.Cut(strings.TrimPrefix(e, "pkg:"), "?")
-			_, rest, _ := strings.Cut(body, "/")
-			if at := strings.LastIndex(rest, "@"); at > 0 {
-				rest, c.Version = rest[:at], unescape(rest[at+1:])
-			}
 			// the namespace (a distribution, an npm scope, a Go module's path) is the group: deb, rpm and apk
 			// names are the package's own
-			if slash := strings.LastIndex(rest, "/"); slash >= 0 {
-				c.Group, rest = unescape(rest[:slash]), rest[slash+1:]
-			}
-			c.Name = unescape(rest)
+			c.PURL = e
+			c.Group, c.Name, c.Version = purlParts(e)
 		}
 		if src := inv.EntrySource[e]; src != "" && src != runtimeInventorySource {
 			c.Properties = append(c.Properties, property{"vulnx:source", src})

@@ -1,10 +1,13 @@
 package clis
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/projectdiscovery/vulnx/v2"
 )
 
 // TestReadEntries reads one entry a line or a comma list, skipping blank lines and whole-line # comments.
@@ -40,5 +43,23 @@ func TestLooksLikeEntry(t *testing.T) {
 		if looksLikeEntry(arg) != want {
 			t.Errorf("%s: want %v", arg, want)
 		}
+	}
+}
+
+// TestRenderStackTextHint names the flag that lists the rows not shown: --full when the answer holds a product's
+// most urgent rows only, --show-all when every row is there and --show cut them.
+func TestRenderStackTextHint(t *testing.T) {
+	rows := make([]vulnx.StackAdvisory, 12)
+	for i := range rows {
+		rows[i] = vulnx.StackAdvisory{CVE: fmt.Sprintf("CVE-2024-%d", i), Severity: "high"}
+	}
+	item := vulnx.StackItem{Input: "apache:tomcat@8.5.62", Package: "cpe/apache:tomcat", Version: "8.5.62", Status: "affected",
+		AdvisoryRowsTotal: 30, AdvisoryRows: rows}
+	if out := renderStackText(vulnx.StackResult{Items: []vulnx.StackItem{item}}, 10); !strings.Contains(out, "+20 more (--full lists them)") {
+		t.Errorf("top rows only:\n%s", out)
+	}
+	item.AdvisoryRowsTotal = 12
+	if out := renderStackText(vulnx.StackResult{Items: []vulnx.StackItem{item}}, 10); !strings.Contains(out, "+2 more (--show-all lists them)") {
+		t.Errorf("every row:\n%s", out)
 	}
 }

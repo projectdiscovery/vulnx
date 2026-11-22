@@ -388,9 +388,11 @@ func renderStackText(res vulnx.StackResult, show int) string {
 			total = it.AdvisoryRowsTotal
 		}
 		if hidden := total - len(rows); hidden > 0 {
-			hint := ""
-			if strings.HasPrefix(it.Package, "cpe/") {
-				hint = " (--full lists them)"
+			hint := " (--show-all lists them)"
+			if len(it.AdvisoryRows) < total && strings.HasPrefix(it.Package, "cpe/") {
+				hint = " (--full lists them)" // the answer holds a product's 10 most urgent
+			} else if len(it.AdvisoryRows) < total {
+				hint = ""
 			}
 			fmt.Fprintf(&b, "  ↳ +%d more%s\n", hidden, hint)
 		}

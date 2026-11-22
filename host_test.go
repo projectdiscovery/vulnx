@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -67,8 +66,23 @@ Version: 5.2.15-2+b8
 	}
 }
 
-// TestHostNoVersionID sends a release without VERSION_ID (a rolling or testing one) with no distro qualifier, and
-// says so, rather than as distro=debian-.
+// TestHostUnknownDistribution reads but does not send the packages of a distribution SecurityContext has no
+// advisories for: the API refuses them, and with them the whole list.
+func TestHostUnknownDistribution(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "etc/os-release", "ID=arch\nVERSION_ID=20240101\n")
+	writeFile(t, root, "var/lib/dpkg/status", "Package: bash\nStatus: install ok installed\nVersion: 5.2.15-2\n\n")
+	inv, err := HostEntries(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Entries) != 0 || len(inv.NotAssessed) != 1 || !strings.Contains(inv.NotAssessed[0].Reason, "not arch") {
+		t.Errorf("%q %+v", inv.Entries, inv.NotAssessed)
+	}
+}
+
+// TestHostNoVersionID reads but does not send the OS packages of a release without VERSION_ID (a rolling or
+// testing one): a distribution's advisories are per release, and the API refuses a package without one.
 func TestHostNoVersionID(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "etc/os-release", "ID=debian\nPRETTY_NAME=\"Debian GNU/Linux trixie/sid\"\n")
@@ -77,9 +91,9 @@ func TestHostNoVersionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(inv.Entries, ",") != "pkg:deb/debian/bash@5.2.15-2" || inv.OS != "debian" ||
-		!slices.ContainsFunc(inv.NotRead, func(s string) bool { return strings.Contains(s, "VERSION_ID") }) {
-		t.Errorf("%q %q %q", inv.OS, inv.Entries, inv.NotRead)
+	if len(inv.Entries) != 0 || inv.OS != "debian" || len(inv.NotAssessed) != 1 || inv.NotAssessed[0].Name != "bash" ||
+		inv.NotAssessed[0].Version != "5.2.15-2" || !strings.Contains(inv.NotAssessed[0].Reason, "VERSION_ID") || inv.Sources[0].NotAssessed != 1 {
+		t.Errorf("%q %q %+v %+v", inv.OS, inv.Entries, inv.NotAssessed, inv.Sources)
 	}
 }
 
