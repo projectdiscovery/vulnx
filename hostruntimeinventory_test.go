@@ -249,7 +249,7 @@ func TestReadRuntimeModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv := HostInventory{Runtime: &HostRuntime{Processes: []HostProcess{runtimeInventoryProcess(t, 1, path)}}}
-	inv.EnrichRuntimeInventory(context.Background())
+	inv.enrichRuntimeInventoryHere(context.Background())
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("executable was started")
 	}

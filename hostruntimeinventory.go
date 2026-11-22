@@ -47,8 +47,9 @@ func sameRuntimeImage(path string, expected os.FileInfo) bool {
 	return err == nil && sameRuntimeFile(actual, expected)
 }
 
-// EnrichRuntimeInventory cooperatively observes cancellation. The CLI isolates this work in a bounded worker.
-func (inv *HostInventory) EnrichRuntimeInventory(ctx context.Context) {
+// enrichRuntimeInventoryHere reads the observed executables in this process. Parsing a binary cannot be
+// cancelled, so the CLI does this in the runtime worker, which is killed at its deadline.
+func (inv *HostInventory) enrichRuntimeInventoryHere(ctx context.Context) {
 	inv.enrichRuntimeInventory(ctx, func(f *os.File) runtimeModules { return readRuntimeModules(f) })
 }
 
@@ -91,41 +92,44 @@ func readObservedModules(ctx context.Context, p HostProcess, read func(*os.File)
 	return mods, ""
 }
 
+// runtimeFound is one component found in an observed executable, at its place.
+type runtimeFound struct {
+	Entry string `json:"entry"`
+	In    string `json:"in"`
+}
+
+// runtimeAdditions is what reading the observed executables adds to the inventory: their components, the places
+// they were found at and how those are updated, the Go binaries for reachability, and what could not be read. It
+// is all the worker sends back besides the runtime snapshot.
+type runtimeAdditions struct {
+	Found      []runtimeFound          `json:"found"`
+	Paths      map[string]string       `json:"paths"`
+	Fixes      map[string]HostFix      `json:"fixes"`
+	GoBinaries map[string][]HostBinary `json:"go_binaries"`
+	Places     []string                `json:"places"` // places only the runtime snapshot saw
+	Unassessed []HostComponent         `json:"unassessed"`
+	Detail     string                  `json:"detail"`
+	Read       bool                    `json:"read"` // some process was looked at: the source is reported
+}
+
+// enrichRuntimeInventory reads the components of the observed executables and adds them to the inventory, then
+// relates each process to the installations that contain it.
 func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(*os.File) runtimeModules) {
 	r := inv.Runtime
 	if r == nil || r.Status == "skipped" || r.enriched {
 		return
 	}
-	r.enriched = true
-	ctx, cancel := context.WithTimeout(ctx, runtimeBudget)
-	defer cancel()
-	if inv.FoundIn == nil {
-		inv.FoundIn = map[string][]string{}
-	}
-	if inv.Paths == nil {
-		inv.Paths = map[string]string{}
-	}
-	if inv.Fixes == nil {
-		inv.Fixes = map[string]HostFix{}
-	}
-	if inv.EntrySource == nil {
-		inv.EntrySource = map[string]string{}
-	}
-	if inv.GoBinaries == nil {
-		inv.GoBinaries = map[string][]HostBinary{}
-	}
-	if inv.runtimePlaces == nil {
-		inv.runtimePlaces = map[string]bool{}
-	}
-	h := &hostReader{root: "/", goos: runtime.GOOS, inv: *inv, seen: map[string]bool{}}
-	for _, entry := range inv.Entries {
-		h.seen[entry] = true
-	}
+	inv.applyRuntimeAdditions(inv.runtimeAdditions(ctx, read))
+	inv.matchRuntime(ctx, r)
+	r.normalize()
+}
+
+func (inv *HostInventory) runtimeAdditions(ctx context.Context, read func(*os.File) runtimeModules) runtimeAdditions {
+	r := inv.Runtime
+	a := runtimeAdditions{Paths: map[string]string{}, Fixes: map[string]HostFix{}, GoBinaries: map[string][]HostBinary{}}
 	cache := map[string]runtimeInventoryResult{}
 	labels := runtimeExecutableLabels(*inv)
-	var entries []found
-	var unassessed []HostComponent
-	readCount, identified := 0, 0
+	reads, identified := 0, 0
 	for i := range r.Processes {
 		p := &r.Processes[i]
 		p.Matches = []HostRuntimeMatch{}
@@ -143,11 +147,11 @@ func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(
 				p.Inventory, p.InventoryReason, p.Matches = prior.status, prior.reason, prior.matches
 				continue
 			}
-			if readCount >= runtimeExecutableLimit {
+			if reads >= runtimeExecutableLimit {
 				result.reason = "runtime executable count limit reached"
 				break
 			}
-			readCount++
+			reads++
 			mods, reason := readObservedModules(ctx, *p, read)
 			result.reason = reason
 			if reason != "" {
@@ -157,22 +161,24 @@ func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(
 			if label := labels[p.Executable]; label != "" {
 				place = label
 			}
-			if existing, ok := h.inv.Paths[place]; ok && existing != p.Executable {
+			if existing, ok := inv.Paths[place]; ok && existing != p.Executable {
 				result.reason = "executable path collides with an existing installation label"
 				break
 			}
-			h.at(place, p.Executable)
-			if place == p.Executable {
-				h.inv.runtimePlaces[place] = true
+			if _, ok := inv.Paths[place]; !ok {
+				a.Paths[place] = p.Executable
+				if place == p.Executable {
+					a.Places = append(a.Places, place)
+				}
 			}
-			h.fix(place, binaryFix(filepath.Base(p.Executable), p.Executable, mods.main))
-			entries = append(entries, foundIn(place, mods.entries)...)
-			if mods.goBinary {
-				for _, entry := range mods.entries {
-					binary := HostBinary{Path: p.Executable, Name: place}
-					if !mods.renamed[entry] && !slices.Contains(h.inv.GoBinaries[entry], binary) {
-						h.inv.GoBinaries[entry] = append(h.inv.GoBinaries[entry], binary)
-					}
+			if _, ok := inv.Fixes[place]; !ok {
+				a.Fixes[place] = binaryFix(filepath.Base(p.Executable), p.Executable, mods.main)
+			}
+			for _, entry := range mods.entries {
+				a.Found = append(a.Found, runtimeFound{entry, place})
+				binary := HostBinary{Path: p.Executable, Name: place}
+				if mods.goBinary && !mods.renamed[entry] && !slices.Contains(inv.GoBinaries[entry], binary) && !slices.Contains(a.GoBinaries[entry], binary) {
+					a.GoBinaries[entry] = append(a.GoBinaries[entry], binary)
 				}
 			}
 			result.status = "identified"
@@ -191,19 +197,70 @@ func (inv *HostInventory) enrichRuntimeInventory(ctx context.Context, read func(
 			if name == "" {
 				name = fmt.Sprintf("process %d", p.PID)
 			}
-			unassessed = append(unassessed, HostComponent{Name: name, Reason: result.reason})
+			a.Unassessed = append(a.Unassessed, HostComponent{Name: name, Reason: result.reason})
 			if !strings.HasPrefix(result.reason, "no supported") {
 				r.gap("inventory", p.PID, result.reason)
 			}
 		}
 	}
-	if len(r.Processes) > 0 {
-		h.add(runtimeInventorySource, fmt.Sprintf("%d executable files identified, %d not assessed", identified, len(unassessed)), entries, unassessed)
+	a.Read = len(r.Processes) > 0
+	a.Detail = fmt.Sprintf("%d executable files identified, %d not assessed", identified, len(a.Unassessed))
+	return a
+}
+
+// applyRuntimeAdditions adds what the observed executables carry to the inventory, under their own source; a
+// place's path and update already known stand.
+func (inv *HostInventory) applyRuntimeAdditions(a runtimeAdditions) {
+	if inv.Runtime != nil {
+		inv.Runtime.enriched = true
+	}
+	h := &hostReader{root: "/", goos: runtime.GOOS, inv: *inv, seen: map[string]bool{}}
+	if h.inv.FoundIn == nil {
+		h.inv.FoundIn = map[string][]string{}
+	}
+	if h.inv.Paths == nil {
+		h.inv.Paths = map[string]string{}
+	}
+	if h.inv.Fixes == nil {
+		h.inv.Fixes = map[string]HostFix{}
+	}
+	if h.inv.EntrySource == nil {
+		h.inv.EntrySource = map[string]string{}
+	}
+	if h.inv.GoBinaries == nil {
+		h.inv.GoBinaries = map[string][]HostBinary{}
+	}
+	if h.inv.runtimePlaces == nil {
+		h.inv.runtimePlaces = map[string]bool{}
+	}
+	for _, e := range h.inv.Entries {
+		h.seen[e] = true
+	}
+	for place, path := range a.Paths {
+		h.at(place, path)
+	}
+	for place, fix := range a.Fixes {
+		h.fix(place, fix)
+	}
+	for entry, binaries := range a.GoBinaries {
+		for _, b := range binaries {
+			if !slices.Contains(h.inv.GoBinaries[entry], b) {
+				h.inv.GoBinaries[entry] = append(h.inv.GoBinaries[entry], b)
+			}
+		}
+	}
+	for _, place := range a.Places {
+		h.inv.runtimePlaces[place] = true
+	}
+	if a.Read {
+		found := make([]found, len(a.Found))
+		for i, f := range a.Found {
+			found[i].entry, found[i].in = f.Entry, f.In
+		}
+		h.add(runtimeInventorySource, a.Detail, found, a.Unassessed)
 	}
 	h.inv.Note = h.note()
 	*inv = h.inv
-	inv.matchRuntime(ctx, r)
-	r.normalize()
 }
 
 // RefreshRuntimeMatches filters snapshot associations after inventory resolution without inspecting the host again.

@@ -7,48 +7,34 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 )
 
+// HostRuntimeWorkerArg is the argument the CLI starts itself with to run the runtime worker.
 const HostRuntimeWorkerArg = "--internal-host-runtime-worker"
+
+// runtimeWireLimit bounds each direction of the worker's pipe.
 const runtimeWireLimit = 8 << 20
 
-// runtimeWire carries fields omitted from public inventory JSON across the local process boundary.
-type runtimeWire struct {
-	Phase       string                  `json:"phase"`
-	Host        HostInventory           `json:"host"`
-	Entries     []string                `json:"entries"`
-	EntrySource map[string]string       `json:"entry_source"`
-	GoBinaries  map[string][]HostBinary `json:"go_binaries"`
-	LocalPlaces map[string]bool         `json:"local_places"`
+// runtimeRequest is what the worker needs of the inventory: the entries already found (not added twice), the
+// places and their paths (an executable at a known place is named by it), and the Go binaries (the names of the
+// executables already read).
+type runtimeRequest struct {
+	Entries    []string                `json:"entries"`
+	Paths      map[string]string       `json:"paths"`
+	GoBinaries map[string][]HostBinary `json:"go_binaries"`
 }
 
-func (inv HostInventory) runtimeWire(phase string) runtimeWire {
-	return runtimeWire{Phase: phase, Host: inv, Entries: inv.Entries, EntrySource: inv.EntrySource, GoBinaries: inv.GoBinaries, LocalPlaces: inv.runtimePlaces}
+// runtimeReply is one message from the worker: the snapshot as observed, then with the executables read
+// (enriched, with the additions to the inventory).
+type runtimeReply struct {
+	Phase     string            `json:"phase"` // observed | enriched
+	Runtime   *HostRuntime      `json:"runtime"`
+	Additions *runtimeAdditions `json:"additions,omitempty"`
 }
 
-func (w runtimeWire) inventory() HostInventory {
-	inv := w.Host
-	inv.Entries, inv.EntrySource, inv.GoBinaries, inv.runtimePlaces = w.Entries, w.EntrySource, w.GoBinaries, w.LocalPlaces
-	return inv
-}
-
-func (inv *HostInventory) applyRuntimeWire(w runtimeWire) {
-	update := w.inventory()
-	inv.Runtime = update.Runtime
-	inv.Runtime.enriched = w.Phase == "enriched"
-	if w.Phase != "enriched" {
-		return
-	}
-	inv.Entries, inv.EntrySource, inv.GoBinaries, inv.runtimePlaces = update.Entries, update.EntrySource, update.GoBinaries, update.runtimePlaces
-	inv.FoundIn, inv.Paths, inv.Fixes = update.FoundIn, update.Paths, update.Fixes
-	inv.Sources, inv.NotAssessed = update.Sources, update.NotAssessed
-	h := hostReader{inv: *inv}
-	inv.Note = h.note()
-}
-
-// RunHostRuntimeWorker is only dispatched by the CLI's private worker entry point.
+// RunHostRuntimeWorker is the runtime worker: it reads a runtimeRequest, takes the snapshot and reads the
+// observed executables, answering after each. Only the CLI's worker entry point calls it.
 func RunHostRuntimeWorker(input io.Reader, output io.Writer) error {
 	raw, err := io.ReadAll(io.LimitReader(input, runtimeWireLimit+1))
 	if err != nil {
@@ -57,47 +43,56 @@ func RunHostRuntimeWorker(input io.Reader, output io.Writer) error {
 	if len(raw) > runtimeWireLimit {
 		return fmt.Errorf("runtime worker input exceeds limit")
 	}
-	var request runtimeWire
+	var request runtimeRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return err
 	}
-	inv := request.inventory()
-	ctx, cancel := context.WithTimeout(context.Background(), runtimeBudget)
+	inv := HostInventory{Entries: request.Entries, Paths: request.Paths, GoBinaries: request.GoBinaries}
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeWorkerBudget)
 	defer cancel()
-	inv.CollectRuntime(ctx, "")
+	inv.collectRuntime(ctx, "", collectHostRuntime)
 	enc := json.NewEncoder(output)
-	if err := enc.Encode(inv.runtimeWire("observed")); err != nil {
+	if err := enc.Encode(runtimeReply{Phase: "observed", Runtime: inv.Runtime}); err != nil {
 		return err
 	}
-	inv.EnrichRuntimeInventory(ctx)
-	return enc.Encode(inv.runtimeWire("enriched"))
+	r := inv.Runtime
+	if r.Status == "skipped" {
+		return enc.Encode(runtimeReply{Phase: "enriched", Runtime: r, Additions: &runtimeAdditions{}})
+	}
+	additions := inv.runtimeAdditions(ctx, func(f *os.File) runtimeModules { return readRuntimeModules(f) })
+	inv.applyRuntimeAdditions(additions)
+	inv.matchRuntime(ctx, r)
+	r.normalize()
+	return enc.Encode(runtimeReply{Phase: "enriched", Runtime: r, Additions: &additions})
 }
 
-// CollectRuntimeIsolated requires the current executable to dispatch HostRuntimeWorkerArg.
-// Killing the worker bounds even filesystem calls and binary parsers that cannot observe a Go context.
+// CollectRuntimeIsolated takes the runtime snapshot in a worker: the current executable started with
+// HostRuntimeWorkerArg. Killing the worker bounds even filesystem calls and binary parsers that cannot observe a
+// context. A mounted root is not this machine's runtime: the snapshot is marked skipped.
 func (inv *HostInventory) CollectRuntimeIsolated(ctx context.Context, root string) {
-	if root != "" && filepath.Clean(root) != filepath.Clean("/") {
-		inv.CollectRuntime(ctx, root)
+	if mountedRoot(root) {
+		inv.collectRuntime(ctx, root, nil)
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, runtimeBudget)
 	defer cancel()
 	executable, err := os.Executable()
 	if err != nil {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		inv.Runtime = &HostRuntime{StartedAt: now, FinishedAt: now, Status: "unavailable", Scope: "isolated local runtime collection", Gaps: []HostRuntimeGap{{Stage: "worker", Reason: err.Error()}}, Endpoints: []HostEndpoint{}, Processes: []HostProcess{}}
+		inv.Runtime = newHostRuntime("unavailable", "isolated local runtime collection")
+		inv.Runtime.gap("worker", 0, err.Error())
+		inv.Runtime.FinishedAt = inv.Runtime.StartedAt
 		return
 	}
 	inv.collectRuntimeWorker(ctx, executable, []string{HostRuntimeWorkerArg})
 }
 
 func (inv *HostInventory) collectRuntimeWorker(ctx context.Context, executable string, args []string) {
-	inv.Runtime = &HostRuntime{StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "unavailable", Scope: "isolated local runtime collection", Endpoints: []HostEndpoint{}, Processes: []HostProcess{}, Gaps: []HostRuntimeGap{}}
+	inv.Runtime = newHostRuntime("unavailable", "isolated local runtime collection")
 	fail := func(reason string) {
 		inv.Runtime.gap("worker", 0, reason)
 		inv.Runtime.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	input, err := json.Marshal(inv.runtimeWire("request"))
+	input, err := json.Marshal(runtimeRequest{Entries: inv.Entries, Paths: inv.Paths, GoBinaries: inv.GoBinaries})
 	if err != nil {
 		fail(err.Error())
 		return
@@ -110,25 +105,12 @@ func (inv *HostInventory) collectRuntimeWorker(ctx context.Context, executable s
 	cmd.Stdin = bytes.NewReader(input)
 	stdout, stderr := &cappedBuffer{limit: runtimeOutputLimit}, &cappedBuffer{limit: runtimeOutputLimit}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	finished := make(chan error, 1)
-	go func() { finished <- cmd.Run() }()
-	var runErr error
-	select {
-	case runErr = <-finished:
-	case <-ctx.Done():
-		timer := time.NewTimer(250 * time.Millisecond)
-		select {
-		case runErr = <-finished:
-			timer.Stop()
-		case <-timer.C:
-			runErr = ctx.Err()
-		}
-	}
+	runErr := cmd.Run() // at ctx's end the worker's process group is killed
 	decoder := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 	phase := ""
 	for {
-		var result runtimeWire
-		err := decoder.Decode(&result)
+		var reply runtimeReply
+		err := decoder.Decode(&reply)
 		if err == io.EOF {
 			break
 		}
@@ -136,12 +118,16 @@ func (inv *HostInventory) collectRuntimeWorker(ctx context.Context, executable s
 			fail("incomplete or invalid runtime worker output")
 			break
 		}
-		if result.Host.Runtime == nil || (result.Phase != "observed" && result.Phase != "enriched") {
+		valid := reply.Runtime != nil && (reply.Phase == "observed" || reply.Phase == "enriched" && reply.Additions != nil)
+		if !valid {
 			fail("invalid runtime worker response")
 			break
 		}
-		inv.applyRuntimeWire(result)
-		phase = result.Phase
+		inv.Runtime = reply.Runtime
+		if reply.Phase == "enriched" {
+			inv.applyRuntimeAdditions(*reply.Additions)
+		}
+		phase = reply.Phase
 	}
 	if stdout.Truncated() || stderr.Truncated() {
 		fail("runtime worker output exceeds limit")

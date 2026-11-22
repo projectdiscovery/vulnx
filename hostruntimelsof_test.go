@@ -15,8 +15,23 @@ func TestParseRuntimeSockets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 || got[0].Address != "0.0.0.0" || got[0].Port != 8080 || got[0].Owners[0] != 42 || got[1].Address != "::1" || got[2].Address != "::" || got[2].State != "bound" || got[3].Address != "127.0.0.1" {
+	// the connected UDP socket (f5) is a client's: not listed
+	if len(got) != 3 || got[0].Address != "0.0.0.0" || got[0].Port != 8080 || got[0].Owners[0] != 42 || got[1].Address != "::1" || got[2].Address != "::" || got[2].State != "bound" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// TestRuntimeSharedSocket merges the owners of one listening socket, held by a server and its forked workers.
+func TestRuntimeSharedSocket(t *testing.T) {
+	raw := "p10\x00\nf5\x00tIPv4\x00d0xabc\x00PTCP\x00n*:80\x00TST=LISTEN\x00\np11\x00\nf5\x00tIPv4\x00d0xabc\x00PTCP\x00n*:80\x00TST=LISTEN\x00\n"
+	got, err := parseRuntimeSockets([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := HostRuntime{Endpoints: got}
+	r.normalize()
+	if len(r.Endpoints) != 1 || len(r.Endpoints[0].Owners) != 2 || r.Endpoints[0].Socket != "0xabc" {
+		t.Fatalf("%+v", r.Endpoints)
 	}
 }
 

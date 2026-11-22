@@ -68,20 +68,34 @@ type HostRuntimeGap struct {
 	Reason string `json:"reason"`
 }
 
-const runtimeBudget = 10 * time.Second
+// The runtime snapshot's deadlines: the CLI waits runtimeBudget for its worker; the worker stops itself sooner,
+// at runtimeWorkerBudget, so its answer is written before it would be killed; collecting sockets and owners takes
+// at most runtimeCollectBudget of that, leaving the rest to read the executables.
+const (
+	runtimeBudget        = 10 * time.Second
+	runtimeWorkerBudget  = 8 * time.Second
+	runtimeCollectBudget = 5 * time.Second
+)
 
-// CollectRuntime skips mounted filesystems. Cancellation is cooperative; the CLI uses a bounded worker.
-func (inv *HostInventory) CollectRuntime(ctx context.Context, root string) {
-	inv.collectRuntime(ctx, root, collectHostRuntime)
+// mountedRoot is whether a scan reads a filesystem mounted at root rather than this machine.
+func mountedRoot(root string) bool {
+	return root != "" && filepath.Clean(root) != string(filepath.Separator)
 }
 
+// newHostRuntime is an empty snapshot started now.
+func newHostRuntime(status, scope string) *HostRuntime {
+	return &HostRuntime{StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: status, Scope: scope,
+		Endpoints: []HostEndpoint{}, Processes: []HostProcess{}, Gaps: []HostRuntimeGap{}}
+}
+
+// collectRuntime takes the snapshot with collect, within runtimeCollectBudget; a mounted root is skipped.
 func (inv *HostInventory) collectRuntime(ctx context.Context, root string, collect func(context.Context, *HostRuntime)) {
-	r := &HostRuntime{StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Status: "collected", Endpoints: []HostEndpoint{}, Processes: []HostProcess{}, Gaps: []HostRuntimeGap{}}
+	r := newHostRuntime("collected", "")
 	inv.Runtime = r
-	if root != "" && filepath.Clean(root) != filepath.Clean("/") {
+	if mountedRoot(root) {
 		r.Status, r.Scope = "skipped", "mounted filesystem; no live runtime inspected"
 	} else {
-		bounded, cancel := context.WithTimeout(ctx, runtimeBudget)
+		bounded, cancel := context.WithTimeout(ctx, runtimeCollectBudget)
 		defer cancel()
 		if bounded.Err() == nil {
 			collect(bounded, r)

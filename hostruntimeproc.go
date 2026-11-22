@@ -193,6 +193,10 @@ func parseRuntimeProcSockets(ctx context.Context, raw []byte, protocol, family s
 			malformed++
 			continue
 		}
+		// a UDP socket connected to a peer is a client's: it sends to that peer and takes nothing from anyone else
+		if _, remotePort, _ := strings.Cut(fields[2], ":"); protocol == "udp" && strings.Trim(remotePort, "0") != "" {
+			continue
+		}
 		inode, err := strconv.ParseUint(fields[9], 10, 64)
 		if err != nil {
 			malformed++

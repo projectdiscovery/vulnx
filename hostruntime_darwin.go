@@ -46,7 +46,7 @@ func collectHostRuntime(ctx context.Context, r *HostRuntime) {
 	}
 	success := false
 	for _, selection := range [][]string{{"-iTCP", "-sTCP:LISTEN"}, {"-iUDP"}} {
-		args := append([]string{"-nP", "-F0pufnPtT"}, selection...)
+		args := append([]string{"-b", "-w", "-nP", "-F0pufnPtTd"}, selection...)
 		raw, warning, err := runtimeSocketCommand(ctx, args)
 		if err != nil {
 			r.gap("sockets", 0, fmt.Sprintf("socket enumeration failed: %v", err))
@@ -103,7 +103,7 @@ func verifyRuntimeImages(ctx context.Context, r *HostRuntime) {
 		if len(pids) == 0 {
 			continue
 		}
-		raw, warning, err := runtimeSocketCommand(ctx, []string{"-nP", "-a", "-p", strings.Join(pids, ","), "-d", "txt", "-F0pfnDi"})
+		raw, warning, err := runtimeSocketCommand(ctx, []string{"-b", "-w", "-nP", "-a", "-p", strings.Join(pids, ","), "-d", "txt", "-F0pfnDi"})
 		if err != nil {
 			r.gap("executable_identity", 0, fmt.Sprintf("mapped executable enumeration failed: %v", err))
 		}
@@ -190,7 +190,7 @@ func runtimeProcess(ctx context.Context, pid int, started time.Time) (HostProces
 func confirmRuntimeOwners(ctx context.Context, r *HostRuntime) {
 	var later []HostEndpoint
 	for _, selection := range [][]string{{"-iTCP", "-sTCP:LISTEN"}, {"-iUDP"}} {
-		raw, warning, err := runtimeSocketCommand(ctx, append([]string{"-nP", "-F0pufnPtT"}, selection...))
+		raw, warning, err := runtimeSocketCommand(ctx, append([]string{"-b", "-w", "-nP", "-F0pufnPtTd"}, selection...))
 		if err != nil || warning {
 			r.gap("ownership", 0, "socket ownership confirmation was incomplete")
 		}

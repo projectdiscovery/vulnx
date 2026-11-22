@@ -28,7 +28,7 @@ func TestRuntimeLinuxLiveListeners(t *testing.T) {
 		}
 	})
 	var inv HostInventory
-	inv.CollectRuntime(context.Background(), "")
+	inv.collectRuntime(context.Background(), "", collectHostRuntime)
 	for protocol, port := range map[string]uint16{"tcp": uint16(tcp.Addr().(*net.TCPAddr).Port), "udp": uint16(udp.LocalAddr().(*net.UDPAddr).Port)} {
 		found := false
 		for _, e := range inv.Runtime.Endpoints {

@@ -36,7 +36,7 @@ func TestParseRuntimeProcSockets(t *testing.T) {
 		{"tcp wildcard", "tcp", "ipv4", "0.0.0.0", "0A", 80, 1},
 		{"tcp established", "tcp", "ipv4", "192.0.2.1", "01", 443, 0},
 		{"udp bound", "udp", "ipv4", "192.0.2.1", "07", 5353, 1},
-		{"udp connected", "udp", "ipv4", "192.0.2.1", "01", 5353, 1},
+		{"udp connected, no peer", "udp", "ipv4", "192.0.2.1", "01", 5353, 1},
 		{"udp unbound", "udp", "ipv4", "0.0.0.0", "07", 0, 0},
 		{"ipv6 loopback", "tcp", "ipv6", "::1", "0A", 8080, 1},
 		{"ipv6 wildcard", "udp", "ipv6", "::", "07", 5353, 1},
@@ -62,6 +62,11 @@ func TestParseRuntimeProcSockets(t *testing.T) {
 				}
 			}
 		})
+	}
+	// a UDP socket connected to a peer (a DNS client's) listens for no one
+	connected := strings.Replace(procSocketLine("192.0.2.1", 40000, "01", "77"), "00000000:0000", "0100007F:0035", 1)
+	if got, err := parseRuntimeProcSockets(context.Background(), []byte(procSocketHeader+connected), "udp", "ipv4"); err != nil || len(got) != 0 {
+		t.Fatalf("connected UDP listed: %+v %v", got, err)
 	}
 	valid := procSocketLine("127.0.0.1", 80, "0A", "12")
 	for name, raw := range map[string]string{

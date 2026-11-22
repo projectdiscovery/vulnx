@@ -121,7 +121,8 @@ func TestLocalModels(t *testing.T) {
 func TestLoopback(t *testing.T) {
 	for addr, want := range map[string]bool{"127.0.0.1": true, "127.0.0.1:11434": true, "localhost": true, "localhost:11434": true,
 		"[::1]:11434": true, "http://127.0.0.1:11434": true, "0.0.0.0": false, "0.0.0.0:11434": false, "::": false,
-		"192.168.1.5": false, "http://0.0.0.0:11434/": false, "myhost.lan:11434": false, ":11434": false} {
+		"192.168.1.5": false, "http://0.0.0.0:11434/": false, "myhost.lan:11434": false, ":11434": false,
+		"::ffff:127.0.0.1": true, "[::ffff:127.0.0.1]:8080": true, "app.localhost": true, "localhost.evil.com": false} {
 		if got := loopback(addr); got != want {
 			t.Errorf("%s: got %v", addr, got)
 		}

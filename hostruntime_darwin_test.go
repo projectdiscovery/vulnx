@@ -118,7 +118,7 @@ func TestRuntimeLiveListeners(t *testing.T) {
 		}
 	})
 	var inv HostInventory
-	inv.CollectRuntime(context.Background(), "")
+	inv.collectRuntime(context.Background(), "", collectHostRuntime)
 	want := map[string]uint16{"tcp": uint16(tcp.Addr().(*net.TCPAddr).Port), "udp": uint16(udp.LocalAddr().(*net.UDPAddr).Port)}
 	for protocol, port := range want {
 		found := false

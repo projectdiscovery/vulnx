@@ -326,7 +326,8 @@ func (h *hostReader) exposedRuntimes() {
 	}
 }
 
-// loopback reports whether an address a runtime listens on (host, host:port or a URL) is this machine only.
+// loopback reports whether an address (a host, host:port or a URL) is this machine only: localhost, a
+// *.localhost name, or a loopback IP, an IPv4-mapped one (::ffff:127.0.0.1) included.
 func loopback(addr string) bool {
 	addr = strings.TrimPrefix(strings.TrimPrefix(addr, "http://"), "https://")
 	addr = strings.TrimSuffix(addr, "/")
@@ -335,8 +336,8 @@ func loopback(addr string) bool {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
-	if host == "" || host == "localhost" {
-		return host == "localhost"
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()

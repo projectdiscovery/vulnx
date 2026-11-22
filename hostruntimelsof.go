@@ -80,7 +80,10 @@ func parseRuntimeSockets(raw []byte) ([]HostEndpoint, error) {
 			malformed = true
 			return
 		}
-		local, _, _ := strings.Cut(fields['n'], "->")
+		local, peer, connected := strings.Cut(fields['n'], "->")
+		if proto == "udp" && connected && peer != "" { // a client's socket, connected to its one peer
+			return
+		}
 		host, portText, err := net.SplitHostPort(local)
 		if err != nil {
 			malformed = true
@@ -109,7 +112,8 @@ func parseRuntimeSockets(raw []byte) ([]HostEndpoint, error) {
 		if port == 0 {
 			return
 		}
-		e := HostEndpoint{Protocol: proto, Family: family, Address: ip.String(), Port: uint16(port), State: "bound", Owners: []int{}, Socket: fmt.Sprintf("%d:%s", pid, fields['f'])}
+		// the socket's kernel address: shared by every process holding the socket (a forked server's workers)
+		e := HostEndpoint{Protocol: proto, Family: family, Address: ip.String(), Port: uint16(port), State: "bound", Owners: []int{}, Socket: fields['d']}
 		if proto == "tcp" {
 			e.State = "listening"
 		}
@@ -138,7 +142,7 @@ func parseRuntimeSockets(raw []byte) ([]HostEndpoint, error) {
 		case 'f':
 			flush()
 			fields[key] = value
-		case 'P', 't', 'n':
+		case 'P', 't', 'n', 'd':
 			fields[key] = value
 		case 'T':
 			if strings.HasPrefix(value, "ST=") {

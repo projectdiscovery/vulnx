@@ -28,13 +28,12 @@ func TestRuntimeWorkerChild(t *testing.T) {
 			os.Exit(1)
 		}
 	case "hang":
-		var request runtimeWire
+		var request runtimeRequest
 		if err := json.NewDecoder(os.Stdin).Decode(&request); err != nil {
 			os.Exit(2)
 		}
-		inv := request.inventory()
-		inv.Runtime = &HostRuntime{Status: "partial", Endpoints: []HostEndpoint{{Protocol: "tcp", Address: "127.0.0.1", Port: 1234}}, Processes: []HostProcess{}, Gaps: []HostRuntimeGap{}}
-		if err := json.NewEncoder(os.Stdout).Encode(inv.runtimeWire("observed")); err != nil {
+		r := &HostRuntime{Status: "partial", Endpoints: []HostEndpoint{{Protocol: "tcp", Address: "127.0.0.1", Port: 1234}}, Processes: []HostProcess{}, Gaps: []HostRuntimeGap{}}
+		if err := json.NewEncoder(os.Stdout).Encode(runtimeReply{Phase: "observed", Runtime: r}); err != nil {
 			os.Exit(3)
 		}
 		time.Sleep(time.Minute)
@@ -76,12 +75,33 @@ func TestRuntimeWorkerInvalid(t *testing.T) {
 	}
 }
 
-func TestRuntimeWirePreservesParentState(t *testing.T) {
-	inv := HostInventory{Pending: []HostPending{{Name: "pending"}}, Extensions: []string{"extension"}, Entries: []string{"old"}, Runtime: &HostRuntime{Status: "partial"}}
-	update := HostInventory{Entries: []string{"old", "new"}, runtimePlaces: map[string]bool{"private": true}, Runtime: &HostRuntime{Status: "partial"}}
-	inv.applyRuntimeWire(update.runtimeWire("enriched"))
-	if len(inv.Pending) != 1 || len(inv.Extensions) != 1 || len(inv.Entries) != 2 || !inv.runtimePlaces["private"] {
-		t.Fatal("worker merge lost parent-only fields")
+// TestRuntimeAdditionsKeepParentState adds the worker's findings without losing what only the parent holds, and
+// keeps a place's path and update the parent already knew.
+func TestRuntimeAdditionsKeepParentState(t *testing.T) {
+	inv := HostInventory{Pending: []HostPending{{Name: "pending"}}, Extensions: []string{"extension"}, Entries: []string{"old"},
+		Paths: map[string]string{"tool": "/usr/bin/tool"}, Fixes: map[string]HostFix{"tool": {Kind: "brew"}}, Runtime: &HostRuntime{Status: "partial"}}
+	inv.applyRuntimeAdditions(runtimeAdditions{Read: true, Found: []runtimeFound{{"old", "tool"}, {"new", "/opt/x"}},
+		Paths: map[string]string{"tool": "/elsewhere", "/opt/x": "/opt/x"}, Fixes: map[string]HostFix{"tool": {Kind: "binary"}},
+		Places: []string{"/opt/x"}})
+	if len(inv.Pending) != 1 || len(inv.Extensions) != 1 || strings.Join(inv.Entries, ",") != "old,new" || !inv.runtimePlaces["/opt/x"] ||
+		inv.Paths["tool"] != "/usr/bin/tool" || inv.Fixes["tool"].Kind != "brew" || inv.EntrySource["new"] != runtimeInventorySource ||
+		!inv.Runtime.enriched {
+		t.Fatalf("%+v", inv)
+	}
+}
+
+// TestRuntimeRequestCarriesOnlyWhatEnrichmentNeeds sends the worker no sources, fixes, places found or not assessed.
+func TestRuntimeRequestCarriesOnlyWhatEnrichmentNeeds(t *testing.T) {
+	inv := HostInventory{Entries: []string{"e"}, Paths: map[string]string{"p": "/p"}, FoundIn: map[string][]string{"e": {"private-place"}},
+		NotAssessed: []HostComponent{{Name: "private-name"}}, Fixes: map[string]HostFix{"p": {Note: "private-note"}}}
+	raw, err := json.Marshal(runtimeRequest{Entries: inv.Entries, Paths: inv.Paths, GoBinaries: inv.GoBinaries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, never := range []string{"private-place", "private-name", "private-note"} {
+		if strings.Contains(string(raw), never) {
+			t.Errorf("the request carries %s", never)
+		}
 	}
 }
 
@@ -126,10 +146,19 @@ func TestRuntimeWorkerEndToEnd(t *testing.T) {
 	t.Fatal("worker lost parent process")
 }
 
+// TestRuntimeWorkerMountedRoot starts no worker for a mounted root: its snapshot is skipped, and its executables
+// are not read.
 func TestRuntimeWorkerMountedRoot(t *testing.T) {
 	var inv HostInventory
 	inv.CollectRuntimeIsolated(context.Background(), t.TempDir())
-	if inv.Runtime.Status != "skipped" {
-		t.Fatal("mounted root invoked worker")
+	if inv.Runtime == nil || inv.Runtime.Status != "skipped" || len(inv.Runtime.Processes) != 0 || inv.Runtime.FinishedAt == "" {
+		t.Fatalf("mounted root invoked worker: %+v", inv.Runtime)
+	}
+	inv.enrichRuntimeInventory(context.Background(), func(*os.File) runtimeModules {
+		t.Fatal("a mounted root's executable was read")
+		return runtimeModules{}
+	})
+	if len(inv.Sources) != 0 {
+		t.Fatalf("%+v", inv.Sources)
 	}
 }

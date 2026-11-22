@@ -1203,6 +1203,16 @@ func formulaRepository(keg, formula string) string {
 	return strings.ToLower(string(m[1]) + "/" + string(m[2]))
 }
 
+// source is the reader named name; nil when there is none.
+func (inv *HostInventory) source(name string) *HostSource {
+	for i := range inv.Sources {
+		if inv.Sources[i].Name == name {
+			return &inv.Sources[i]
+		}
+	}
+	return nil
+}
+
 // PendingRepositories are the source repositories ResolvePending needs products for, each once.
 func (inv HostInventory) PendingRepositories() []string {
 	var out []string
@@ -1222,12 +1232,7 @@ func (inv *HostInventory) ResolvePending(products map[string][]string) {
 		have[e] = true
 	}
 	for _, p := range inv.Pending {
-		var src *HostSource
-		for i := range inv.Sources {
-			if inv.Sources[i].Name == p.Source {
-				src = &inv.Sources[i]
-			}
-		}
+		src := inv.source(p.Source)
 		if len(products[p.Repository]) == 0 {
 			inv.NotAssessed = append(inv.NotAssessed, HostComponent{Name: p.Name, Version: p.Version, Source: p.Source})
 			if src != nil {
@@ -1855,11 +1860,9 @@ func (inv *HostInventory) DropUnknownProducts(res *StackResult) {
 		}
 		inv.NotAssessed = append(inv.NotAssessed, HostComponent{Name: name, Version: it.Version, Source: src,
 			Reason: "its product (" + strings.TrimPrefix(it.Package, "cpe/") + ") is not in the index"})
-		for i := range inv.Sources {
-			if inv.Sources[i].Name == src {
-				inv.Sources[i].Sent--
-				inv.Sources[i].NotAssessed++
-			}
+		if s := inv.source(src); s != nil {
+			s.Sent--
+			s.NotAssessed++
 		}
 		res.Summary.Clean--
 		res.Summary.Packages--

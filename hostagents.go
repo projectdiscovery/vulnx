@@ -94,7 +94,7 @@ func (h *hostReader) agentSurface(servers []mcpServer) {
 			u, err := url.Parse(s.url)
 			if err == nil {
 				item.Detail = "remote: " + u.Host
-				if u.Scheme == "http" && !localHost(u.Hostname()) {
+				if u.Scheme == "http" && !loopback(u.Hostname()) {
 					h.risk(HostRisk{"plaintext", "mcp_server", s.name, s.config, "http://" + u.Host + ": anyone on the path can change what the server answers"})
 				}
 			}
@@ -125,10 +125,6 @@ func (h *hostReader) agentSurface(servers []mcpServer) {
 	if h.inv.Risks == nil {
 		h.inv.Risks = []HostRisk{} // the report says "none found", not "not looked for"
 	}
-}
-
-func localHost(host string) bool {
-	return host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.") || strings.HasSuffix(host, ".localhost")
 }
 
 // sideloaded is the extensions an editor recorded as installed from a file (extensions.json, metadata.source).
