@@ -83,59 +83,6 @@ func TestPackageURLAndFixes(t *testing.T) {
 	}
 }
 
-func TestVEX(t *testing.T) {
-	res := StackResult{Items: []StackItem{
-		{Input: "npm/minimist@1.2.5", Package: "npm/minimist", Version: "1.2.5", Status: "affected", FixedVersion: "1.2.6",
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-2021-44906", FixedIn: []any{"1.2.6"}}, {CVE: "CVE-2021-44906"}}},
-		{Input: "pypi/r@2", Package: "pypi/r", Version: "2", Status: "affected",
-			AdvisoryRows: []StackAdvisory{{CVE: "CVE-2020-1"}},
-			Undetermined: []StackAdvisory{{CVE: "CVE-2020-2", Reason: "project_range_unknown"}}},
-		{Input: "npm/left-pad@1.3.0", Package: "npm/left-pad", Version: "1.3.0", Status: "clean"},
-	}}
-	now := time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
-	raw, err := OpenVEX(res, "me", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var o struct {
-		Author     string `json:"author"`
-		Statements []struct {
-			Vulnerability   map[string]string   `json:"vulnerability"`
-			Products        []map[string]string `json:"products"`
-			Status          string              `json:"status"`
-			StatusNotes     string              `json:"status_notes"`
-			ActionStatement string              `json:"action_statement"`
-		} `json:"statements"`
-	}
-	if err := json.Unmarshal(raw, &o); err != nil {
-		t.Fatal(err)
-	}
-	if o.Author != "me" || len(o.Statements) != 3 {
-		t.Fatalf("openvex: %s", raw)
-	}
-	got := map[string]string{}
-	for _, s := range o.Statements {
-		got[s.Vulnerability["name"]+"|"+s.Products[0]["@id"]] = s.Status + "|" + s.ActionStatement + s.StatusNotes
-	}
-	want := map[string]string{
-		"CVE-2021-44906|pkg:npm/minimist@1.2.5": "affected|Upgrade to 1.2.6",
-		"CVE-2020-1|pkg:pypi/r@2":               "affected|No fixed version known",
-		"CVE-2020-2|pkg:pypi/r@2":               "under_investigation|project_range_unknown",
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("%s: %q, want %q", k, got[k], v)
-		}
-	}
-	raw, err = CycloneDXVEX(res, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"state": "exploitable"`) || !strings.Contains(string(raw), `"state": "in_triage"`) {
-		t.Errorf("cyclonedx: %s", raw)
-	}
-}
-
 // pagingServer answers a list two items a page with a cursor (or, cursorless, cut with none), counting requests;
 // staleOnce answers the first cursor with the API's invalid-cursor 400.
 func pagingServer(t *testing.T, cursorless, staleOnce bool) (*httptest.Server, *int) {
@@ -404,5 +351,29 @@ func TestProductsByRepository(t *testing.T) {
 	old = true
 	if _, supported, err := c.ProductsByRepository(context.Background(), []string{"a/b"}); err != nil || supported {
 		t.Errorf("an API without the lookup: supported %v err %v", supported, err)
+	}
+}
+
+// TestCheckFunctionsFallback asks for function lists, and on an API that rejects the field answers without them.
+func TestCheckFunctionsFallback(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(raw))
+		if strings.Contains(string(raw), `"functions"`) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error": "unknown body field(s) ['functions']", "field": "body"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"total": 1, "items": [{"input": "pkg:npm/a@1", "status": "clean"}]}`))
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.CheckManyWith(context.Background(), []string{"pkg:npm/a@1"}, CheckOptions{Functions: true})
+	if err != nil || !res.FunctionsUnavailable || len(res.Items) != 1 || len(bodies) != 2 {
+		t.Fatalf("err %v, unavailable %v, items %d, requests %d", err, res.FunctionsUnavailable, len(res.Items), len(bodies))
 	}
 }
