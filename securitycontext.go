@@ -1,16 +1,17 @@
 package vulnx
 
-// The SecurityContext backend (api.securitycontext.com /v1/cves), which replaces template-service's
-// /v2/vulnerability API. SecurityContext's API is used as it is: vulnx translates its own query language and field
-// names into /v1/cves parameters, and turns SecurityContext's records back into vulnx's Vulnerability, so the CLI,
-// the renderer and the MCP tools keep working. What /v1/cves cannot answer is rejected with a sentence that says
-// so (ErrUnsupportedQuery), never silently widened.
+// vulnx translates its query language and field names into SecurityContext /v1/cves parameters and turns
+// SecurityContext's records into vulnx's Vulnerability. What /v1/cves cannot answer is rejected with a sentence
+// that says so (ErrUnsupportedQuery), never silently widened.
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,8 +26,9 @@ var ErrUnsupportedQuery = errkit.New("unsupported query")
 const (
 	scMaxPage    = 100  // /v1/cves answers at most 100 rows a page
 	scMaxWindow  = 1000 // offset + limit vulnx pages through (one request per 100 rows)
-	scMaxQWords  = 5    // q= takes at most 5 words
-	scMaxFacets  = 3    // facets= takes at most 3 dimensions
+	scMaxAll     = 10000
+	scMaxQWords  = 5 // q= takes at most 5 words
+	scMaxFacets  = 3 // facets= takes at most 3 dimensions
 	scCVEPattern = `^(?i)CVE-\d{4}-\d{4,}$`
 )
 
@@ -39,14 +41,22 @@ func unsupported(format string, args ...any) error {
 	return errkit.Append(ErrUnsupportedQuery, fmt.Errorf(format, args...))
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Query translation
+// setParam sets a /v1/cves parameter, rejecting a second, different value for it: the API takes one.
+func setParam(out *scQuery, field, k, val string) error {
+	if prev := out.params.Get(k); prev != "" && prev != val {
+		return unsupported("%s is given twice (%s, %s); SecurityContext takes one value", field, prev, val)
+	}
+	out.params.Set(k, val)
+	return nil
+}
 
 // scQuery is a translated search: the /v1/cves parameters, or one CVE id to fetch directly.
 type scQuery struct {
 	params url.Values
 	ids    []string
-	cpe    *cpeRef // a cpe: term: the CVEs of that product version (issue #77)
+	cpe    *cpeRef // a cpe: term: the CVEs of that product version
+	// productName is a product given without its vendor; the client resolves it to vendor:product.
+	productName string
 }
 
 // cpeRef is the product version a cpe: term names.
@@ -82,9 +92,8 @@ type queryTerm struct {
 	neg   bool
 }
 
-// translateQuery turns vulnx's query (the Bleve subset the CLI flags produce, plus field:value terms a user types)
-// into /v1/cves parameters. Terms are ANDed; an OR is accepted only between values of one field (severity:a ||
-// severity:b) or as the vendor-or-product pair the --vendor / --product flags write.
+// translateQuery turns vulnx's field:value query into /v1/cves parameters. Terms are ANDed; an OR is accepted
+// only between values of one field (severity:a || severity:b).
 func translateQuery(q string) (*scQuery, error) {
 	out := &scQuery{params: url.Values{}}
 	q = strings.TrimSpace(q)
@@ -139,15 +148,20 @@ func translateQuery(q string) (*scQuery, error) {
 							words = append(words, strings.Fields(v)...)
 							continue
 						}
-						if out.params.Get(k) != "" && out.params.Get(k) != v {
-							return nil, unsupported("%s is given twice (%s, %s); SecurityContext takes one", k, out.params.Get(k), v)
+						if err := setParam(out, k, k, v); err != nil {
+							return nil, err
 						}
-						out.params.Set(k, v)
 					}
 				}
 				out.ids = append(out.ids, sub.ids...)
 				if sub.cpe != nil {
 					out.cpe = sub.cpe
+				}
+				if sub.productName != "" {
+					if out.productName != "" && out.productName != sub.productName {
+						return nil, unsupported("product is given twice (%s, %s); SecurityContext takes one value", out.productName, sub.productName)
+					}
+					out.productName = sub.productName
 				}
 				continue
 			}
@@ -157,7 +171,7 @@ func translateQuery(q string) (*scQuery, error) {
 			return nil, err
 		}
 		if len(terms) > 1 {
-			if err := applyOr(out, terms); err != nil {
+			if err := applyOr(out, terms, addExploit); err != nil {
 				return nil, err
 			}
 			continue
@@ -189,11 +203,10 @@ func translateQuery(q string) (*scQuery, error) {
 }
 
 var boolExploit = map[string]string{
-	"is_kev":      "known_exploited",
-	"is_vkev":     "vulncheck_known_exploited",
-	"is_poc":      "public_exploit",
-	"is_template": "nuclei_template",
-	// SecurityContext signals template-service did not have
+	"is_kev":            "known_exploited",
+	"is_vkev":           "vulncheck_known_exploited",
+	"is_poc":            "public_exploit",
+	"is_template":       "nuclei_template",
 	"is_ransomware":     "ransomware",
 	"is_initial_access": "initial_access",
 }
@@ -202,12 +215,6 @@ var boolParam = map[string]string{
 	"is_remote": "remote",
 	"is_auth":   "authentication_required",
 	"is_oss":    "oss",
-}
-
-// addWords appends keywords to q= (the 5-word limit is checked once all terms are read).
-func addWords(out *scQuery, words []string) error {
-	out.params["q"] = append(out.params["q"], words...)
-	return nil
 }
 
 // datePeriod reads 2024, 2024-03 or 2024-03-05 as [start, end): the first day and the day after the period.
@@ -236,11 +243,7 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if t.neg {
 			return unsupported("NOT %s:%s is not supported", t.field, t.value)
 		}
-		if prev := out.params.Get(k); prev != "" && prev != val {
-			return unsupported("%s is given twice (%s, %s); SecurityContext takes one value", t.field, prev, val)
-		}
-		out.params.Set(k, val)
-		return nil
+		return setParam(out, t.field, k, val)
 	}
 	if kind, ok := boolExploit[field]; ok {
 		b, err := parseBool(field, v)
@@ -293,10 +296,17 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 	case "vendor", "affected_products.vendor":
 		return set("vendor", strings.ToLower(v))
 	case "product", "affected_products.product":
-		if !strings.Contains(v, ":") {
-			return unsupported("product:%s needs the vendor too (vendor:product, e.g. f5:nginx); or use --vendor", v)
+		if strings.Contains(v, ":") || strings.Contains(v, "/") {
+			return set("product", strings.ToLower(v))
 		}
-		return set("product", strings.ToLower(v))
+		if t.neg {
+			return unsupported("NOT %s:%s is not supported", t.field, t.value)
+		}
+		if out.productName != "" && out.productName != strings.ToLower(v) {
+			return unsupported("%s is given twice (%s, %s); SecurityContext takes one value", t.field, out.productName, strings.ToLower(v))
+		}
+		out.productName = strings.ToLower(v)
+		return nil
 	case "category", "affected_products.category":
 		return set("category", strings.ToLower(v))
 	case "deployment_model", "affected_products.deployment_model":
@@ -306,8 +316,11 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if err != nil {
 			return unsupported("%s:%s: %v", t.field, v, err)
 		}
-		if t.neg || (op != ">" && op != ">=") {
-			return unsupported("%s takes a lower bound only (%s:>=N); SecurityContext has no upper bound or exact match", t.field, t.field)
+		if op == ">" {
+			return unsupported("%s:%s: SecurityContext filters on a minimum score; use %s:>=%s", t.field, v, t.field, num)
+		}
+		if t.neg || op != ">=" {
+			return unsupported("%s takes a minimum only (%s:>=N); SecurityContext has no upper bound or exact match", t.field, t.field)
 		}
 		if _, err := strconv.ParseFloat(num, 64); err != nil {
 			return unsupported("%s:%s is not a number", t.field, v)
@@ -370,50 +383,34 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if t.neg {
 			return unsupported("NOT %s is not supported", t.field)
 		}
-		return addWords(out, strings.Fields(v))
+		// the 5-word limit on q= is checked once all terms are read
+		out.params["q"] = append(out.params["q"], strings.Fields(v)...)
+		return nil
 	}
 	return unsupported("SecurityContext cannot filter on %q; run `vulnx filters` for the fields it can", t.field)
 }
 
-// applyOr handles an OR group: values of one field, or the --vendor / --product vendor-or-product pair.
-func applyOr(out *scQuery, terms []queryTerm) error {
+// applyOr handles an OR group, which SecurityContext takes between values of one field.
+func applyOr(out *scQuery, terms []queryTerm, addExploit func(string, bool) error) error {
 	field := strings.ToLower(terms[0].field)
-	values := []string{}
-	seen := map[string]bool{}
-	productPair := true
+	var values []string
 	for _, t := range terms {
 		if t.neg {
 			return unsupported("NOT inside an OR group is not supported")
 		}
-		f := strings.ToLower(t.field)
-		if f != "affected_products.product" && f != "affected_products.vendor" {
-			productPair = false
-		}
-		if !seen[strings.ToLower(t.value)] {
-			seen[strings.ToLower(t.value)] = true
-			values = append(values, strings.ToLower(t.value))
-		}
-	}
-	if productPair {
-		if len(values) > 1 {
-			return unsupported("one vendor or product per search (got %s); SecurityContext filters on one", strings.Join(values, ", "))
-		}
-		v := values[0]
-		if strings.Contains(v, ":") {
-			out.params.Set("product", v)
-		} else {
-			out.params.Set("vendor", v)
-		}
-		return nil
-	}
-	for _, t := range terms {
 		if !strings.EqualFold(t.field, terms[0].field) {
 			return unsupported("OR between different fields (%s, %s) is not supported", terms[0].field, t.field)
 		}
+		if v := strings.ToLower(t.value); !slices.Contains(values, v) {
+			values = append(values, v)
+		}
+	}
+	if len(values) == 1 {
+		return applyTerm(out, terms[0], addExploit)
 	}
 	switch field {
 	case "severity":
-		out.params.Set("severity", strings.Join(values, ","))
+		return setParam(out, terms[0].field, "severity", strings.Join(values, ","))
 	case "vuln_status", "nvd_status":
 		var sts []string
 		for _, v := range values {
@@ -423,11 +420,13 @@ func applyOr(out *scQuery, terms []queryTerm) error {
 			}
 			sts = append(sts, st)
 		}
-		out.params.Set("nvd_status", strings.Join(sts, ","))
+		return setParam(out, terms[0].field, "nvd_status", strings.Join(sts, ","))
 	case "category", "affected_products.category":
-		out.params.Set("category", strings.Join(values, ","))
+		return setParam(out, terms[0].field, "category", strings.Join(values, ","))
 	case "deployment_model", "affected_products.deployment_model":
-		out.params.Set("deployment_model", strings.Join(values, ","))
+		return setParam(out, terms[0].field, "deployment_model", strings.Join(values, ","))
+	case "vendor", "affected_products.vendor", "product", "affected_products.product":
+		return unsupported("one %s per search (got %s); SecurityContext filters on one", strings.TrimPrefix(field, "affected_products."), strings.Join(values, ", "))
 	case "cve_id", "id", "doc_id":
 		for _, v := range values {
 			if !IsCVEID(v) {
@@ -435,19 +434,18 @@ func applyOr(out *scQuery, terms []queryTerm) error {
 			}
 			out.ids = append(out.ids, strings.ToUpper(v))
 		}
+		return nil
 	case "":
 		return unsupported("OR between keywords (%s) is not supported: keywords are all required; run one search per keyword", strings.Join(values, " || "))
-	default:
-		return unsupported("OR on %q is not supported (only severity, vuln_status, category, deployment_model, cve_id)", terms[0].field)
 	}
-	return nil
+	return unsupported("OR on %q is not supported (only severity, vuln_status, category, deployment_model, cve_id)", terms[0].field)
 }
 
 // nvdStatuses: NVD's status words (SecurityContext's nvd_status), and vulnx's earlier words for them.
 var nvdStatuses = map[string]string{
 	"analyzed": "analyzed", "modified": "modified", "deferred": "deferred", "received": "received",
 	"awaiting_analysis": "awaiting_analysis", "undergoing_analysis": "undergoing_analysis",
-	// template-service's vuln_status values
+	// vulnx's earlier vuln_status words
 	"new": "received", "confirmed": "analyzed", "unconfirmed": "awaiting_analysis,undergoing_analysis",
 	"unknown": "deferred",
 }
@@ -498,9 +496,8 @@ func orTerms(c string) ([]queryTerm, error) {
 		return nil, err
 	}
 	if len(parts) == 1 {
-		if strings.Contains(c, "(") && !strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(c, "NOT ")), `"`) {
-			if inner, ok := stripParens(strings.TrimSpace(strings.TrimPrefix(c, "NOT "))); ok && strings.HasPrefix(c, "NOT ") {
-				_ = inner
+		if rest, ok := strings.CutPrefix(c, "NOT "); ok {
+			if _, group := stripParens(rest); group {
 				return nil, unsupported("NOT on a group is not supported")
 			}
 		}
@@ -743,48 +740,97 @@ func buildFacets(reqs []facetReq, sc map[string][]scBucket, total int) map[strin
 	return out
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// --fields: the JSON answer keeps only the fields asked for (template-service narrowed server side; SecurityContext's
-// field names differ, so vulnx narrows its own records). CSV output reads Results directly and keeps every column.
-
-// MarshalJSON writes the response with each result narrowed to Fields, when set.
+// MarshalJSON writes the response with each result narrowed to Fields, when set. A dotted field (h1.reports,
+// affected_products.vendor) keeps that path inside nested objects and lists.
 func (r SearchResponse) MarshalJSON() ([]byte, error) {
 	type plain SearchResponse
 	if len(r.fields) == 0 {
 		return json.Marshal(plain(r))
 	}
-	keep := map[string]bool{}
+	keep := &fieldTree{}
 	for _, f := range r.fields {
-		keep[strings.TrimSpace(f)] = true
+		if f = strings.TrimSpace(f); f != "" {
+			keep.add(strings.Split(f, "."))
+		}
 	}
-	results := make([]map[string]json.RawMessage, 0, len(r.Results))
+	results := make([]any, 0, len(r.Results))
 	for i := range r.Results {
 		b, err := json.Marshal(r.Results[i])
 		if err != nil {
 			return nil, err
 		}
-		var all map[string]json.RawMessage
-		if err := json.Unmarshal(b, &all); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(b))
+		dec.UseNumber()
+		var all any
+		if err := dec.Decode(&all); err != nil {
 			return nil, err
 		}
-		row := map[string]json.RawMessage{}
-		for k, v := range all {
-			if keep[k] {
-				row[k] = v
-			}
+		row, ok := keep.narrow(all)
+		if !ok {
+			row = map[string]any{}
 		}
 		results = append(results, row)
 	}
 	return json.Marshal(struct {
-		Count   int                          `json:"count"`
-		Facets  map[string]any               `json:"facets,omitempty"`
-		Results []map[string]json.RawMessage `json:"results"`
-		Total   int                          `json:"total"`
+		Count   int            `json:"count"`
+		Facets  map[string]any `json:"facets,omitempty"`
+		Results []any          `json:"results"`
+		Total   int            `json:"total"`
 	}{r.Count, r.Facets, results, r.Total})
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// SecurityContext records
+// fieldTree is a set of field paths; a node with whole set keeps everything below it.
+type fieldTree struct {
+	whole bool
+	kids  map[string]*fieldTree
+}
+
+func (t *fieldTree) add(path []string) {
+	if t.whole {
+		return
+	}
+	if len(path) == 0 {
+		t.whole, t.kids = true, nil
+		return
+	}
+	if t.kids == nil {
+		t.kids = map[string]*fieldTree{}
+	}
+	kid := t.kids[path[0]]
+	if kid == nil {
+		kid = &fieldTree{}
+		t.kids[path[0]] = kid
+	}
+	kid.add(path[1:])
+}
+
+// narrow keeps the parts of v the tree names; a list is narrowed element by element.
+func (t *fieldTree) narrow(v any) (any, bool) {
+	if t.whole {
+		return v, true
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, kid := range t.kids {
+			if val, ok := x[k]; ok {
+				if n, ok := kid.narrow(val); ok {
+					out[k] = n
+				}
+			}
+		}
+		return out, len(out) > 0
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, e := range x {
+			if n, ok := t.narrow(e); ok {
+				out = append(out, n)
+			}
+		}
+		return out, len(out) > 0
+	}
+	return nil, false
+}
 
 type scBucket struct {
 	Value any `json:"value"`
@@ -908,8 +954,8 @@ func (r *scCVE) toVulnerability() Vulnerability {
 	if v.Name == "" {
 		v.Name = r.CVE
 	}
-	v.CveCreatedAt = scTime(firstNonEmpty(r.PublishedAt, r.PublishedDate))
-	v.CveUpdatedAt = scTime(firstNonEmpty(r.ModifiedAt, r.ModifiedDate))
+	v.CveCreatedAt = scTime(cmp.Or(r.PublishedAt, r.PublishedDate))
+	v.CveUpdatedAt = scTime(cmp.Or(r.ModifiedAt, r.ModifiedDate))
 	v.CreatedAt, v.UpdatedAt = v.CveCreatedAt, v.CveUpdatedAt
 	if v.AgeInDays == 0 && v.CveCreatedAt != nil { // a version list's rows carry the date, not the age
 		v.AgeInDays = int(time.Now().UTC().Sub(*v.CveCreatedAt).Hours() / 24)
@@ -1010,18 +1056,6 @@ func (r *scCVE) toVulnerability() Vulnerability {
 	return v
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, s := range vals {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Filters (`vulnx filters`): what the SecurityContext backend accepts, built in (the API has no /filters endpoint)
-
 // SupportedFilters lists the query fields vulnx translates to /v1/cves.
 func SupportedFilters() []VulnerabilityFilter {
 	b := func(field, desc string, facet bool) VulnerabilityFilter {
@@ -1042,15 +1076,15 @@ func SupportedFilters() []VulnerabilityFilter {
 		b("is_remote", "Exploitable over the network (CVSS attack vector)", true),
 		b("is_auth", "Needs authentication (CVSS privileges required)", true),
 		b("is_oss", "Filed against open-source code, or reaches it through a package", false),
-		{Field: "cvss_score", DataType: "number", Description: "CVSS score, lower bound only", CanSort: true, Examples: []string{"cvss_score:>=9"}},
-		{Field: "epss_score", DataType: "number", Description: "EPSS score, lower bound only", CanSort: true, Examples: []string{"epss_score:>0.5"}},
+		{Field: "cvss_score", DataType: "number", Description: "Minimum CVSS score (>=)", CanSort: true, Examples: []string{"cvss_score:>=9"}},
+		{Field: "epss_score", DataType: "number", Description: "Minimum EPSS score (>=)", CanSort: true, Examples: []string{"epss_score:>=0.5"}},
 		{Field: "age_in_days", DataType: "number", Description: "Days since publication (<N, >N or exact)", CanSort: true, Examples: []string{"age_in_days:<30"}},
 		{Field: "cve_created_at", DataType: "date", Description: "Publication date, with < or >", CanSort: true, Examples: []string{"cve_created_at:>2026-01-01"}},
 		{Field: "cve_updated_at", DataType: "date", Description: "Last modification date (sort only)", CanSort: true},
 		{Field: "vuln_status", DataType: "enum", Description: "NVD's status", FacetPossible: true, Examples: []string{"vuln_status:analyzed"}},
 		{Field: "cwe", DataType: "string", Description: "A CWE id", FacetPossible: true, Examples: []string{"cwe:CWE-79"}},
 		{Field: "vendor", DataType: "string", Description: "One vendor (NVD's name)", FacetPossible: true, Examples: []string{"vendor:apache"}},
-		{Field: "product", DataType: "string", Description: "One product as vendor:product", Examples: []string{"product:apache:log4j"}},
+		{Field: "product", DataType: "string", Description: "One product, as vendor:product or a product name NVD gives one vendor", Examples: []string{"product:apache:log4j", "product:log4j"}},
 		{Field: "category", DataType: "string", Description: "Product category", FacetPossible: true, Examples: []string{"category:web_server"}},
 		{Field: "deployment_model", DataType: "string", Description: "Product deployment model", FacetPossible: true, Examples: []string{"deployment_model:self_hosted"}},
 		{Field: "trending", DataType: "number", Description: "Social trending score (sort only)", CanSort: true},

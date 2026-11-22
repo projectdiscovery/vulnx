@@ -1,6 +1,6 @@
 package vulnx
 
-// VEX documents from a stack result (vulnx scan --vex, issue #385): one statement per (package, CVE).
+// VEX documents from a stack result (vulnx scan --vex): one statement per (package, CVE).
 //
 //   affected row            -> CycloneDX "exploitable" / OpenVEX "affected" (with the fixed version when known)
 //   undetermined row        -> CycloneDX "in_triage"   / OpenVEX "under_investigation" (with SecurityContext's reason)
@@ -9,6 +9,7 @@ package vulnx
 // ones it ruled out, so there is nothing to say "not_affected" about.
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -30,7 +31,7 @@ func (it StackItem) PackageURL() string {
 	}
 	typ := map[string]string{"pypi": "pypi", "npm": "npm", "maven": "maven", "go": "golang", "golang": "golang",
 		"cargo": "cargo", "crates.io": "cargo", "rubygems": "gem", "gem": "gem", "composer": "composer",
-		"packagist": "composer", "nuget": "nuget", "pub": "pub", "hex": "hex", "swift": "swift", "cpe": ""}[strings.ToLower(eco)]
+		"packagist": "composer", "nuget": "nuget", "pub": "pub", "hex": "hex", "swift": "swift"}[strings.ToLower(eco)]
 	if typ == "" {
 		return in
 	}
@@ -87,22 +88,10 @@ func vexStatements(res StackResult) []vexStatement {
 			continue
 		}
 		for _, a := range it.AdvisoryRows {
-			id := a.CVE
-			if id == "" {
-				id = a.AdvisoryID
-			}
-			fix := fixedVersions(a.FixedIn)
-			if fix == "" {
-				fix = it.FixedVersion
-			}
-			add(vexStatement{cve: id, product: p, status: "affected", fix: fix})
+			add(vexStatement{cve: cmp.Or(a.CVE, a.AdvisoryID), product: p, status: "affected", fix: cmp.Or(fixedVersions(a.FixedIn), it.FixedVersion)})
 		}
 		for _, a := range it.Undetermined {
-			id := a.CVE
-			if id == "" {
-				id = a.AdvisoryID
-			}
-			add(vexStatement{cve: id, product: p, status: "under_investigation", detail: a.Reason})
+			add(vexStatement{cve: cmp.Or(a.CVE, a.AdvisoryID), product: p, status: "under_investigation", detail: a.Reason})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {

@@ -1,13 +1,14 @@
 package vulnx
 
 // vulnx search --cpe <cpe> (or cpe: in a query, or --product vendor:product --version v): the CVEs affecting one
-// product version (issue #77), from /v1/products/{vendor}/{product}/versions/{version}. That endpoint answers most
-// urgent first (severity, then CVSS) and filters on one severity only, so:
+// product version, from /v1/products/{vendor}/{product}/versions/{version}. That endpoint answers most urgent
+// first (severity, then CVSS) and filters on one severity only, so:
 //   - a bare cpe: search pages through it, fetching only the rows asked for;
 //   - with other filters or a sort, the version's whole list is fetched (it is bounded: a product version, not
 //     the CVE list) and vulnx filters and sorts it.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -67,6 +68,7 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 	}
 	var rows []scCVE
 	cursor := ""
+	seen := map[string]bool{}
 	for {
 		q := url.Values{"limit": {strconv.Itoa(scMaxPage)}}
 		if !full && want-len(rows) < scMaxPage {
@@ -93,12 +95,13 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 			resp.Total = p.AdvisoriesTotal
 		}
 		rows = append(rows, p.Advisories...)
-		if full && p.AdvisoriesTotal > cpeMaxRows {
-			return resp, unsupported("%s:%s %s has %d CVEs; filters and sorting on it fetch at most %d (narrow with a bare --cpe search)", ref.vendor, ref.product, ref.version, p.AdvisoriesTotal, cpeMaxRows)
+		if full && max(p.AdvisoriesTotal, len(rows)) > cpeMaxRows {
+			return resp, unsupported("%s:%s %s has more than %d CVEs; filters, sorting and --all fetch at most %d (narrow with a bare --cpe search)", ref.vendor, ref.product, ref.version, cpeMaxRows, cpeMaxRows)
 		}
-		if p.Cursor == "" || len(p.Advisories) == 0 || (!full && len(rows) >= want) {
+		if p.Cursor == "" || len(p.Advisories) == 0 || (!full && len(rows) >= want) || seen[p.Cursor] {
 			break
 		}
+		seen[p.Cursor] = true
 		cursor = p.Cursor
 	}
 	if full {
@@ -139,16 +142,16 @@ func cpeRowMatches(r scCVE, p url.Values) bool {
 		return false
 	}
 	if v := p.Get("min_cvss"); v != "" {
-		if f, _ := strconv.ParseFloat(v, 64); r.CvssScore < f {
+		if f, err := strconv.ParseFloat(v, 64); err != nil || r.CvssScore < f {
 			return false
 		}
 	}
 	if v := p.Get("min_epss"); v != "" {
-		if f, _ := strconv.ParseFloat(v, 64); r.EpssScore < f {
+		if f, err := strconv.ParseFloat(v, 64); err != nil || r.EpssScore < f {
 			return false
 		}
 	}
-	pub := firstNonEmpty(r.PublishedDate, r.PublishedAt)
+	pub := cmp.Or(r.PublishedDate, r.PublishedAt)
 	if v := p.Get("published_since"); v != "" && (len(pub) < 10 || pub[:10] < v) {
 		return false
 	}
@@ -180,7 +183,7 @@ func cpeRowMatches(r scCVE, p url.Values) bool {
 			case "initial_access":
 				has = e.InitialAccess
 			case "ransomware":
-				return false // the version list carries no ransomware flag; refused before fetching (see translate)
+				return false // the version list carries no ransomware flag; SearchVulnerabilities refuses it first
 			}
 			if has == neg {
 				return false
@@ -208,9 +211,9 @@ func sortRows(rows []scCVE, sortKey string) {
 		case "epss_score":
 			return r.EpssScore
 		case "published_date", "modified_date":
-			d := firstNonEmpty(r.PublishedDate, r.PublishedAt)
+			d := cmp.Or(r.PublishedDate, r.PublishedAt)
 			if field == "modified_date" {
-				d = firstNonEmpty(r.ModifiedDate, r.ModifiedAt)
+				d = cmp.Or(r.ModifiedDate, r.ModifiedAt)
 			}
 			if t := scTime(d); t != nil {
 				return float64(t.Unix())

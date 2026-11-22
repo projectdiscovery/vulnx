@@ -1,7 +1,10 @@
 package vulnx
 
 import (
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,9 +24,11 @@ func TestTranslateQuery(t *testing.T) {
 		{"is_kev:false && is_poc:true", map[string]string{"exploit": "-known_exploited,public_exploit"}, 0},
 		{"NOT is_template:true", map[string]string{"exploit": "-nuclei_template"}, 0},
 		{"(severity:critical || severity:high)", map[string]string{"severity": "critical,high"}, 0},
-		{"(affected_products.product:apache || affected_products.vendor:apache)", map[string]string{"vendor": "apache"}, 0},
-		{"(affected_products.product:apache:log4j || affected_products.vendor:apache:log4j)", map[string]string{"product": "apache:log4j"}, 0},
-		{"cvss_score:>=9 && epss_score:>0.5", map[string]string{"min_cvss": "9", "min_epss": "0.5"}, 0},
+		{"affected_products.vendor:apache", map[string]string{"vendor": "apache"}, 0},
+		{"affected_products.product:apache:log4j", map[string]string{"product": "apache:log4j"}, 0},
+		{"(product:apache:log4j || product:Apache:Log4j)", map[string]string{"product": "apache:log4j"}, 0},
+		{"cvss_score:>=9 && epss_score:>=0.5", map[string]string{"min_cvss": "9", "min_epss": "0.5"}, 0},
+		{"severity:high && (severity:high || severity:high)", map[string]string{"severity": "high"}, 0},
 		{"age_in_days:<30", map[string]string{"published_since": day(29)}, 0},
 		{"age_in_days:>365", map[string]string{"published_before": day(365)}, 0},
 		{"is_remote:true && is_auth:false", map[string]string{"remote": "true", "authentication_required": "false"}, 0},
@@ -60,7 +65,16 @@ func TestTranslateQueryRejects(t *testing.T) {
 		"cvss_score:<5",
 		"(affected_products.vendor:a || affected_products.vendor:b)",
 		"severity:high || is_kev:true",
-		"product:nginx",
+		"(affected_products.product:apache || affected_products.vendor:apache)",
+		"(product:f5:nginx || product:nginx:nginx)",
+		"product:nginx && product:tomcat",
+		"severity:critical && (severity:high || severity:low)",
+		"(severity:high || severity:low) && severity:critical",
+		"cvss_score:>7",
+		"epss_score:>0.5",
+		"cvss_score:7",
+		"NOT (severity:high || severity:low)",
+		"NOT (is_kev:true && is_poc:true)",
 		"cve_id:php-xdebug-rce",
 		"one two three four five six",
 		"name:wordp*",
@@ -155,34 +169,60 @@ func TestCPETerms(t *testing.T) {
 	}
 }
 
-func TestCPERowMatches(t *testing.T) {
-	yes, no := true, false
-	r := scCVE{Severity: "critical", CvssScore: 9.8, EpssScore: 0.5, PublishedDate: "2025-03-10", CWE: []byte(`["CWE-22"]`),
-		Exploitation: &scExploitation{KnownExploitedBy: []string{"cisa", "vulncheck"}, PublicExploit: true, Remote: &yes, AuthenticationRequired: &no}}
-	q := func(s string) bool {
-		tq, err := translateQuery(s)
-		if err != nil {
-			t.Fatalf("%s: %v", s, err)
-		}
-		return cpeRowMatches(r, tq.params)
-	}
-	for s, want := range map[string]bool{
-		"is_kev:true":                        true,
-		"is_kev:false":                       false,
-		"is_template:true":                   false,
-		"severity:critical || severity:high": true,
-		"severity:low":                       false,
-		"cvss_score:>=9 && epss_score:>0.4":  true,
-		"cvss_score:>=9.9":                   false,
-		"cve_created_at:2025":                true,
-		"cve_created_at:2024":                false,
-		"cwe:CWE-22":                         true,
-		"cwe:CWE-79":                         false,
-		"is_remote:true && is_auth:false":    true,
-		"is_auth:true":                       false,
+func TestTranslateProductName(t *testing.T) {
+	for q, want := range map[string]string{
+		"product:tomcat":                         "tomcat",
+		"affected_products.product:Log4j":        "log4j",
+		"(product:nginx) && (severity:critical)": "nginx",
 	} {
-		if got := q(s); got != want {
-			t.Errorf("%s: %v, want %v", s, got, want)
+		got, err := translateQuery(q)
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
 		}
+		if got.productName != want || got.params.Get("vendor") != "" || got.params.Get("product") != "" {
+			t.Errorf("%q: productName %q params %v, want productName %q", q, got.productName, got.params, want)
+		}
+	}
+}
+
+func TestScoreGreaterThanMessage(t *testing.T) {
+	_, err := translateQuery("cvss_score:>7")
+	if err == nil || !strings.Contains(err.Error(), "cvss_score:>=7") {
+		t.Errorf("cvss_score:>7: %v, want a hint to use cvss_score:>=7", err)
+	}
+}
+
+func TestMarshalJSONFields(t *testing.T) {
+	resp := SearchResponse{Count: 1, Total: 1, fields: []string{"cve_id", "h1.reports", "affected_products.vendor", "missing.path"},
+		Results: []Vulnerability{{CVEID: "CVE-2021-44228", Severity: "critical", H1: &H1Stats{Reports: 3, Rank: 7},
+			AffectedProducts: []*ProductInfo{{Vendor: "apache", Product: "log4j"}, {Vendor: "cisco", Product: "ios"}}}}}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	row := got.Results[0]
+	want := map[string]any{
+		"cve_id":            "CVE-2021-44228",
+		"h1":                map[string]any{"reports": float64(3)},
+		"affected_products": []any{map[string]any{"vendor": "apache"}, map[string]any{"vendor": "cisco"}},
+	}
+	if !reflect.DeepEqual(row, want) {
+		t.Errorf("narrowed row %v, want %v", row, want)
+	}
+
+	resp.fields = []string{"h1.reports", "h1"}
+	b, err = json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"h1":{"rank":7,"reports":3}`) {
+		t.Errorf("h1 with h1.reports should keep the whole object: %s", b)
 	}
 }
