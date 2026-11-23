@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -141,7 +142,25 @@ func textShow(showSet bool) int {
 	return scanShow
 }
 
+// scanSource is what a scan read and when it started, for the grid's Scanned line.
+type scanSource struct {
+	input string
+	start time.Time
+}
+
+// scanFrom is the running scan's source.
+var scanFrom scanSource
+
 func runStackScan(ctx context.Context, args []string, show int) error {
+	scanFrom = scanSource{input: "the package list", start: time.Now()}
+	switch {
+	case scanImage != "":
+		scanFrom.input = scanImage
+	case scanList != "":
+		scanFrom.input = scanList
+	case len(args) == 1 && fileutil.FileExists(args[0]):
+		scanFrom.input = args[0]
+	}
 	// an image by registry reference: pulled and scanned by SecurityContext
 	if scanImage != "" {
 		id, err := vulnxClient.ScanImage(ctx, scanImage, scanPlat)
@@ -321,7 +340,7 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) error {
 		data, err = json.MarshalIndent(res, "", "  ")
 	default:
 		out := &stdoutText{}
-		out.print(renderStackText(res, show))
+		out.print(renderStackText(res, show, scanFrom))
 		return out.err
 	}
 	if err != nil {
@@ -370,8 +389,110 @@ func verdict(it vulnx.StackItem) string {
 	return it.Status
 }
 
-func renderStackText(res vulnx.StackResult, show int) string {
+// stackGridMin is the fewest packages a scan's text output opens with a severity grid for; fewer get the one-line
+// summary only.
+const stackGridMin = 6
+
+// stackEcosystem names the grid row of a scan's item: an OS package by its distribution and release ("alpine
+// 3.18"), a product version as a product, anything else by its ecosystem ("npm").
+func stackEcosystem(it vulnx.StackItem) string {
+	if it.Distro != "" {
+		return strings.TrimSpace(it.Distro + " " + it.Release)
+	}
+	name := it.Package
+	if name == "" {
+		name = strings.TrimPrefix(it.Input, "pkg:")
+	}
+	if strings.HasPrefix(name, "cpe/") || strings.HasPrefix(name, "cpe:") {
+		return "products"
+	}
+	if eco, _, ok := strings.Cut(name, "/"); ok && eco != "" {
+		return eco
+	}
+	return "other"
+}
+
+// itemExploits is whether any of an item's rows is known exploited, and whether any has a public exploit.
+func itemExploits(it vulnx.StackItem) (kev, poc bool) {
+	for _, a := range it.AdvisoryRows {
+		if a.Exploit != nil {
+			kev = kev || a.Exploit.KnownExploited
+			poc = poc || a.Exploit.PublicExploit
+		}
+	}
+	return kev, poc
+}
+
+// renderStackGrid is a scan's opening screen, the host grid's: the headline counts, one row per ecosystem with its
+// affected packages by worst severity, the total, then what the index has no record of and what was scanned.
+func renderStackGrid(res vulnx.StackResult, from scanSource, c *renderer.ColorConfig) string {
+	var rows []gridRow
+	byName := map[string]int{}
+	kev, poc := 0, 0
+	for _, it := range res.Items {
+		name := stackEcosystem(it)
+		i, ok := byName[name]
+		if !ok {
+			i = len(rows)
+			byName[name] = i
+			rows = append(rows, gridRow{Name: name})
+		}
+		rows[i].Checked++
+		k, p := itemExploits(it)
+		if k {
+			kev++
+		}
+		if p {
+			poc++
+		}
+		if verdict(it) != "affected" {
+			continue
+		}
+		if sev := slices.Index(gridSeverities, strings.ToLower(it.WorstSeverity)); sev >= 0 {
+			rows[i].Severity[sev]++
+		}
+		if k {
+			rows[i].Exploited++
+		}
+	}
+	slices.SortStableFunc(rows, func(a, b gridRow) int { return b.Checked - a.Checked })
+	total := gridRow{Name: "total"}
+	for _, r := range rows {
+		total.Checked += r.Checked
+		total.Exploited += r.Exploited
+		for i, n := range r.Severity {
+			total.Severity[i] += n
+		}
+	}
 	var b strings.Builder
+	fmt.Fprintf(&b, "\n  %s affected   %s known exploited   %s public exploit\n\n",
+		c.Colorize(formatNumber(res.Summary.Affected), renderer.Bold), c.Colorize(formatNumber(kev), renderer.Bold+renderer.BrightRed),
+		c.Colorize(formatNumber(poc), renderer.Bold))
+	renderGrid(&b, "ECOSYSTEM", rows, total, c)
+	b.WriteString("\n")
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	if n := res.Summary.Unseen; n > 0 {
+		b.WriteString(dim(hostLabel("Unseen")+formatNumber(n)+" not in the index") + "\n")
+	}
+	scanned := []string{plural(len(res.Items), "package", "packages")}
+	if from.input != "" {
+		scanned = append([]string{termtext.Clean(from.input)}, scanned...)
+	}
+	if !from.start.IsZero() {
+		scanned = append(scanned, time.Since(from.start).Round(time.Second).String())
+	}
+	b.WriteString(dim(hostLabel("Scanned")+strings.Join(scanned, " · ")) + "\n\n")
+	return b.String()
+}
+
+// renderStackText is a scan's text output: a severity grid when it has stackGridMin packages or more, then each
+// package with its CVEs (show caps them, 0: all), affected first, and the one-line summary for a short scan.
+func renderStackText(res vulnx.StackResult, show int, from scanSource) string {
+	var b strings.Builder
+	grid := len(res.Items) >= stackGridMin
+	if grid {
+		b.WriteString(renderStackGrid(res, from, colorConfig()))
+	}
 	items := append([]vulnx.StackItem(nil), res.Items...)
 	statusRank := map[string]int{"affected": 0, "undetermined": 1, "unseen": 2, "clean": 3}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -449,29 +570,25 @@ func renderStackText(res vulnx.StackResult, show int) string {
 		}
 	}
 	s := res.Summary
-	// counted from the rows: the API's summary counts these for packages, not for products (CPE entries)
-	kev, poc := 0, 0
-	for _, it := range res.Items {
-		k, p := false, false
-		for _, a := range it.AdvisoryRows {
-			if a.Exploit != nil {
-				k = k || a.Exploit.KnownExploited
-				p = p || a.Exploit.PublicExploit
+	if !grid {
+		// counted from the rows: the API's summary counts these for packages, not for products (CPE entries)
+		kev, poc := 0, 0
+		for _, it := range res.Items {
+			k, p := itemExploits(it)
+			if k {
+				kev++
+			}
+			if p {
+				poc++
 			}
 		}
-		if k {
-			kev++
+		fmt.Fprintf(&b, "\n%s: %d affected, %d clean, %d undetermined, %d unseen", plural(s.Packages, "package", "packages"),
+			s.Affected, s.Clean, s.Undetermined, s.Unseen)
+		if kev > 0 || poc > 0 {
+			fmt.Fprintf(&b, " (%d with a known exploited CVE, %d with a public exploit)", kev, poc)
 		}
-		if p {
-			poc++
-		}
+		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "\n%s: %d affected, %d clean, %d undetermined, %d unseen", plural(s.Packages, "package", "packages"),
-		s.Affected, s.Clean, s.Undetermined, s.Unseen)
-	if kev > 0 || poc > 0 {
-		fmt.Fprintf(&b, " (%d with a known exploited CVE, %d with a public exploit)", kev, poc)
-	}
-	b.WriteString("\n")
 	for _, r := range s.UndeterminedReasons {
 		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", termtext.Clean(r.Reason), r.Count, termtext.Clean(r.Why))
 	}

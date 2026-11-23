@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,11 +56,11 @@ func TestRenderStackTextHint(t *testing.T) {
 	}
 	item := vulnx.StackItem{Input: "apache:tomcat@8.5.62", Package: "cpe/apache:tomcat", Version: "8.5.62", Status: "affected",
 		AdvisoryRowsTotal: 30, AdvisoryRows: rows}
-	if out := renderStackText(vulnx.StackResult{Items: []vulnx.StackItem{item}}, 10); !strings.Contains(out, "+20 more (--full lists them)") {
+	if out := renderStackText(vulnx.StackResult{Items: []vulnx.StackItem{item}}, 10, scanSource{}); !strings.Contains(out, "+20 more (--full lists them)") {
 		t.Errorf("top rows only:\n%s", out)
 	}
 	item.AdvisoryRowsTotal = 12
-	if out := renderStackText(vulnx.StackResult{Items: []vulnx.StackItem{item}}, 10); !strings.Contains(out, "+2 more (--show-all lists them)") {
+	if out := renderStackText(vulnx.StackResult{Items: []vulnx.StackItem{item}}, 10, scanSource{}); !strings.Contains(out, "+2 more (--show-all lists them)") {
 		t.Errorf("every row:\n%s", out)
 	}
 }
@@ -88,7 +89,7 @@ func TestScanEntriesStdin(t *testing.T) {
 func TestRenderStackTextUnseen(t *testing.T) {
 	res := vulnx.StackResult{Summary: vulnx.StackSummary{Packages: 1, Unseen: 1},
 		Items: []vulnx.StackItem{{Input: "npm/ghost@1.0.0", Status: "clean", Seen: "none"}}}
-	out := renderStackText(res, 10)
+	out := renderStackText(res, 10, scanSource{})
 	if !strings.Contains(out, "[UNSEEN] npm/ghost@1.0.0") || strings.Contains(out, "[CLEAN]") ||
 		!strings.Contains(out, "1 package: 0 affected, 0 clean, 0 undetermined, 1 unseen") {
 		t.Errorf("%s", out)
@@ -120,5 +121,62 @@ func TestTextShow(t *testing.T) {
 		if got := textShow(c.set); got != c.want {
 			t.Errorf("%+v: %d", c, got)
 		}
+	}
+}
+
+// stackGridFixture is a lockfile's six npm packages and an image's two Debian packages.
+func stackGridFixture(t *testing.T) vulnx.StackResult {
+	var kev, poc []vulnx.StackAdvisory
+	if err := json.Unmarshal([]byte(`[{"cve": "CVE-2021-1", "severity": "critical", "exploitation": {"known_exploited": true, "public_exploit": true}}]`), &kev); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`[{"cve": "CVE-2021-2", "severity": "high", "exploitation": {"public_exploit": true}}]`), &poc); err != nil {
+		t.Fatal(err)
+	}
+	return vulnx.StackResult{
+		Summary: vulnx.StackSummary{Packages: 8, Affected: 5, Clean: 2, Unseen: 1},
+		Items: []vulnx.StackItem{
+			{Input: "npm/lodash@4.17.20", Package: "npm/lodash", Version: "4.17.20", Status: "affected", WorstSeverity: "critical", Advisories: 1, AdvisoryRows: kev},
+			{Input: "npm/minimist@1.2.0", Package: "npm/minimist", Version: "1.2.0", Status: "affected", WorstSeverity: "critical", Advisories: 1},
+			{Input: "npm/axios@0.21.0", Package: "npm/axios", Version: "0.21.0", Status: "affected", WorstSeverity: "high", Advisories: 1, AdvisoryRows: poc},
+			{Input: "npm/ws@7.4.0", Package: "npm/ws", Version: "7.4.0", Status: "affected", WorstSeverity: "medium", Advisories: 1},
+			{Input: "npm/semver@7.5.2", Package: "npm/semver", Version: "7.5.2", Status: "clean", Seen: "version"},
+			{Input: "npm/left-pad@9.9.9", Package: "npm/left-pad", Version: "9.9.9", Status: "clean", Seen: "none"},
+			{Input: "pkg:deb/debian/openssl@3.0.11-1?distro=debian-12", Package: "deb/openssl", Version: "3.0.11-1", Distro: "debian", Release: "12",
+				Status: "affected", WorstSeverity: "high", Advisories: 1},
+			{Input: "pkg:deb/debian/zlib@1.2.13?distro=debian-12", Package: "deb/zlib", Version: "1.2.13", Distro: "debian", Release: "12", Status: "clean", Seen: "version"},
+		},
+	}
+}
+
+// TestRenderStackGrid opens a scan of more than five packages with the host grid's severity grid, a row per
+// ecosystem and the image's OS packages as one row, then the unseen count and what was scanned; the list follows.
+func TestRenderStackGrid(t *testing.T) {
+	out := renderStackText(stackGridFixture(t), 10, scanSource{input: "package-lock.json"})
+	want := `
+  5 affected   1 known exploited   2 public exploit
+
+  ECOSYSTEM  CRITICAL     HIGH         MEDIUM       LOW          EXPLOITED   CHECKED
+  npm           2 ▆▆▆▆▆▆     1 ▆▆▆        1 ▆▆▆        -                 1         6
+  debian 12     -            1 ▆▆▆        -            -                 -         2
+  ────────────────────────────────────────────────────────────────────────────────
+  total         2            2            1            0                 1         8
+
+  Unseen         1 not in the index
+  Scanned        package-lock.json · 8 packages
+
+[AFFECTED] npm/lodash@4.17.20  critical, 1 advisories
+`
+	if !strings.HasPrefix(out, want) {
+		t.Errorf("got\n%s\nwant a start of\n%s", out, want)
+	}
+	if strings.Contains(out, "8 packages: ") || !strings.Contains(out, "[UNSEEN] npm/left-pad@9.9.9\n") {
+		t.Errorf("a one-line summary under the grid, or no list:\n%s", out)
+	}
+	short := stackGridFixture(t)
+	short.Items, short.Summary = short.Items[:5], vulnx.StackSummary{Packages: 5, Affected: 4, Clean: 1}
+	out = renderStackText(short, 10, scanSource{input: "package-lock.json"})
+	if strings.Contains(out, "ECOSYSTEM") || !strings.HasSuffix(out, "\n5 packages: 4 affected, 1 clean, 0 undetermined, 0 unseen (1 with a known exploited CVE, 2 with a public exploit)\n") {
+		t.Errorf("five packages: no grid, the one-line summary:\n%s", out)
 	}
 }

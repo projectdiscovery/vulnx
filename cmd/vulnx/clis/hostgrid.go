@@ -121,16 +121,26 @@ func notLinkedText(n int) string {
 	return plural(n, "Go module version", "Go module versions") + " no program links"
 }
 
-// renderHostGrid is the default view, one screen: the headline numbers and, per source, its findings by severity.
-func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, c *renderer.ColorConfig) string {
-	var b strings.Builder
-	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
-	rows, total, n := hostGrid(inv, res)
-	fmt.Fprintf(&b, "\n  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
-		c.Colorize(formatNumber(n.Affected), renderer.Bold), c.Colorize(formatNumber(n.Reachable), renderer.Bold),
-		c.Colorize(formatNumber(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(formatNumber(n.PublicExploit), renderer.Bold))
+// barCells draws a bar of width cells for v, scaled so that peak fills them all, in color: every started block
+// counts, a value short of one whole block shows small instead (a block in the grid, a thin mark where bars are
+// wider and a lone block would overstate it), and zero shows nothing. The bar is padded to width, so what follows
+// it lines up.
+func barCells(v, peak, width int, small, color string, c *renderer.ColorConfig) string {
+	if v <= 0 || peak <= 0 {
+		return strings.Repeat(" ", width)
+	}
+	if v*width < peak {
+		return c.Colorize(small, color) + strings.Repeat(" ", width-1)
+	}
+	blocks := min(width, (v*width+peak-1)/peak)
+	return c.Colorize(strings.Repeat(gridBar, blocks), color) + strings.Repeat(" ", width-blocks)
+}
 
-	width := len("SOURCE")
+// renderGrid writes a severity grid: a header naming the row kind (SOURCE, ECOSYSTEM), one row per entry with
+// its counts by worst severity as bars scaled to the largest, a rule, and the total row.
+func renderGrid(b *strings.Builder, kind string, rows []gridRow, total gridRow, c *renderer.ColorConfig) {
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	width := len(kind)
 	peak := 1
 	for _, r := range rows {
 		width = max(width, len(r.Name))
@@ -144,18 +154,17 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 		if v == 0 {
 			return dim(fmt.Sprintf("%4s ", "-")) + strings.Repeat(" ", bar)
 		}
-		blocks := max(1, (v*bar+peak-1)/peak)
-		return fmt.Sprintf("%4d ", v) + c.Colorize(strings.Repeat(gridBar, blocks), gridColors[sev]) + strings.Repeat(" ", bar-blocks)
+		return fmt.Sprintf("%4d ", v) + barCells(v, peak, bar, gridBar, gridColors[sev], c)
 	}
-	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %-11s  %-11s  %-11s  %-11s  %9s  %8s", width, "SOURCE", "CRITICAL", "HIGH", "MEDIUM", "LOW",
+	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %-11s  %-11s  %-11s  %-11s  %9s  %8s", width, kind, "CRITICAL", "HIGH", "MEDIUM", "LOW",
 		"EXPLOITED", "CHECKED")) + "\n")
 	line := func(r gridRow, bars bool) {
-		fmt.Fprintf(&b, "  %-*s", width, r.Name)
+		fmt.Fprintf(b, "  %-*s", width, termtext.Clean(r.Name))
 		for i, v := range r.Severity {
 			if bars {
 				b.WriteString("  " + cell(v, gridSeverities[i]))
 			} else {
-				fmt.Fprintf(&b, "  %4s%7s", formatNumber(v), "")
+				fmt.Fprintf(b, "  %4s%7s", formatNumber(v), "")
 			}
 		}
 		exploited := fmt.Sprintf("%9s", "-")
@@ -164,13 +173,25 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 		} else {
 			exploited = dim(exploited)
 		}
-		fmt.Fprintf(&b, "  %s  %8s\n", exploited, formatNumber(r.Checked))
+		fmt.Fprintf(b, "  %s  %8s\n", exploited, formatNumber(r.Checked))
 	}
 	for _, r := range rows {
 		line(r, true)
 	}
 	b.WriteString("  " + dim(strings.Repeat("─", width+2+4*13+9+2+8-2)) + "\n")
 	line(total, false)
+}
+
+// renderHostGrid is the default view, one screen: the headline numbers and, per source, its findings by severity.
+func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, c *renderer.ColorConfig) string {
+	var b strings.Builder
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	rows, total, n := hostGrid(inv, res)
+	fmt.Fprintf(&b, "\n  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
+		c.Colorize(formatNumber(n.Affected), renderer.Bold), c.Colorize(formatNumber(n.Reachable), renderer.Bold),
+		c.Colorize(formatNumber(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(formatNumber(n.PublicExploit), renderer.Bold))
+
+	renderGrid(&b, "SOURCE", rows, total, c)
 	b.WriteString("\n")
 	b.WriteString(agentSetup(inv, c))
 	if len(inv.NotAssessed) > 0 {
