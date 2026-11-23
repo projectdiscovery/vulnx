@@ -173,22 +173,71 @@ func TestCPERowMatches(t *testing.T) {
 	}
 }
 
+// cursorPages serves version-list pages of distinct CVEs, sizes[i] rows on page i, every page with cursor "a".
+func cursorPages(t *testing.T, total int, sizes ...int) *httptest.Server {
+	var n atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := int(n.Add(1)) - 1
+		start := 0
+		for _, sz := range sizes[:min(i, len(sizes))] {
+			start += sz
+		}
+		rows := []map[string]any{}
+		for j := range sizes[min(i, len(sizes)-1)] {
+			rows = append(rows, map[string]any{"cve": fmt.Sprintf("CVE-2020-%04d", start+j), "severity": "high"})
+		}
+		writeJSON(t, w, map[string]any{"found": true, "advisories_total": total, "advisories": rows, "cursor": "a"})
+	}))
+}
+
 func TestSearchCPERepeatedCursor(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		sizes   []int
+		params  SearchParams
+		wantErr string
+	}{
+		{"bare search that has its rows on the repeating page", []int{100, 50}, SearchParams{Limit: Ptr(150)}, ""},
+		{"bare search still short when the cursor repeats", []int{100, 30}, SearchParams{Limit: Ptr(150)}, "repeated a page cursor after 130"},
+		{"bare search satisfied by the first page", []int{100}, SearchParams{Limit: Ptr(50)}, ""},
+		{"--all needs the whole list", []int{100, 100}, SearchParams{All: true}, "repeated a page cursor after 200 of 300"},
+		{"a filter needs the whole list", []int{100, 100}, SearchParams{Query: Ptr("severity:high")}, "repeated a page cursor"},
+		{"a sort needs the whole list", []int{100, 100}, SearchParams{SortDesc: Ptr("cvss_score")}, "repeated a page cursor"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := cursorPages(t, 300, c.sizes...)
+			defer srv.Close()
+			p := c.params
+			q := tomcatCPE
+			if p.Query != nil {
+				q += " && " + *p.Query
+			}
+			p.Query = &q
+			r, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), p)
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case c.wantErr == "" && r.Count != *c.params.Limit:
+				t.Errorf("count %d, want %d", r.Count, *c.params.Limit)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Errorf("err %v, want %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestSearchCPEOverlappingPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rows := []map[string]any{}
 		for i := range 100 {
 			rows = append(rows, map[string]any{"cve": fmt.Sprintf("CVE-2020-%04d", i), "severity": "high"})
 		}
-		writeJSON(t, w, map[string]any{"found": true, "advisories_total": 300, "advisories": rows, "cursor": "same"})
+		writeJSON(t, w, map[string]any{"found": true, "advisories_total": 300, "advisories": rows, "cursor": r.URL.Query().Get("cursor") + "x"})
 	}))
 	defer srv.Close()
-	c := newTestClient(t, srv)
-	_, err := c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr(tomcatCPE), All: true})
-	if err == nil || !strings.Contains(err.Error(), "repeated a page cursor") {
-		t.Errorf("--all with a repeated cursor: %v", err)
-	}
-	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr(tomcatCPE), Limit: Ptr(50)}); err != nil {
-		t.Errorf("a bare search that already has its rows: %v", err)
+	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr(tomcatCPE), All: true})
+	if err == nil || !strings.Contains(err.Error(), "returned CVE-2020-0000 twice") {
+		t.Errorf("overlapping pages: %v", err)
 	}
 }
 

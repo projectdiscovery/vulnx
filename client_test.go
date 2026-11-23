@@ -306,7 +306,9 @@ func TestRetryWaitCancelled(t *testing.T) {
 type cveServer struct {
 	t         *testing.T
 	total     int
-	repeat    bool // answer every page with the same cursor
+	repeat    bool // answer every page with the same cursor, rows continuing where the last page ended
+	overlap   bool // with repeat: the cursor means row 7, so the second page overlaps the first
+	served    int  // rows served so far, for repeat
 	shortAt   int  // end paging (no cursor) after this many rows, though total is larger
 	mu        sync.Mutex
 	queries   []url.Values
@@ -334,10 +336,18 @@ func (s *cveServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	start, _ := strconv.Atoi(q.Get("cursor"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
+	if s.repeat && !s.overlap && q.Has("cursor") {
+		s.mu.Lock()
+		start = s.served
+		s.mu.Unlock()
+	}
 	var items []map[string]any
 	for i := start; i < s.total && len(items) < limit; i++ {
 		items = append(items, map[string]any{"cve": fmt.Sprintf("CVE-2024-%04d", i)})
 	}
+	s.mu.Lock()
+	s.served = start + len(items)
+	s.mu.Unlock()
 	next := ""
 	if s.repeat {
 		next = "7"
@@ -762,7 +772,9 @@ func TestSearchIncompletePaging(t *testing.T) {
 		params  SearchParams
 		wantErr string
 	}{
-		{"repeated cursor at the requested count", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(200)}, "repeated a page cursor after 200 of 200"},
+		{"overlapping pages at the requested count", &cveServer{total: 1000, repeat: true, overlap: true}, SearchParams{Limit: Ptr(200)}, "returned CVE-2024-0007 twice"},
+		{"repeated cursor on the page that completes the request", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(200)}, ""},
+		{"repeated cursor while rows are still needed", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(300)}, "repeated a page cursor after 200 of 300"},
 		{"ordinary search ends before the total", &cveServer{total: 250, shortAt: 200}, SearchParams{Limit: Ptr(250)}, "paging ended early after 200 of 250"},
 		{"ordinary search that has every row", &cveServer{total: 200}, SearchParams{Limit: Ptr(250)}, ""},
 		{"all with a huge offset", &cveServer{total: 5}, SearchParams{All: true, Offset: Ptr(math.MaxInt)}, ""},
