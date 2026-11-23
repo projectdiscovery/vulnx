@@ -79,8 +79,9 @@ var (
 		Short: "search vulnerabilities using the vulnerability search api",
 		Long: `Search vulnerabilities using the Vulnerability search API.
 
-By default, results are sorted by latest CVE published date (newest first).
-Use --sort-asc or --sort-desc to override this default behavior.
+By default, results are sorted by latest CVE published date (newest first); a
+product-version search (--cpe, --version) lists the most urgent first. Use
+--sort-asc or --sort-desc to override this.
 
 A search returns at most 1000 rows (--offset + --limit); --all fetches every
 result, up to 10,000, and ignores --limit.
@@ -146,16 +147,12 @@ vulnx search --product apache:tomcat --version 8.5.62
 				params.Offset = vulnx.Ptr(searchOffset)
 			}
 
-			// Set default sorting to latest CVE published date if no sort options provided
-			if searchSortAsc == "" && searchSortDesc == "" {
-				params.SortDesc = vulnx.Ptr("cve_created_at")
-			} else {
-				if searchSortAsc != "" {
-					params.SortAsc = vulnx.Ptr(searchSortAsc)
-				}
-				if searchSortDesc != "" {
-					params.SortDesc = vulnx.Ptr(searchSortDesc)
-				}
+			// with no sort the client returns newest first (a version's CVEs: most urgent first)
+			if searchSortAsc != "" {
+				params.SortAsc = vulnx.Ptr(searchSortAsc)
+			}
+			if searchSortDesc != "" {
+				params.SortDesc = vulnx.Ptr(searchSortDesc)
 			}
 			if len(searchFields) > 0 {
 				params.Fields = searchFields
@@ -295,6 +292,7 @@ vulnx search --product apache:tomcat --version 8.5.62
 				output := renderer.RenderWithColors(entries, layout, resp.Total, resp.Count, colors)
 				fmt.Print(output)
 			}
+			printFacetTables(resp.Facets, searchTermFacets)
 		},
 	}
 )
@@ -359,14 +357,17 @@ func buildFilterQuery() (string, error) {
 
 // validateSearchInputs checks the flags before any request is made.
 func validateSearchInputs() error {
-	if searchLimit < 1 || searchLimit > vulnx.MaxResultWindow {
-		return fmt.Errorf("--limit must be between 1 and %d", vulnx.MaxResultWindow)
-	}
 	if searchOffset < 0 {
 		return fmt.Errorf("--offset must not be negative")
 	}
-	if !searchAll && searchOffset+searchLimit > vulnx.MaxResultWindow {
-		return fmt.Errorf("--offset + --limit can be at most %d; use --all to fetch every result", vulnx.MaxResultWindow)
+	// --all ignores --limit and the window; otherwise compare without adding, so a huge offset cannot wrap around
+	if !searchAll {
+		if searchLimit < 1 || searchLimit > vulnx.MaxResultWindow {
+			return fmt.Errorf("--limit must be between 1 and %d", vulnx.MaxResultWindow)
+		}
+		if searchOffset > vulnx.MaxResultWindow-searchLimit {
+			return fmt.Errorf("--offset + --limit can be at most %d; use --all to fetch every result", vulnx.MaxResultWindow)
+		}
 	}
 	if searchSortAsc != "" && searchSortDesc != "" {
 		return fmt.Errorf("cannot specify both --sort-asc and --sort-desc")
