@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ func (s *versionServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	s.mu.Lock()
 	s.limits = append(s.limits, q.Get("limit"))
+	found := s.found
 	s.mu.Unlock()
 	start, _ := strconv.Atoi(q.Get("cursor"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -44,7 +46,14 @@ func (s *versionServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if start+len(rows) < s.total {
 		next = strconv.Itoa(start + len(rows))
 	}
-	writeJSON(s.t, w, map[string]any{"found": s.found, "advisories_total": s.total, "advisories": rows, "cursor": next})
+	writeJSON(s.t, w, map[string]any{"found": found, "advisories_total": s.total, "advisories": rows, "cursor": next})
+}
+
+// pageLimits returns the limit of each request received so far.
+func (s *versionServer) pageLimits() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.limits)
 }
 
 const tomcatCPE = "cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*"
@@ -87,7 +96,7 @@ func TestSearchCPEPaging(t *testing.T) {
 			if r.Results[0].Vendor != "apache" || r.Results[0].Product != "tomcat" {
 				t.Errorf("product not filled from the CPE: %s:%s", r.Results[0].Vendor, r.Results[0].Product)
 			}
-			if got := strings.Join(s.limits, ","); got != c.wantLimits {
+			if got := strings.Join(s.pageLimits(), ","); got != c.wantLimits {
 				t.Errorf("page limits %s, want %s", got, c.wantLimits)
 			}
 		})
@@ -107,7 +116,7 @@ func TestSearchCPEErrors(t *testing.T) {
 	if err := search(tomcatCPE+" && severity:high", SearchParams{}); !errors.Is(err, ErrUnsupportedQuery) || !strings.Contains(err.Error(), strconv.Itoa(cpeMaxRows)) {
 		t.Errorf("filter on a version past the cap: %v", err)
 	}
-	if n := len(s.limits); n != 1 {
+	if n := len(s.pageLimits()); n != 1 {
 		t.Errorf("past the cap after %d requests, want 1", n)
 	}
 	for _, bad := range []struct {
@@ -123,7 +132,9 @@ func TestSearchCPEErrors(t *testing.T) {
 			t.Errorf("%s %+v: %v", bad.q, bad.p, err)
 		}
 	}
+	s.mu.Lock()
 	s.found = false
+	s.mu.Unlock()
 	if err := search(tomcatCPE, SearchParams{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown product: %v", err)
 	}

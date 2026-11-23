@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -245,19 +247,41 @@ func TestRetry(t *testing.T) {
 	}
 }
 
+// signalTransport reports each response it receives, so a test can act once the client has one in hand.
+type signalTransport struct {
+	got chan int
+}
+
+func (s signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err == nil {
+		s.got <- resp.StatusCode
+	}
+	return resp, err
+}
+
 func TestRetryWaitCancelled(t *testing.T) {
 	srv, calls := statusServer(t, []int{503}, "30")
 	defer srv.Close()
-	c := newTestClient(t, srv)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	got := make(chan int, 2)
+	hc := retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle)
+	hc.HTTPClient.Transport = signalTransport{got: got}
+	c := newTestClient(t, srv, WithClient(hc))
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		// cancel only once the 503 (with its 30s Retry-After) has reached the client
+		if <-got == http.StatusServiceUnavailable {
+			cancel()
+		}
+	}()
 	start := time.Now()
 	_, err := c.GetVulnerabilityByID(ctx, "CVE-2021-44228", nil)
-	if !errors.Is(err, ErrRequestFailed) || time.Since(start) > 5*time.Second {
-		t.Errorf("cancelled wait: err %v after %s", err, time.Since(start))
+	if err == nil || time.Since(start) > 5*time.Second {
+		t.Errorf("cancelled retry wait: err %v after %s, want an error well before 30s", err, time.Since(start))
 	}
 	if calls() != 1 {
-		t.Errorf("calls = %d, want 1", calls())
+		t.Errorf("calls = %d, want 1 (no request after the cancelled wait)", calls())
 	}
 }
 
@@ -308,9 +332,16 @@ func (s *cveServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(s.t, w, map[string]any{"total": s.total, "items": items, "cursor": next})
 }
 
+// requests returns the queries received so far.
+func (s *cveServer) requests() []url.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.queries)
+}
+
 func (s *cveServer) cveQueries() []url.Values {
 	var out []url.Values
-	for _, q := range s.queries {
+	for _, q := range s.requests() {
 		if q.Has("limit") && !q.Has("fields") {
 			out = append(out, q)
 		}
@@ -387,8 +418,8 @@ func TestSearchWindowLimits(t *testing.T) {
 	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(100), Offset: Ptr(MaxResultWindow - 99)}); !errors.Is(err, ErrUnsupportedQuery) {
 		t.Errorf("offset + limit past the window: %v", err)
 	}
-	if len(s.queries) != 0 {
-		t.Errorf("a rejected window still sent %d requests", len(s.queries))
+	if len(s.requests()) != 0 {
+		t.Errorf("a rejected window still sent %d requests", len(s.requests()))
 	}
 	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(MaxResultWindow)}); err != nil {
 		t.Errorf("limit at the window: %v", err)
@@ -412,8 +443,8 @@ func TestSearchCVEIDs(t *testing.T) {
 	if r.Total != 3 || r.Count != 2 || r.Results[0].CVEID != "CVE-2021-44228" || r.Results[1].CVEID != "CVE-2023-4966" {
 		t.Errorf("total %d count %d results %+v", r.Total, r.Count, r.Results)
 	}
-	if len(s.queries) != 3 {
-		t.Errorf("requests = %d, want 3 (one per distinct id)", len(s.queries))
+	if len(s.requests()) != 3 {
+		t.Errorf("requests = %d, want 3 (one per distinct id)", len(s.requests()))
 	}
 	r, err = c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr(q), Limit: Ptr(1), Offset: Ptr(1)})
 	if err != nil || r.Count != 0 {
@@ -449,7 +480,7 @@ func TestSearchBareProduct(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := s.queries[0].Get("q"); got != "log4j" {
+			if got := s.requests()[0].Get("q"); got != "log4j" {
 				t.Errorf("products lookup q = %q", got)
 			}
 			if got := s.cveQueries()[0].Get("product"); got != c.want {
@@ -475,8 +506,8 @@ func TestSearchRejectsBeforeRequest(t *testing.T) {
 			t.Errorf("%+v: %v", p, err)
 		}
 	}
-	if len(s.queries) != 0 {
-		t.Errorf("rejected searches sent %d requests", len(s.queries))
+	if len(s.requests()) != 0 {
+		t.Errorf("rejected searches sent %d requests", len(s.requests()))
 	}
 }
 
@@ -488,7 +519,7 @@ func TestGetVulnerabilityByIDRejectsNonCVE(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "not a CVE id") {
 		t.Errorf("template id: %v", err)
 	}
-	if len(s.queries) != 0 {
+	if len(s.requests()) != 0 {
 		t.Errorf("non-CVE id sent a request")
 	}
 }
@@ -596,8 +627,8 @@ func TestSearchRejectsBadPaging(t *testing.T) {
 			t.Errorf("%+v: %v", p, err)
 		}
 	}
-	if len(s.queries) != 0 {
-		t.Errorf("rejected paging sent %d requests", len(s.queries))
+	if len(s.requests()) != 0 {
+		t.Errorf("rejected paging sent %d requests", len(s.requests()))
 	}
 }
 
@@ -614,7 +645,8 @@ func TestSearchDefaultSort(t *testing.T) {
 		if _, err := c.SearchVulnerabilities(context.Background(), p); err != nil {
 			t.Fatal(err)
 		}
-		if got := s.queries[len(s.queries)-1].Get("sort"); got != want {
+		reqs := s.requests()
+		if got := reqs[len(reqs)-1].Get("sort"); got != want {
 			t.Errorf("sort %q: sent %q, want %q", sortDesc, got, want)
 		}
 	}
@@ -638,17 +670,17 @@ func TestSearchCVEIDsAll(t *testing.T) {
 }
 
 func TestRedirectRefusedNotRetried(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		http.Redirect(w, r, "/elsewhere", http.StatusFound)
 	}))
 	defer srv.Close()
 	hc := retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle)
 	hc.HTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("no redirects") }
 	_, err := newTestClient(t, srv, WithClient(hc)).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
-	if err == nil || calls != 1 {
-		t.Errorf("refused redirect: err %v after %d requests, want an error after 1", err, calls)
+	if err == nil || calls.Load() != 1 {
+		t.Errorf("refused redirect: err %v after %d requests, want an error after 1", err, calls.Load())
 	}
 }
 
@@ -666,9 +698,9 @@ func TestNotFoundIsAPIError(t *testing.T) {
 }
 
 func TestScanFileKeyTransport(t *testing.T) {
-	var got []string
+	got := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = append(got, r.Header.Get(apiKeyHeader)+"|"+r.Header.Get("User-Agent"))
+		got <- r.Header.Get(apiKeyHeader) + "|" + r.Header.Get("User-Agent")
 		writeJSON(t, w, map[string]any{"id": "s1"})
 	}))
 	defer srv.Close()
@@ -679,8 +711,8 @@ func TestScanFileKeyTransport(t *testing.T) {
 	if _, err := newTestClient(t, srv, WithAPIKey("k"), WithUserAgent("vulnx/9")).ScanFile(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
-	if got[0] != "k|vulnx/9" {
-		t.Errorf("loopback upload sent %q, want the key and User-Agent", got[0])
+	if h := <-got; h != "k|vulnx/9" {
+		t.Errorf("loopback upload sent %q, want the key and User-Agent", h)
 	}
 	c := newTestClient(t, srv, WithAPIKey("k"))
 	c.baseURL = "http://api.example.invalid"

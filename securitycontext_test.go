@@ -296,13 +296,18 @@ func TestTranslateQueryEdgeCases(t *testing.T) {
 			}
 		}
 	}
-	got, err := translateQuery("(cve_id:CVE-2021-44228 || cve_id:CVE-2023-4966) && cve_id:cve-2023-4966")
-	if err != nil || !slices.Equal(got.ids, []string{"CVE-2023-4966"}) {
-		t.Errorf("AND of id sets: %v %v, want the intersection", got.ids, err)
-	}
-	got, err = translateQuery("cve_id:CVE-2021-44228 || cve_id:cve-2021-44228")
-	if err != nil || !slices.Equal(got.ids, []string{"CVE-2021-44228"}) {
-		t.Errorf("OR of the same id: %v %v", got.ids, err)
+	for q, want := range map[string][]string{
+		"(cve_id:CVE-2021-44228 || cve_id:CVE-2023-4966) && cve_id:cve-2023-4966": {"CVE-2023-4966"},
+		"cve_id:CVE-2021-44228 || cve_id:cve-2021-44228":                          {"CVE-2021-44228"},
+	} {
+		got, err := translateQuery(q)
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
+		}
+		if !slices.Equal(got.ids, want) {
+			t.Errorf("%q: ids %v, want %v", q, got.ids, want)
+		}
 	}
 }
 
