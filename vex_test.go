@@ -2,6 +2,7 @@ package vulnx
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,6 +84,59 @@ func TestCycloneDXVEXAnalysis(t *testing.T) {
 	}
 	if unfixed.Source != nil || unfixed.Analysis.Response[0] != "can_not_fix" {
 		t.Errorf("unfixed advisory: %+v", unfixed)
+	}
+}
+
+func TestVEX(t *testing.T) {
+	res := StackResult{Items: []StackItem{
+		{Input: "npm/minimist@1.2.5", Package: "npm/minimist", Version: "1.2.5", Status: "affected", FixedVersion: "1.2.6",
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-2021-44906", FixedIn: []any{"1.2.6"}}, {CVE: "CVE-2021-44906"}}},
+		{Input: "pypi/r@2", Package: "pypi/r", Version: "2", Status: "affected",
+			AdvisoryRows: []StackAdvisory{{CVE: "CVE-2020-1"}},
+			Undetermined: []StackAdvisory{{CVE: "CVE-2020-2", Reason: "project_range_unknown"}}},
+		{Input: "npm/left-pad@1.3.0", Package: "npm/left-pad", Version: "1.3.0", Status: "clean"},
+	}}
+	now := time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC)
+	raw, err := OpenVEX(res, "me", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o struct {
+		Author     string `json:"author"`
+		Statements []struct {
+			Vulnerability   map[string]string   `json:"vulnerability"`
+			Products        []map[string]string `json:"products"`
+			Status          string              `json:"status"`
+			StatusNotes     string              `json:"status_notes"`
+			ActionStatement string              `json:"action_statement"`
+		} `json:"statements"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Author != "me" || len(o.Statements) != 3 {
+		t.Fatalf("openvex: %s", raw)
+	}
+	got := map[string]string{}
+	for _, s := range o.Statements {
+		got[s.Vulnerability["name"]+"|"+s.Products[0]["@id"]] = s.Status + "|" + s.ActionStatement + s.StatusNotes
+	}
+	want := map[string]string{
+		"CVE-2021-44906|pkg:npm/minimist@1.2.5": "affected|Upgrade to 1.2.6",
+		"CVE-2020-1|pkg:pypi/r@2":               "affected|No fixed version known",
+		"CVE-2020-2|pkg:pypi/r@2":               "under_investigation|project_range_unknown",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: %q, want %q", k, got[k], v)
+		}
+	}
+	raw, err = CycloneDXVEX(res, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"state": "exploitable"`) || !strings.Contains(string(raw), `"state": "in_triage"`) {
+		t.Errorf("cyclonedx: %s", raw)
 	}
 }
 

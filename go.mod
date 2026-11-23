@@ -9,7 +9,11 @@ require (
 	github.com/projectdiscovery/gologger v1.1.76
 	github.com/projectdiscovery/retryablehttp-go v1.3.35
 	github.com/projectdiscovery/utils v0.11.14
+	github.com/shirou/gopsutil/v4 v4.26.3
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
+	golang.org/x/term v0.48.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -68,8 +72,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d // indirect
-	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/syndtr/goleveldb v1.0.0 // indirect
 	github.com/tidwall/btree v1.7.0 // indirect
 	github.com/tidwall/buntdb v1.3.0 // indirect
@@ -96,8 +98,6 @@ require (
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	golang.org/x/term v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/tools v0.49.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -763,7 +763,7 @@ func TestGetStackRepeatedCursor(t *testing.T) {
 		writeJSON(t, w, map[string]any{"id": "s1", "status": "ready", "items": []map[string]any{{"input": "npm/a@1"}}, "cursor": "same"})
 	}))
 	defer srv.Close()
-	_, err := newTestClient(t, srv).GetStack(context.Background(), "s1")
+	_, err := newTestClient(t, srv).getStack(context.Background(), "s1")
 	if err == nil || !strings.Contains(err.Error(), "repeated a page cursor") {
 		t.Errorf("repeated stack cursor: %v", err)
 	}
