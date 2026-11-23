@@ -127,13 +127,13 @@ _vulnx_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Available commands
-    commands="analyze auth completion filters healthcheck id mcp search update version help"
+    commands="analyze completion filters healthcheck id scan search update version help"
 
     # Available shells for completion command
     shells="bash zsh fish powershell"
 
     # Global flags (available for all commands)
-    global_flags="--help --debug --verbose --json --output --silent --no-color --proxy --timeout --debug-req --debug-resp"
+    global_flags="--help --debug --verbose --json --output --silent --no-color --proxy --timeout --debug-req --debug-resp --disable-update-check"
 
     case "${prev}" in
         vulnx)
@@ -149,27 +149,23 @@ _vulnx_completion() {
             return 0
             ;;
         search)
-            COMPREPLY=( $(compgen -W "--limit -n --offset --sort-asc --sort-desc --fields --term-facets --range-facets --highlight --facet-size --detailed --product -p --vendor --severity -s --vuln-status --vuln-age -a --kev --template -t --poc --hackerone --remote-exploit --cvss-score --epss-score --tags --vuln-type ${global_flags}" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "--limit -n --offset --all --cpe --version --sort-asc --sort-desc --fields --term-facets --facet-size --detailed --product -p --vendor --severity -s --vuln-status --vuln-age -a --kev --template -t --poc --remote-exploit --cvss-score --epss-score ${global_flags}" -- ${cur}) )
             return 0
             ;;
         id)
-            COMPREPLY=( $(compgen -W "--file ${global_flags}" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "--file --history ${global_flags}" -- ${cur}) )
             return 0
             ;;
-        auth)
-            COMPREPLY=( $(compgen -W "--api-key --test ${global_flags}" -- ${cur}) )
+        scan)
+            COMPREPLY=( $(compgen -W "--list --full --show --show-all --vex --vex-author --wait --image --platform --host --root ${global_flags}" -- ${cur}) )
             return 0
             ;;
         healthcheck|health|hc)
             COMPREPLY=( $(compgen -W "${global_flags}" -- ${cur}) )
             return 0
             ;;
-        mcp)
-            COMPREPLY=( $(compgen -W "--mode --port ${global_flags}" -- ${cur}) )
-            return 0
-            ;;
         update)
-            COMPREPLY=( $(compgen -W "--disable-update-check ${global_flags}" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "${global_flags}" -- ${cur}) )
             return 0
             ;;
         filters)
@@ -177,7 +173,7 @@ _vulnx_completion() {
             return 0
             ;;
         version)
-            COMPREPLY=( $(compgen -W "--disable-update-check ${global_flags}" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "${global_flags}" -- ${cur}) )
             return 0
             ;;
         --*)
@@ -508,13 +504,13 @@ func isWindows() bool {
 
 func closeCompletionFile(file *os.File) {
 	if err := file.Close(); err != nil {
-		gologger.Warning().Msgf("Failed to close completion file: %s", err)
+		gologger.Error().Msgf("Failed to close completion file: %s", err)
 	}
 }
 
 func removeTempFile(path string) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		gologger.Warning().Msgf("Failed to remove temp file: %s", err)
+		gologger.Error().Msgf("Failed to remove temp file: %s", err)
 	}
 }
 

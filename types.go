@@ -1,4 +1,3 @@
-// Package vulnx provides types for the /v2/vulnerability API client.
 package vulnx
 
 import (
@@ -106,6 +105,9 @@ type Vulnerability struct {
 	H1               *H1Stats       `json:"h1,omitempty"`
 	NTPS             int            `json:"ntps,omitempty"`
 	UpdatedAt        *time.Time     `json:"updated_at,omitempty"`
+
+	// History is what SecurityContext recorded changing on the CVE (vulnx id --history).
+	History []ChangeEntry `json:"history,omitempty"`
 }
 
 // Citation represents a citation for a vulnerability/template.
@@ -209,24 +211,34 @@ type Schema struct {
 
 // SearchParams defines query parameters for vulnerability search.
 type SearchParams struct {
-	Limit       *int     `json:"limit,omitempty"`
-	Offset      *int     `json:"offset,omitempty"`
-	SortAsc     *string  `json:"sort_asc,omitempty"`
-	SortDesc    *string  `json:"sort_desc,omitempty"`
-	Fields      []string `json:"fields,omitempty"`
-	TermFacets  []string `json:"term_facets,omitempty"`
+	Limit  *int `json:"limit,omitempty"`
+	Offset *int `json:"offset,omitempty"`
+	// SortAsc and SortDesc name the sort field; with neither set a search is newest first, and a cpe: search
+	// keeps its version list's order (most urgent first).
+	SortAsc    *string  `json:"sort_asc,omitempty"`
+	SortDesc   *string  `json:"sort_desc,omitempty"`
+	Fields     []string `json:"fields,omitempty"`
+	TermFacets []string `json:"term_facets,omitempty"`
+	// RangeFacets are not supported; a search that sets them fails with ErrUnsupportedQuery.
 	RangeFacets []string `json:"range_facets,omitempty"`
 	Query       *string  `json:"q,omitempty"`
-	Highlight   *bool    `json:"highlight,omitempty"`
-	FacetSize   *int     `json:"facet_size,omitempty"`
+	// Deprecated: SecurityContext returns no highlights; the field is ignored.
+	Highlight *bool `json:"highlight,omitempty"`
+	FacetSize *int  `json:"facet_size,omitempty"`
+	// All fetches every matching result (at most 10,000), page by page; Limit and the 1000-row window do not apply.
+	All bool `json:"-"`
+	// Progress, when set, is called after each page (each record for cve_id: lookups) with the rows fetched so far
+	// and the total.
+	Progress func(fetched, total int) `json:"-"`
 }
 
-// SearchResponse represents the response from /v2/vulnerability/search.
+// SearchResponse is one page of search results, or every result with SearchParams.All.
 type SearchResponse struct {
 	Count   int             `json:"count"`
 	Facets  map[string]any  `json:"facets,omitempty"`
 	Results []Vulnerability `json:"results"`
 	Total   int             `json:"total"`
+	fields  []string        // SearchParams.Fields: MarshalJSON narrows each result to them
 }
 
 // GetByIDParams defines optional query parameters for GetVulnerabilityByID.
@@ -234,7 +246,7 @@ type GetByIDParams struct {
 	Fields []string `json:"fields,omitempty"`
 }
 
-// VulnerabilityResponse represents the response from /v2/vulnerability/{id}.
+// VulnerabilityResponse holds one CVE record fetched by id.
 type VulnerabilityResponse struct {
 	Data *Vulnerability `json:"data"`
 }

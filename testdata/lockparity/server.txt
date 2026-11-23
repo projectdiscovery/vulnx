@@ -1,0 +1,10 @@
+cargo	smallvec@1.6.0 time@0.1.43
+composer	monolog/monolog@2.3.0 phpunit/phpunit@9.5.0 symfony/console@5.4.0
+gem	nokogiri@1.13.3 racc@1.6.0 rack@2.2.3
+gomod	github.com/gin-gonic/gin@v1.7.0 golang.org/x/net@v0.7.0 golang.org/x/text@v0.3.7 stdlib@v1.20.0
+npm	@babel/core@7.22.0 express@4.17.1 minimist@1.2.0 qs@6.5.2 qs@6.7.0
+pip	django@3.2.0 requests@2.25.1 urllib3@1.26.4
+pnpm	@babel/core@7.22.0 lodash@4.17.20 react-dom@18.2.0 react@18.2.0
+poetry	django@3.2.0 requests@2.25.1 typing-extensions@4.5.0
+uv	httpx@0.27.0 jinja2@3.1.2
+yarn	@types/node@20.1.0 lodash@4.17.20 minimist@1.2.0

@@ -1,0 +1,288 @@
+package clis
+
+// vulnx scan --host's default view: one screen of findings per source and severity, and the agent setup under it.
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/projectdiscovery/vulnx/v2"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
+	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
+)
+
+// gridRow is one source of a host scan: what it checked and its reachable findings by worst severity.
+type gridRow struct {
+	Name      string
+	Checked   int
+	Severity  [4]int // critical, high, medium, low
+	Exploited int    // with a known exploited CVE
+}
+
+var gridSeverities = []string{"critical", "high", "medium", "low"}
+
+// gridBar draws a grid bar: a block a little short of the line's height, so bars in adjacent rows stay apart.
+const gridBar = "▆"
+
+// gridColors are the bars' 256-color codes: red, orange, yellow and green, the hues the graph page uses.
+var gridColors = map[string]string{"critical": "\033[38;5;203m", "high": "\033[38;5;208m", "medium": "\033[38;5;178m", "low": "\033[38;5;71m"}
+
+// hostCounts are a host scan's headline numbers.
+type hostCounts struct {
+	Checked, Affected, Reachable, Exploited, PublicExploit, NotLinked int
+}
+
+// hostGrid counts a host scan per source (in the order they were read; a source that checked nothing is left
+// out), with the totals and headline numbers.
+func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, total gridRow, counts hostCounts) {
+	byName := map[string]*gridRow{}
+	for _, s := range inv.Sources {
+		if s.Sent == 0 {
+			continue
+		}
+		rows = append(rows, gridRow{Name: s.Name, Checked: s.Sent})
+	}
+	for i := range rows {
+		byName[rows[i].Name] = &rows[i]
+	}
+	fs := findings(inv, res)
+	for _, f := range fs {
+		sev := slices.Index(gridSeverities, f.worst)
+		row := byName[inv.EntrySource[f.item.Input]]
+		if f.tier == tierKEV {
+			counts.Exploited++
+		} else if f.mark == "POC" {
+			counts.PublicExploit++
+		}
+		if row == nil || sev < 0 {
+			continue
+		}
+		row.Severity[sev]++
+		if f.tier == tierKEV {
+			row.Exploited++
+		}
+	}
+	total.Name = "total"
+	for _, r := range rows {
+		total.Checked += r.Checked
+		total.Exploited += r.Exploited
+		for i, n := range r.Severity {
+			total.Severity[i] += n
+		}
+	}
+	for _, it := range res.Items {
+		if it.Status == "affected" && unreachable(it) {
+			counts.NotLinked++
+		}
+	}
+	counts.Checked, counts.Affected, counts.Reachable = len(inv.Entries), res.Summary.Affected, len(fs)
+	return rows, total, counts
+}
+
+// hostLabelWidth is the label column of the lines under the grid, "Agent setup" and the gap after it: every
+// label pads to it, so the values start in one column.
+const hostLabelWidth = len("Agent setup") + 4
+
+// hostLabel starts a line under the grid: its label padded to the label column.
+func hostLabel(label string) string { return fmt.Sprintf("  %-*s", hostLabelWidth, label) }
+
+// hostIndent starts a line under the grid that has no label of its own: it begins in the value column.
+var hostIndent = strings.Repeat(" ", 2+hostLabelWidth)
+
+// hostFooter is the last line of the grid view, after any report links: what was scanned and how long it took.
+func hostFooter(inv vulnx.HostInventory, elapsed time.Duration, c *renderer.ColorConfig) string {
+	parts := []string{termtext.Clean(inv.OS), plural(len(inv.Entries), "component", "components")}
+	if elapsed > 0 {
+		parts = append(parts, elapsed.Round(time.Second).String())
+	}
+	return "\n" + c.Colorize(hostLabel("Scanned")+strings.Join(parts, " · "), renderer.Gray) + "\n"
+}
+
+// notCheckedSources counts what could not be checked per source, the largest first: "145 homebrew, 45 applications".
+func notCheckedSources(inv vulnx.HostInventory) string {
+	var sources []vulnx.HostSource
+	for _, s := range inv.Sources {
+		if s.NotAssessed > 0 {
+			sources = append(sources, s)
+		}
+	}
+	slices.SortStableFunc(sources, func(a, b vulnx.HostSource) int { return b.NotAssessed - a.NotAssessed })
+	parts := make([]string, len(sources))
+	for i, s := range sources {
+		parts[i] = formatNumber(s.NotAssessed) + " " + s.Name
+	}
+	return strings.Join(parts, ", ")
+}
+
+// notLinkedText counts the affected Go module versions no program links, which no count above includes.
+func notLinkedText(n int) string {
+	return plural(n, "Go module version", "Go module versions") + " no program links"
+}
+
+// barCells draws a bar of width cells for v, scaled so that peak fills them all, in color: every started block
+// counts, a value short of one whole block shows small instead (a block in the grid, a thin mark where bars are
+// wider and a lone block would overstate it), and zero shows nothing. The bar is padded to width, so what follows
+// it lines up.
+func barCells(v, peak, width int, small, color string, c *renderer.ColorConfig) string {
+	if v <= 0 || peak <= 0 {
+		return strings.Repeat(" ", width)
+	}
+	if v*width < peak {
+		return c.Colorize(small, color) + strings.Repeat(" ", width-1)
+	}
+	blocks := min(width, (v*width+peak-1)/peak)
+	return c.Colorize(strings.Repeat(gridBar, blocks), color) + strings.Repeat(" ", width-blocks)
+}
+
+// renderGrid writes a severity grid: a header naming the row kind (SOURCE, ECOSYSTEM), one row per entry with
+// its counts by worst severity as bars scaled to the largest, a rule, and the total row.
+func renderGrid(b *strings.Builder, kind string, rows []gridRow, total gridRow, c *renderer.ColorConfig) {
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	width := len(kind)
+	peak := 1
+	for _, r := range rows {
+		width = max(width, len(r.Name))
+		for _, v := range r.Severity {
+			peak = max(peak, v)
+		}
+	}
+	const bar = 6
+	cell := func(v int, sev string) string {
+		// the number first, so numbers line up and every bar starts at the same column
+		if v == 0 {
+			return dim(fmt.Sprintf("%4s ", "-")) + strings.Repeat(" ", bar)
+		}
+		return fmt.Sprintf("%4d ", v) + barCells(v, peak, bar, gridBar, gridColors[sev], c)
+	}
+	b.WriteString("  " + dim(fmt.Sprintf("%-*s  %-11s  %-11s  %-11s  %-11s  %9s  %8s", width, kind, "CRITICAL", "HIGH", "MEDIUM", "LOW",
+		"EXPLOITED", "CHECKED")) + "\n")
+	line := func(r gridRow, bars bool) {
+		fmt.Fprintf(b, "  %-*s", width, termtext.Clean(r.Name))
+		for i, v := range r.Severity {
+			if bars {
+				b.WriteString("  " + cell(v, gridSeverities[i]))
+			} else {
+				fmt.Fprintf(b, "  %4s%7s", formatNumber(v), "")
+			}
+		}
+		exploited := fmt.Sprintf("%9s", "-")
+		if r.Exploited > 0 {
+			exploited = c.Colorize(fmt.Sprintf("%9d", r.Exploited), renderer.Bold+renderer.BrightRed)
+		} else {
+			exploited = dim(exploited)
+		}
+		fmt.Fprintf(b, "  %s  %8s\n", exploited, formatNumber(r.Checked))
+	}
+	for _, r := range rows {
+		line(r, true)
+	}
+	b.WriteString("  " + dim(strings.Repeat("─", width+2+4*13+9+2+8-2)) + "\n")
+	line(total, false)
+}
+
+// renderHostGrid is the default view, one screen: the headline numbers and, per source, its findings by severity.
+func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration, c *renderer.ColorConfig) string {
+	var b strings.Builder
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	rows, total, n := hostGrid(inv, res)
+	fmt.Fprintf(&b, "\n  %s affected   %s reachable   %s known exploited   %s public exploit\n\n",
+		c.Colorize(formatNumber(n.Affected), renderer.Bold), c.Colorize(formatNumber(n.Reachable), renderer.Bold),
+		c.Colorize(formatNumber(n.Exploited), renderer.Bold+renderer.BrightRed), c.Colorize(formatNumber(n.PublicExploit), renderer.Bold))
+
+	renderGrid(&b, "SOURCE", rows, total, c)
+	b.WriteString("\n")
+	b.WriteString(agentSetup(inv, c))
+	if len(inv.NotAssessed) > 0 {
+		b.WriteString(dim(hostLabel("Not checked")+fmt.Sprintf("%s with no exact identifier: %s", formatNumber(len(inv.NotAssessed)), notCheckedSources(inv))) + "\n")
+	}
+	if n.NotLinked > 0 {
+		b.WriteString(dim(hostLabel("Not counted")+notLinkedText(n.NotLinked)) + "\n")
+	}
+	if res.FunctionsUnavailable {
+		b.WriteString(dim(hostLabel("Not checked")+"Go reachability: the API does not serve affected functions yet") + "\n")
+	}
+	return b.String()
+}
+
+var agentKinds = []struct{ kind, one, many string }{
+	{"extension", "editor extension", "editor extensions"}, {"skill", "skill", "skills"}, {"plugin", "plugin", "plugins"},
+	{"hook", "hook", "hooks"}, {"mcp_server", "MCP server", "MCP servers"}, {"model", "local model", "local models"},
+}
+
+// infoRisks are true of most machines that run local models: said, in grey, without the mark of a finding.
+var infoRisks = map[string]bool{"pickle_format": true, "custom_code": true}
+
+var agentRisks = []string{"model_runs_commands", "exposed", "removed_malware", "removed", "lookalike", "sideloaded", "pipe_to_shell", "hidden_text", "unverified_source", "unpinned", "plaintext", "approvals_off", "pickle_format", "custom_code"}
+
+var riskSubject = map[string][2]string{
+	"extension": {"extension", "extensions"}, "skill": {"skill", "skills"}, "hook": {"hook", "hooks"},
+	"mcp_server": {"MCP server", "MCP servers"}, "agent": {"agent", "agents"}, "plugin": {"plugin", "plugins"},
+	"model": {"local model", "local models"}, "runtime": {"model runtime", "model runtimes"},
+}
+
+// agentSetup is the block under the grid for what agents and editors load: what was read, then one line per kind
+// of risk with the names it applies to. These are risks in how things are set up, not known vulnerabilities, so
+// they stay out of the severity columns.
+func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
+	if len(inv.AgentSurface) == 0 && len(inv.Risks) == 0 {
+		return ""
+	}
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	n := map[string]int{}
+	for _, it := range inv.AgentSurface {
+		n[it.Kind]++
+	}
+	var parts []string
+	for _, k := range agentKinds {
+		if n[k.kind] > 0 {
+			parts = append(parts, plural(n[k.kind], k.one, k.many))
+		}
+	}
+	risky := 0
+	for _, r := range inv.Risks {
+		if !infoRisks[r.Risk] {
+			risky++
+		}
+	}
+	if risky == 0 {
+		parts = append(parts, "no risky setup found")
+	}
+	head := hostLabel("Agent setup") + strings.Join(parts, " · ")
+	if len(inv.Risks) == 0 {
+		return dim(head) + "\n"
+	}
+	var b strings.Builder
+	b.WriteString(head + "\n")
+	for _, risk := range agentRisks {
+		var names []string
+		kind := ""
+		for _, r := range inv.Risks {
+			if r.Risk == risk {
+				kind = r.Kind
+				if name := termtext.Clean(r.Name); !slices.Contains(names, name) {
+					names = append(names, name)
+				}
+			}
+		}
+		if len(names) == 0 {
+			continue
+		}
+		subject, says := riskSubject[kind][1], vulnx.RiskText[risk][1]
+		if len(names) == 1 {
+			subject, says = riskSubject[kind][0], vulnx.RiskText[risk][0]
+		}
+		shown := names
+		if len(shown) > 4 {
+			shown = append(slices.Clone(names[:4]), fmt.Sprintf("+%d", len(names)-4))
+		}
+		text := fmt.Sprintf("%d %s %s: %s", len(names), subject, says, strings.Join(shown, ", "))
+		if infoRisks[risk] {
+			b.WriteString(dim(hostIndent+"· "+text) + "\n")
+			continue
+		}
+		b.WriteString(hostIndent + c.Colorize("!", gridColors["high"]) + " " + text + "\n")
+	}
+	return b.String()
+}

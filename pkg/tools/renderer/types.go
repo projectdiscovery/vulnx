@@ -2,6 +2,7 @@ package renderer
 
 import (
 	"github.com/projectdiscovery/vulnx/v2"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 )
 
 // LayoutLine represents a single line in the layout configuration
@@ -38,37 +39,72 @@ type Entry struct {
 	TemplateRaw      string               `json:"template_raw"`
 }
 
-// FromVulnerability converts a vulnx.Vulnerability to an Entry
+// FromVulnerability converts a vulnx.Vulnerability to an Entry. Text from the API is cleaned of control and
+// bidi characters, since it is printed to a terminal; v is not modified.
 func FromVulnerability(v *vulnx.Vulnerability) *Entry {
 	if v == nil {
 		return nil
 	}
-
+	c := termtext.Clean
 	entry := &Entry{
-		DocID:            v.DocID,
-		Name:             v.Name,
-		Severity:         v.Severity,
-		Author:           v.Author,
+		DocID:            c(v.DocID),
+		Name:             c(v.Name),
+		Severity:         c(v.Severity),
+		Author:           cleanAll(v.Author),
 		AgeInDays:        v.AgeInDays,
 		EpssScore:        v.EpssScore,
 		CvssScore:        v.CvssScore,
 		Exposure:         v.Exposure,
-		AffectedProducts: v.AffectedProducts,
 		IsPatchAvailable: v.IsPatchAvailable,
 		PocCount:         v.PocCount,
 		IsKev:            v.IsKev,
-		Kev:              v.Kev,
 		IsTemplate:       v.IsTemplate,
 		H1:               v.H1,
-		Tags:             v.Tags,
-		Pocs:             v.Pocs,
-		Citations:        v.Citations,
-		Description:      v.Description,
-		Impact:           v.Impact,
-		Remediation:      v.Remediation,
-		TemplateURI:      v.URI,
-		TemplateRaw:      v.Raw,
+		Tags:             cleanAll(v.Tags),
+		Description:      c(v.Description),
+		Impact:           c(v.Impact),
+		Remediation:      c(v.Remediation),
+		TemplateURI:      c(v.URI),
+		TemplateRaw:      c(v.Raw),
 	}
-
+	for _, p := range v.AffectedProducts {
+		if p != nil {
+			cp := *p
+			cp.Vendor, cp.Product = c(p.Vendor), c(p.Product)
+			entry.AffectedProducts = append(entry.AffectedProducts, &cp)
+		}
+	}
+	for _, k := range v.Kev {
+		if k != nil {
+			ck := *k
+			ck.Source = c(k.Source)
+			entry.Kev = append(entry.Kev, &ck)
+		}
+	}
+	for _, p := range v.Pocs {
+		if p != nil {
+			cp := *p
+			cp.URL, cp.Source = c(p.URL), c(p.Source)
+			entry.Pocs = append(entry.Pocs, &cp)
+		}
+	}
+	for _, ct := range v.Citations {
+		if ct != nil {
+			cc := *ct
+			cc.URL, cc.Source, cc.Tags = c(ct.URL), c(ct.Source), cleanAll(ct.Tags)
+			entry.Citations = append(entry.Citations, &cc)
+		}
+	}
 	return entry
+}
+
+func cleanAll(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = termtext.Clean(s)
+	}
+	return out
 }

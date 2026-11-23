@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"path/filepath"
 	"strings"
 
 	"github.com/projectdiscovery/gologger"
@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	analyzetool "github.com/projectdiscovery/vulnx/v2/pkg/tools/analyze"
 )
 
@@ -24,29 +25,32 @@ var (
 
 	analyzeCmd = &cobra.Command{
 		Use:   "analyze",
-		Short: "group vulnerabilities by one or more fields using term facets",
-		Long: `Group vulnerabilities by one or more fields using term facets.
-
-The command internally leverages the Vulnerability Search API's term-facet
-aggregation capabilities. It sets the response fields to "doc_id" and limit to
-1 to minimise payload size – only the facet buckets are required for analyze
-operations.
+		Short: "count vulnerabilities by field values (facets)",
+		// main prints the error; the flag list would bury it
+		SilenceUsage: true,
+		Long: `Count CVEs per value of up to 3 fields (term facets), optionally over the CVEs a query matches.
 
 Examples:
-  # Analyze by severity
+  # CVEs by severity
   vulnx analyze -f severity
 
-  # Analyze by vendor & product but only for templates with planned/covered coverage
-  vulnx analyze -f affected_products.vendor,affected_products.product -q 'template_coverage:planned || template_coverage:covered'
+  # Known-exploited CVEs by vendor and weakness
+  vulnx analyze -f vendor=10,cwe -q 'is_kev:true'
+
+Run 'vulnx analyze help' for the fields that can be counted.
 
 Global flags:
-  --json / -j   Output raw JSON (for piping, disables YAML output)
-  --output / -o Write output to file in JSON format (error if file exists)
+  --json / -j   Output raw JSON
+  --output / -o Write output to a .json file (error if file exists)
 `,
-		Args: cobra.ArbitraryArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 || len(args) == 1 && strings.EqualFold(args[0], "help") {
+				return nil
+			}
+			return fmt.Errorf("analyze takes no query argument (got %q); filter with --query, e.g. vulnx analyze -f severity -q 'is_kev:true'", strings.Join(args, " "))
+		},
 		Run: func(cmd *cobra.Command, args []string) {
-			// Support 'vulnx analyze help' by delegating to the dedicated help command.
-			if len(args) > 0 && strings.ToLower(args[0]) == "help" {
+			if len(args) == 1 {
 				analyzeHelpCmd.Run(cmd, args)
 				return
 			}
@@ -59,9 +63,7 @@ Global flags:
 			params := analyzetool.Params{
 				Fields: analyzeFields,
 			}
-			if analyzeFacetSize > 0 {
-				params.FacetSize = vulnx.Ptr(analyzeFacetSize)
-			}
+			params.FacetSize = vulnx.Ptr(analyzeFacetSize)
 			if analyzeQuery != "" {
 				params.Query = vulnx.Ptr(analyzeQuery)
 			}
@@ -70,146 +72,75 @@ Global flags:
 			handler := analyzetool.NewHandler(vulnxClient)
 			resp, err := handler.Analyze(params)
 			if err != nil {
-				if errors.Is(err, vulnx.ErrNotFound) {
-					gologger.Fatal().Msg("No results found for the provided facets")
+				if errors.Is(err, vulnx.ErrTooManyRequests) {
+					handleRateLimitError()
 				}
 				gologger.Fatal().Msgf("Failed to perform analysis: %s", err)
 			}
 
-			// Handle JSON and output file flags (same behaviour as search)
 			if jsonOutput || outputFile != "" {
-				jsonBytes, err := json.Marshal(resp)
+				data, err := json.Marshal(resp)
 				if err != nil {
 					gologger.Fatal().Msgf("Failed to marshal JSON: %s", err)
 				}
 				if outputFile != "" {
-					if _, err := os.Stat(outputFile); err == nil {
-						gologger.Fatal().Msgf("Output file already exists: %s", outputFile)
-					}
-					f, err := os.OpenFile(outputFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-					if err != nil {
-						gologger.Fatal().Msgf("Failed to create output file: %s", err)
-					}
-					defer func() {
-						if err := f.Close(); err != nil {
-							gologger.Error().Msgf("Failed to close output file: %s", err)
-						}
-					}()
-					if _, err := f.Write(jsonBytes); err != nil {
-						gologger.Fatal().Msgf("Failed to write to output file: %s", err)
+					if err := writeNewFile(outputFile, data); err != nil {
+						gologger.Fatal().Msgf("%s", err)
 					}
 					gologger.Info().Msgf("Wrote output to file: %s", outputFile)
 					return
 				}
-				if _, err := os.Stdout.Write(jsonBytes); err != nil {
-					gologger.Error().Msgf("Failed to write JSON to stdout: %s", err)
-				}
-				if _, err := os.Stdout.Write([]byte("\n")); err != nil {
-					gologger.Error().Msgf("Failed to write newline to stdout: %s", err)
-				}
+				writeStdout(data)
 				return
 			}
-
-			// Render facet tables
-			for facetName, facetAny := range resp.Facets {
-				fmt.Printf("\nField: %s\n", facetName)
-
-				tbl := table.NewWriter()
-				tbl.SetOutputMirror(os.Stdout)
-				tbl.SetStyle(table.StyleRounded)
-				tbl.AppendHeader(table.Row{"Value", "Count"})
-
-				// Attempt to coerce into expected structure
-				facetMap, ok := facetAny.(map[string]any)
-				if !ok {
-					fmt.Printf("Warning: Unable to parse facet data for field '%s'\n", facetName)
-					continue
-				}
-
-				bucketsAny, ok := facetMap["buckets"]
-				if !ok {
-					fmt.Printf("Warning: No buckets found for field '%s'\n", facetName)
-					continue
-				}
-
-				hasData := false
-				switch b := bucketsAny.(type) {
-				case map[string]any:
-					// Convert to slice and sort desc by count
-					type kv struct {
-						Key   string
-						Count float64
-					}
-					var pairs []kv
-					for k, v := range b {
-						switch vv := v.(type) {
-						case float64:
-							pairs = append(pairs, kv{k, vv})
-							hasData = true
-						case int:
-							pairs = append(pairs, kv{k, float64(vv)})
-							hasData = true
-						}
-					}
-					sort.Slice(pairs, func(i, j int) bool { return pairs[i].Count > pairs[j].Count })
-					for _, p := range pairs {
-						tbl.AppendRow(table.Row{p.Key, int(p.Count)})
-					}
-				case []any:
-					for _, item := range b {
-						if m, ok := item.(map[string]any); ok {
-							key, _ := m["key"].(string)
-							count, _ := m["count"].(float64)
-							tbl.AppendRow(table.Row{key, int(count)})
-							hasData = true
-						}
-					}
-				}
-
-				// Handle missing as "UNASSIGNED"
-				if missAny, ok := facetMap["missing"]; ok {
-					if mCount, ok2 := missAny.(float64); ok2 && mCount > 0 {
-						tbl.AppendRow(table.Row{"UNASSIGNED", int(mCount)})
-						hasData = true
-					}
-				}
-
-				if hasData {
-					tbl.Render()
-				} else {
-					fmt.Printf("No data found for field '%s'\n", facetName)
-				}
-			}
+			printFacetTables(resp.Facets, analyzeFields)
 		},
 	}
 )
 
-// validateAnalyzeInputs performs input validation for analyze command
+// printFacetTables prints one table per requested facet (field or field=size), in the order asked.
+func printFacetTables(facets map[string]any, fields []string) {
+	for _, f := range fields {
+		name, _, _ := strings.Cut(strings.ReplaceAll(f, "=", ":"), ":")
+		name = strings.TrimSpace(name)
+		fmt.Printf("\nField: %s\n", name)
+		buckets := extractBuckets(facets, name)
+		if len(buckets) == 0 {
+			fmt.Printf("No data found for field '%s'\n", name)
+			continue
+		}
+		tbl := table.NewWriter()
+		tbl.SetOutputMirror(os.Stdout)
+		tbl.SetStyle(table.StyleRounded)
+		tbl.AppendHeader(table.Row{"Value", "Count"})
+		for _, b := range buckets {
+			tbl.AppendRow(table.Row{termtext.Clean(b.key), b.count})
+		}
+		tbl.Render()
+	}
+}
+
+// maxFacetSize bounds --facet-size for search and analyze.
+const maxFacetSize = analyzetool.MaxFacetSize
+
+// validateAnalyzeInputs checks the flags before any request is made.
 func validateAnalyzeInputs() error {
-	// Validate fields
 	if len(analyzeFields) == 0 {
 		return fmt.Errorf("at least one --fields value is required")
 	}
-
-	// Validate facet size
-	if analyzeFacetSize < 1 || analyzeFacetSize > 1000 {
-		return fmt.Errorf("facet-size must be between 1 and 1000")
+	if analyzeFacetSize < 1 || analyzeFacetSize > maxFacetSize {
+		return fmt.Errorf("--facet-size must be between 1 and %d", maxFacetSize)
 	}
-
-	// Validate output file path if specified
-	if outputFile != "" {
-		if !strings.HasSuffix(outputFile, ".json") {
-			return fmt.Errorf("output file must have .json extension")
-		}
+	if outputFile != "" && !strings.EqualFold(filepath.Ext(outputFile), ".json") {
+		return fmt.Errorf("output file must have .json extension")
 	}
-
 	return nil
 }
 
-func init() { // Register flags and add command to rootCmd
-	analyzeCmd.Flags().StringSliceVarP(&analyzeFields, "fields", "f", nil, "fields to calculate (comma-separated)")
-	analyzeCmd.Flags().IntVar(&analyzeFacetSize, "facet-size", 10, "number of facet buckets to return")
-	analyzeCmd.Flags().StringVarP(&analyzeQuery, "query", "q", "", "query to filter results")
+func init() {
+	analyzeCmd.Flags().StringSliceVarP(&analyzeFields, "fields", "f", nil, "up to 3 fields to count CVEs by, field or field=size (comma-separated)")
+	analyzeCmd.Flags().IntVar(&analyzeFacetSize, "facet-size", 10, "number of buckets per field (1-50)")
+	analyzeCmd.Flags().StringVarP(&analyzeQuery, "query", "q", "", "count only the CVEs this field:value query matches")
 	analyzeCmd.SetHelpFunc(analyzeHelpCmd.Run)
 
 	rootCmd.AddCommand(analyzeCmd)

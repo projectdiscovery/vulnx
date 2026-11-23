@@ -52,8 +52,6 @@ jobs:
         run: go run -race . id CVE-1999-0027
         working-directory: cmd/vulnx/
         env:
-          PDCP_API_KEY: "${{ secrets.PDCP_API_KEY }}"
-          VULNX_API_URL: https://api.projectdiscovery.io
           DEBUG: true
 
       # - name: Test Example Code

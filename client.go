@@ -1,180 +1,209 @@
-// Package vulnx provides a robust, idiomatic Go client for interacting
-// with the ProjectDiscovery vulnx REST API. The client focuses on
-// the "/v2/vulnerability" endpoints, exposing high-level helper methods that
-// handle authentication, request construction, network-level retries, and JSON
-// decoding so that callers can concentrate on business logic.
+// Package vulnx is a Go client for the SecurityContext CVE API
+// (https://api.securitycontext.com). It translates vulnx's field:value query language into the API's
+// parameters, handles authentication, retries and pagination, and returns vulnx's Vulnerability records.
 //
 // # Quick Start
 //
-// The snippet below demonstrates a minimal, production-ready workflow. While
-// authentication is optional, using an API key is strongly recommended to
-// avoid rate limiting and ensure better performance:
-//
 //	ctx := context.Background()
 //
-//	client, err := vulnx.New(
-//	    vulnx.WithKeyFromEnv(), // or vulnx.WithPDCPKey("<YOUR_KEY>")
-//	)
+//	client, err := vulnx.New()
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
 //
 //	out, err := client.SearchVulnerabilities(ctx, vulnx.SearchParams{
-//	    Query: vulnx.Ptr("id:CVE-2023-4799"),
+//	    Query: vulnx.Ptr("is_kev:true && severity:critical"),
 //	    Limit: vulnx.Ptr(10),
 //	})
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
 //
-//	fmt.Println(len(out.Vulnerabilities))
+//	fmt.Println(len(out.Results))
 //
 // # Rate Limiting
 //
-// Unauthenticated requests are subject to strict rate limits. If you encounter
-// 429 (Too Many Requests) errors, configure an API key using WithPDCPKey() or
-// WithKeyFromEnv() to get higher rate limits and better service reliability.
+// Calls are anonymous and rate limited per address. The client waits out a short 429 by itself;
+// a longer one is returned as ErrTooManyRequests.
 //
 // The client is safe for concurrent use by multiple goroutines.
-//
-// For complete API semantics refer to https://api.projectdiscovery.io/docs.
 package vulnx
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/projectdiscovery/gologger"
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
-	"github.com/projectdiscovery/utils/auth/pdcp"
-	"github.com/projectdiscovery/utils/errkit"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 )
 
 const (
-	// DefaultBaseURL is the default base URL for the API.
-	DefaultBaseURL = "https://api.projectdiscovery.io"
-	// UserAgent is the default user agent for the client.
-	UserAgent = "vulnx-client/1.0"
+	// DefaultBaseURL is the default base URL for the API (SecurityContext).
+	DefaultBaseURL = "https://api.securitycontext.com"
+	// UserAgent is the product token of the client's User-Agent; New adds the module version when the build
+	// records one (vulnx/2.0.2). WithUserAgent replaces it.
+	UserAgent  = "vulnx"
+	modulePath = "github.com/projectdiscovery/vulnx/v2"
 	// BaseURLEnvVar is the environment variable name for overriding the base URL.
 	BaseURLEnvVar = "VULNX_API_URL"
+	// APIKeyEnvVar holds the SecurityContext API key New uses when no option sets one. Without a key, calls
+	// are anonymous and rate limited per address.
+	APIKeyEnvVar = "SECURITYCONTEXT_API_KEY"
+	// MaxResultWindow is the deepest offset + limit a search reaches without SearchParams.All.
+	MaxResultWindow = scMaxWindow
+
+	apiKeyHeader = "X-Api-Key"
+	// maxRateLimitWait bounds how long the client waits on a Retry-After before giving up.
+	maxRateLimitWait = 65 * time.Second
+	// longWaitNotice is the shortest retry wait announced at the default log level.
+	longWaitNotice    = 5 * time.Second
+	maxResponseBytes  = 64 << 20
+	maxErrorBodyBytes = 64 << 10
+	maxErrorMessage   = 500
 )
 
 // Client errors
 var (
-	ErrBadRequest          = errkit.New("bad request: client sent an invalid request")
-	ErrUnauthorized        = errkit.New("unauthorized: invalid or missing API key")
-	ErrNotFound            = errkit.New("not found: resource does not exist")
-	ErrTooManyRequests     = errkit.New("too many requests: rate limit exceeded - consider using an API key for higher limits")
-	ErrInternalServerError = errkit.New("internal server error: something went wrong on the server")
-	ErrUnknownAPIError     = errkit.New("unknown api error")
+	ErrBadRequest          = errors.New("bad request: client sent an invalid request")
+	ErrUnauthorized        = errors.New("unauthorized: invalid or missing API key")
+	ErrNotFound            = errors.New("not found: resource does not exist")
+	ErrTooManyRequests     = errors.New("too many requests: SecurityContext allows anonymous callers a limited number of requests a minute per address")
+	ErrInternalServerError = errors.New("internal server error: something went wrong on the server")
+	ErrServiceUnavailable  = errors.New("service unavailable: the SecurityContext API did not answer; try again later")
+	ErrUnknownAPIError     = errors.New("unknown api error")
 
-	ErrRequestBuildFailure = errkit.New("failed to build request")
-	ErrRequestFailed       = errkit.New("request failed")
-	ErrMarshalBody         = errkit.New("failed to marshal request body")
-	ErrCreateHTTPRequest   = errkit.New("failed to create http request")
-	ErrDecodeResponse      = errkit.New("failed to decode response")
+	ErrRequestBuildFailure = errors.New("failed to build request")
+	ErrRequestFailed       = errors.New("request failed")
+	ErrMarshalBody         = errors.New("failed to marshal request body")
+	ErrCreateHTTPRequest   = errors.New("failed to create http request")
+	ErrDecodeResponse      = errors.New("failed to decode response")
 )
 
 // Option represents a functional option that mutates a *Client* during
-// construction. It follows the standard "functional options" pattern popularised
-// by Google and is the preferred way to add optional parameters without an
-// explosion of constructor variants.
-//
-// A typical call site looks like this:
+// construction.
 //
 //	client, err := vulnx.New(
-//	    vulnx.WithPDCPKey("<YOUR_KEY>"),
+//	    vulnx.WithUserAgent("my-tool/1.0"),
 //	    vulnx.WithRetryableHTTPOptions(retryablehttp.Options{RetryMax: 5}),
 //	)
-//	if err != nil {
-//	    // handle error
-//	}
 type Option func(*Client)
 
-// Client provides high-level helpers around the vulnx API. It is safe for
+// Client provides high-level helpers around the SecurityContext API. It is safe for
 // concurrent use. Zero values for *Client* fields are not meaningful—always use
 // the *New* constructor.
 type Client struct {
 	baseURL   string
 	apiKey    string
 	httpc     *retryablehttp.Client
+	http      *http.Client
 	userAgent string
+	retryWait time.Duration
+	keyWarn   sync.Once
+	// expiry caches StackExpirySupported's answer once the API has given one: it does not change within a run
+	expiry struct {
+		sync.Mutex
+		known bool
+		err   error
+	}
 	// Optional debug hooks
 	debugRequest  func(*http.Request)
 	debugResponse func(*http.Response)
 }
 
-// New returns a new *Client* configured by the supplied *Option*s. Authentication
-// is optional but strongly recommended - unauthenticated requests are subject
-// to strict rate limits. Use *WithPDCPKey* or *WithKeyFromEnv* to configure
-// an API key for better performance and higher rate limits.
+// New returns a new *Client* configured by the supplied *Option*s. An API key set by an option wins;
+// otherwise the SECURITYCONTEXT_API_KEY environment variable is used, and without either calls are anonymous.
+// The key is sent only over https or to a loopback host, and never follows a redirect to another host.
 //
-// The returned client is ready for immediate use:
-//
-//	c, err := vulnx.New(vulnx.WithPDCPKey("<YOUR_KEY>"))
-//	if err != nil { /* handle */ }
-//
-//	// Or without authentication (subject to rate limits):
-//	c, err := vulnx.New()
-//	if err != nil { /* handle */ }
-//
-// Custom HTTP behaviour (timeouts, retries, logging) can be injected via
-// *WithClient* or *WithRetryableHTTPOptions*.
+// Custom HTTP behaviour (timeouts, proxies) can be injected via *WithClient* or *WithRetryableHTTPOptions*.
 func New(opts ...Option) (*Client, error) {
-	// Check for base URL override from environment
-	baseURL := DefaultBaseURL
-	if envURL := os.Getenv(BaseURLEnvVar); envURL != "" {
-		baseURL = envURL
-	}
-
 	c := &Client{
-		baseURL:   baseURL,
-		userAgent: UserAgent,
-		httpc:     retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle), // Default retryablehttp client
+		baseURL:   cmp.Or(os.Getenv(BaseURLEnvVar), DefaultBaseURL),
+		userAgent: defaultUserAgent(),
+		httpc:     retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle),
+		retryWait: time.Second,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
-	// API key is now optional - authentication is not required but recommended
-	// If a custom httpc was not provided, set the default retryablehttp client
-	if c.httpc == nil {
-		c.httpc = retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle)
+	c.apiKey = cmp.Or(strings.TrimSpace(c.apiKey), strings.TrimSpace(os.Getenv(APIKeyEnvVar)))
+	// a copy, so the redirect policy does not change a client the caller passed in
+	hc := http.Client{}
+	if c.httpc.HTTPClient != nil {
+		hc = *c.httpc.HTTPClient
 	}
+	hc.CheckRedirect = keyRedirectPolicy(hc.CheckRedirect)
+	c.http = &hc
 	return c, nil
 }
 
-// WithClient overrides the default *retryablehttp.Client* used for all network
-// operations. It enables advanced users to specify custom transports, proxy
-// settings, or instrumentation hooks.
+// WithClient overrides the default *retryablehttp.Client*; its HTTPClient carries the transport, proxy and
+// timeout settings.
 func WithClient(hc *retryablehttp.Client) Option {
 	return func(c *Client) {
 		c.httpc = hc
 	}
 }
 
-// WithPDCPKey sets the ProjectDiscovery Cloud Platform (PDCP) API key that will
-// be sent in the `X-Api-Key` HTTP header.
-func WithPDCPKey(apiKey string) Option {
+// WithUserAgent sets the User-Agent sent with every request; an empty value keeps the default.
+func WithUserAgent(ua string) Option {
+	ua = strings.TrimSpace(ua)
+	return func(c *Client) {
+		if ua != "" {
+			c.userAgent = ua
+		}
+	}
+}
+
+// defaultUserAgent is "vulnx/<version>" with the vulnx module's version from the build info, or "vulnx" when the
+// build records none (go run, tests, a local checkout).
+func defaultUserAgent() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return UserAgent
+	}
+	mods := append([]*debug.Module{&info.Main}, info.Deps...)
+	for _, m := range mods {
+		if m.Path == modulePath && m.Version != "" && m.Version != "(devel)" {
+			return UserAgent + "/" + strings.TrimPrefix(m.Version, "v")
+		}
+	}
+	return UserAgent
+}
+
+// WithAPIKey sets the SecurityContext API key sent in the X-Api-Key header.
+func WithAPIKey(apiKey string) Option {
 	return func(c *Client) {
 		c.apiKey = apiKey
 	}
 }
 
-// WithKeyFromEnv attempts to discover a PDCP API key from the local credential
-// store (managed by `pdcp`) or the `PDCP_API_KEY` environment variable.
+// WithPDCPKey sets the API key sent in the X-Api-Key header.
+//
+// Deprecated: the backend is SecurityContext, which accepts only SecurityContext keys; use WithAPIKey.
+func WithPDCPKey(apiKey string) Option {
+	return WithAPIKey(apiKey)
+}
+
+// WithKeyFromEnv reads the API key from the SECURITYCONTEXT_API_KEY environment variable.
+//
+// Deprecated: New reads SECURITYCONTEXT_API_KEY itself when no option sets a key.
 func WithKeyFromEnv() Option {
 	return func(c *Client) {
-		pch := pdcp.PDCPCredHandler{}
-		if creds, err := pch.GetCreds(); err == nil {
-			c.apiKey = creds.APIKey
-			return
-		}
+		c.apiKey = os.Getenv(APIKeyEnvVar)
 	}
 }
 
@@ -208,69 +237,256 @@ func WithDebugResponse(cb func(*http.Response)) Option {
 	}
 }
 
-// SearchVulnerabilities performs a full-text search across all vulnerability
-// documents and returns a paginated *SearchResponse*.
-//
-// The behaviour of the search is controlled via *SearchParams*; see that type
-// for field-level documentation.
-//
-// SearchVulnerabilities may contact the network multiple times if retries are
-// enabled on the underlying HTTP client. It is safe to call concurrently.
+// SearchVulnerabilities searches CVEs with vulnx's field:value query language (see SupportedFilters) and returns
+// one page of results, or every result with SearchParams.All. A query SecurityContext cannot answer is rejected
+// with ErrUnsupportedQuery. It is safe to call concurrently.
 func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var resp SearchResponse
-	req, err := c.newRequest(ctx, http.MethodGet, "/v2/vulnerability/search", paramsToQuery(params), nil)
-	if err != nil {
-		return resp, errkit.Append(ErrRequestBuildFailure, err)
+	resp.fields = params.Fields
+	q := ""
+	if params.Query != nil {
+		q = *params.Query
 	}
-	err = c.do(req, &resp)
+	tq, err := translateQuery(q)
 	if err != nil {
-		return resp, errkit.Append(ErrRequestFailed, err)
+		return resp, err
 	}
+	if tq.productName != "" {
+		key, err := c.resolveProduct(ctx, tq.productName)
+		if err != nil {
+			return resp, err
+		}
+		if err := setParam(tq, "product", "product", key); err != nil {
+			return resp, err
+		}
+	}
+	facetSize := 0
+	if params.FacetSize != nil {
+		facetSize = *params.FacetSize
+	}
+	facetReqs, facets, err := translateFacets(params.TermFacets, params.RangeFacets, facetSize)
+	if err != nil {
+		return resp, err
+	}
+	sortKey, err := sortParam(params.SortAsc, params.SortDesc)
+	if err != nil {
+		return resp, err
+	}
+	limit, offset := 10, 0
+	if params.Limit != nil {
+		limit = *params.Limit
+	}
+	if params.Offset != nil {
+		offset = *params.Offset
+	}
+	if offset < 0 || limit < 0 {
+		return resp, unsupported("offset and limit must not be negative")
+	}
+	// compared without adding, so a huge offset cannot wrap around
+	if !params.All && (offset > MaxResultWindow || limit > MaxResultWindow-offset) {
+		return resp, unsupported("offset + limit can be at most %d (SecurityContext pages by cursor, %d rows a request); set All (vulnx search --all) to fetch every result", MaxResultWindow, scMaxPage)
+	}
+
+	if tq.cpe != nil {
+		if strings.Contains(tq.params.Get("exploit"), "ransomware") {
+			return resp, unsupported("is_ransomware cannot be combined with cpe:")
+		}
+		if sortKey != "" && !strings.HasPrefix(sortKey, "cvss_score") && !strings.HasPrefix(sortKey, "epss_score") &&
+			!strings.HasPrefix(sortKey, "published_date") && !strings.HasPrefix(sortKey, "modified_date") {
+			return resp, unsupported("with cpe:, sort by cve_created_at, cve_updated_at, cvss_score or epss_score")
+		}
+		r, err := c.searchCPE(ctx, tq, sortKey, len(facetReqs) > 0, limit, offset, params.All, params.Progress)
+		r.fields = params.Fields
+		return r, err
+	}
+
+	if tq.idsSet {
+		if len(facetReqs) > 0 {
+			return resp, unsupported("facets are not available with cve_id: (each id is fetched as one record)")
+		}
+		if sortKey != "" {
+			return resp, unsupported("cve_id: lookups return the records in the order given; sorting is not available")
+		}
+		if params.All {
+			limit = len(tq.ids)
+		}
+		return c.lookupIDs(ctx, tq, limit, offset, params.Fields, params.Progress)
+	}
+
+	query := tq.params
+	query.Set("sort", cmp.Or(sortKey, defaultSort))
+	if facets != "" {
+		query.Set("facets", facets)
+	}
+	want := max(offset+limit, 1) // a facet-only request still needs one row
+	if params.All {
+		want = scMaxPage // the first page tells the total; offset is not added, so it cannot overflow
+	}
+	skipped, consumed := 0, 0
+	cursor := ""
+	seen := map[string]bool{}
+	ids := map[string]bool{}
+	for page := 0; ; page++ {
+		query.Set("limit", strconv.Itoa(min(want-consumed, scMaxPage)))
+		if cursor != "" {
+			query.Set("cursor", cursor)
+			query.Del("facets") // counted on the first page
+		}
+		var list scList
+		req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves", query, nil)
+		if err != nil {
+			return resp, wrapErr(ErrRequestBuildFailure, err)
+		}
+		if err := c.do(req, &list); err != nil {
+			return resp, err
+		}
+		if page == 0 {
+			resp.Total = list.Total
+			resp.Facets = buildFacets(facetReqs, list.Facets, list.Total)
+			if params.All {
+				if list.Total > scMaxAll {
+					return resp, unsupported("the search matches %d CVEs; --all fetches at most %d: narrow the query", list.Total, scMaxAll)
+				}
+				limit, want = max(list.Total-offset, 0), list.Total
+			}
+		}
+		pageRows := len(list.Items)
+		for i := range list.Items {
+			// a CVE seen on an earlier page means the pages overlap: the rows are not one consistent listing
+			if id := list.Items[i].CVE; id != "" {
+				if ids[id] {
+					return resp, incomplete("the server returned "+id+" twice", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
+				}
+				ids[id] = true
+			}
+			consumed++
+			if skipped < offset {
+				skipped++
+				continue
+			}
+			if len(resp.Results) < limit {
+				resp.Results = append(resp.Results, list.Items[i].toVulnerability())
+			}
+		}
+		if params.Progress != nil {
+			params.Progress(len(resp.Results), resp.Total)
+		}
+		if consumed >= want {
+			break
+		}
+		// more rows are needed, but a cursor already used would only loop
+		if list.Cursor != "" && seen[list.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
+		}
+		if list.Cursor == "" || pageRows == 0 {
+			// the reported total says more rows exist than paging returned
+			if consumed < min(want, resp.Total) {
+				return resp, incomplete("paging ended early", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
+			}
+			break
+		}
+		seen[list.Cursor] = true
+		cursor = list.Cursor
+	}
+	resp.Count = len(resp.Results)
 	return resp, nil
 }
 
-// GetVulnerabilityByID fetches a single vulnerability document identified by
-// its canonical ID (for example "CVE-2023-1234").
-//
-// When *params* is non-nil the *Fields* slice can be used to limit the response
-// payload to a subset of fields, reducing bandwidth.
+// defaultSort is the order of a search that sets no sort: newest first.
+const defaultSort = "published_date:desc"
+
+// incomplete reports a paged search that stopped before returning the rows it needed. The rows fetched so far are
+// in the response, but they are not the full result.
+// why can quote server text (a CVE id), so it is cleaned for a terminal.
+func incomplete(why string, got, want int) error {
+	return wrapErr(ErrUnknownAPIError, fmt.Errorf("%s after %d of %d results; the index may have changed during the search, retry", termtext.Clean(why), got, want))
+}
+
+// lookupIDs fetches cve_id: terms one record at a time; Total counts the distinct ids asked for, found or not.
+func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, fields []string, progress func(int, int)) (SearchResponse, error) {
+	resp := SearchResponse{fields: fields}
+	if len(tq.params) > 0 {
+		return resp, unsupported("cve_id: cannot be combined with other filters")
+	}
+	ids := tq.ids
+	resp.Total = len(ids)
+	// offset and limit page through the ids asked for, so a missing id leaves its page short
+	start := min(offset, len(ids))
+	for _, id := range ids[start : start+min(limit, len(ids)-start)] {
+		one, err := c.GetVulnerabilityByID(ctx, id, nil)
+		switch {
+		case errors.Is(err, ErrNotFound):
+		case err != nil:
+			return resp, err
+		default:
+			resp.Results = append(resp.Results, *one.Data)
+		}
+		if progress != nil {
+			progress(len(resp.Results), resp.Total)
+		}
+	}
+	resp.Count = len(resp.Results)
+	return resp, nil
+}
+
+// resolveProduct finds the NVD vendor:product for a product name given without its vendor.
+func (c *Client) resolveProduct(ctx context.Context, name string) (string, error) {
+	req, err := c.newRequest(ctx, http.MethodGet, "/v1/products", url.Values{"q": {name}, "limit": {strconv.Itoa(scMaxPage)}, "fields": {"product,name"}}, nil)
+	if err != nil {
+		return "", wrapErr(ErrRequestBuildFailure, err)
+	}
+	var list struct {
+		Items []struct {
+			Product string `json:"product"`
+			Name    string `json:"name"`
+		} `json:"items"`
+	}
+	if err := c.do(req, &list); err != nil {
+		return "", err
+	}
+	var keys []string
+	for _, it := range list.Items {
+		if strings.EqualFold(it.Name, name) {
+			keys = append(keys, strings.ToLower(it.Product))
+		}
+	}
+	switch len(keys) {
+	case 0:
+		return "", wrapErr(ErrNotFound, fmt.Errorf("NVD has no product named %s; give the product as vendor:product, or filter by vendor", termtext.Clean(name)))
+	case 1:
+		return keys[0], nil
+	}
+	return "", unsupported("several NVD products are named %s (%s); give one as vendor:product", name, termtext.Clean(strings.Join(keys, ", ")))
+}
+
+// GetVulnerabilityByID fetches a single CVE record (for example "CVE-2023-1234").
+// *params* is accepted for compatibility; SecurityContext returns the whole record.
 func (c *Client) GetVulnerabilityByID(ctx context.Context, id string, params *GetByIDParams) (VulnerabilityResponse, error) {
 	var resp VulnerabilityResponse
-	path := fmt.Sprintf("/v2/vulnerability/%s", id)
-	var query url.Values
-	if params != nil && len(params.Fields) > 0 {
-		query = make(url.Values)
-		query.Set("fields", strings.Join(params.Fields, ","))
+	id = strings.TrimSpace(id)
+	if !IsCVEID(id) {
+		return resp, wrapErr(ErrNotFound, fmt.Errorf("%s is not a CVE id; only CVE records are supported", id))
 	}
-	req, err := c.newRequest(ctx, http.MethodGet, path, query, nil)
+	var rec scCVE
+	req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves/"+url.PathEscape(strings.ToUpper(id)), nil, nil)
 	if err != nil {
-		return resp, errkit.Append(ErrRequestBuildFailure, err)
+		return resp, wrapErr(ErrRequestBuildFailure, err)
 	}
-	err = c.do(req, &resp)
-	if err != nil {
-		return resp, errkit.Append(ErrRequestFailed, err)
+	if err := c.do(req, &rec); err != nil {
+		return resp, err
 	}
+	v := rec.toVulnerability()
+	resp.Data = &v
 	return resp, nil
 }
 
-// GetVulnerabilityFilters lists all filter definitions that can be applied to
-// search queries. Filters are stable identifiers used for building rich UI
-// facets or powering autocomplete experiences.
+// GetVulnerabilityFilters lists the query fields the SecurityContext backend
+// accepts. The list is built into vulnx: the API has no filters endpoint.
 func (c *Client) GetVulnerabilityFilters(ctx context.Context) ([]VulnerabilityFilter, error) {
-	var filters []VulnerabilityFilter
-	req, err := c.newRequest(ctx, http.MethodGet, "/v2/vulnerability/filters", nil, nil)
-	if err != nil {
-		return nil, errkit.Append(ErrRequestBuildFailure, err)
-	}
-	err = c.do(req, &filters)
-	if err != nil {
-		return nil, errkit.Append(ErrRequestFailed, err)
-	}
-	return filters, nil
+	return SupportedFilters(), nil
 }
 
 // IsAuthenticated returns true if the client has an API key configured.
-// This can be used to provide better UX messaging about rate limits.
 func (c *Client) IsAuthenticated() bool {
 	return c.apiKey != ""
 }
@@ -281,145 +497,253 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
 	}
-	var req *http.Request
-	var err error
+	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, errkit.Append(ErrMarshalBody, err)
+			return nil, wrapErr(ErrMarshalBody, err)
 		}
-		req, err = http.NewRequestWithContext(ctx, method, requestURL, strings.NewReader(string(b)))
-		if err != nil {
-			return nil, errkit.Append(ErrCreateHTTPRequest, err)
-		}
+		reader = strings.NewReader(string(b))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, reader)
+	if err != nil {
+		return nil, wrapErr(ErrCreateHTTPRequest, err)
+	}
+	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
-	} else {
-		req, err = http.NewRequestWithContext(ctx, method, requestURL, nil)
-		if err != nil {
-			return nil, errkit.Append(ErrCreateHTTPRequest, err)
-		}
 	}
-	// Only set API key header if one is provided
-	if c.apiKey != "" {
-		req.Header.Set("X-Api-Key", c.apiKey)
-	}
-	req.Header.Set("User-Agent", c.userAgent)
+	c.setHeaders(req)
 	return req, nil
 }
 
-// do executes the HTTP request and decodes the JSON response.
-func (c *Client) do(req *http.Request, out any) error {
-	if c.debugRequest != nil {
-		c.debugRequest(req)
+// setHeaders sets the User-Agent and, when the URL allows it, the API key.
+func (c *Client) setHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", c.userAgent)
+	if c.apiKey == "" {
+		return
 	}
-	resp, err := c.httpc.HTTPClient.Do(req)
+	if keySafeURL(req.URL) {
+		req.Header.Set(apiKeyHeader, c.apiKey)
+		return
+	}
+	c.keyWarn.Do(func() {
+		gologger.Error().Msgf("the API key is not sent to %s: a key goes only over https or to a loopback host", req.URL.Host)
+	})
+}
+
+// keySafeURL reports whether an API key may be sent to u: over https, or to a loopback host.
+func keySafeURL(u *url.URL) bool {
+	if u.Scheme == "https" {
+		return true
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// keyRedirectPolicy drops the API key from a redirect that leaves the original host or would send it in the clear.
+// net/http copies custom headers to every redirect hop, unlike Authorization.
+func keyRedirectPolicy(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if !strings.EqualFold(req.URL.Host, via[0].URL.Host) || !keySafeURL(req.URL) {
+			req.Header.Del(apiKeyHeader)
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+}
+
+// do executes the HTTP request and decodes the JSON response, retrying once when retryDelay allows it.
+func (c *Client) do(req *http.Request, out any) error {
+	resp, err := c.send(req)
+	if wait, ok := c.retryDelay(req, resp, err); ok {
+		reason, rateLimited := "request failed", false
+		if resp != nil {
+			reason, rateLimited = resp.Status, resp.StatusCode == http.StatusTooManyRequests
+			c.discard(resp)
+		}
+		// an intermittent failure that a retry fixes is not the user's concern: only --verbose/--debug show it
+		gologger.Debug().Msgf("SecurityContext: %s; retrying in %s", reason, wait.Round(100*time.Millisecond))
+		if msg := waitNotice(wait, rateLimited); msg != "" {
+			gologger.Info().Msg(msg)
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-req.Context().Done():
+			timer.Stop()
+			return wrapErr(ErrRequestFailed, req.Context().Err())
+		case <-timer.C:
+		}
+		retry := req.Clone(req.Context())
+		if req.GetBody != nil {
+			if retry.Body, err = req.GetBody(); err != nil {
+				return wrapErr(ErrRequestFailed, err)
+			}
+		}
+		resp, err = c.send(retry)
+	}
 	if err != nil {
-		return errkit.Append(ErrRequestFailed, err)
+		return wrapErr(ErrRequestFailed, err)
 	}
 	if c.debugResponse != nil {
 		c.debugResponse(resp)
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			gologger.Error().Msgf("Failed to close response body: %s", err)
-		}
-	}()
+	defer c.discard(resp)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return c.handleAPIError(resp)
 	}
-
-	if out != nil {
-		dec := json.NewDecoder(resp.Body)
-		if err := dec.Decode(out); err != nil {
-			return errkit.Append(ErrDecodeResponse, err)
-		}
+	if out == nil {
+		return nil
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return wrapErr(ErrRequestFailed, err)
+	}
+	if len(b) > maxResponseBytes {
+		return wrapErr(ErrDecodeResponse, fmt.Errorf("response is larger than %d MiB", maxResponseBytes>>20))
+	}
+	if err := json.Unmarshal(b, out); err != nil {
+		return wrapErr(ErrDecodeResponse, err)
 	}
 	return nil
 }
 
-// handleAPIError processes non-2xx HTTP responses, normalising them into the
-// rich errkit error hierarchy so that callers can unwrap and inspect the root
-// cause.
-func (c *Client) handleAPIError(resp *http.Response) error {
-	switch resp.StatusCode {
-	case http.StatusNotFound:
-		return ErrNotFound // Return ErrNotFound directly for 404 as it indicates no content
+func (c *Client) send(req *http.Request) (*http.Response, error) {
+	if c.debugRequest != nil {
+		c.debugRequest(req)
 	}
+	return c.http.Do(req)
+}
 
-	bodyBytes, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return errkit.Wrap(ErrUnknownAPIError, fmt.Sprintf("api error (failed to read response body): %s", resp.Status))
-	}
-
-	var errorBody map[string]interface{}
-	unmarshalErr := json.Unmarshal(bodyBytes, &errorBody)
-
-	var detailedErr error
-	if unmarshalErr == nil {
-		// Check for common error message keys
-		if errMsg, ok := errorBody["error"]; ok {
-			detailedErr = errkit.New("api error", "status_code", resp.StatusCode, "error", errMsg)
-		} else if errMsg, ok := errorBody["msg"]; ok {
-			detailedErr = errkit.New("api error", "status_code", resp.StatusCode, "error", errMsg)
-		} else if errMsg, ok := errorBody["message"]; ok {
-			detailedErr = errkit.New("api error", "status_code", resp.StatusCode, "error", errMsg)
-		} else if errMsg, ok := errorBody["cause"]; ok {
-			detailedErr = errkit.New("api error", "status_code", resp.StatusCode, "error", errMsg)
-		}
-	}
-
-	if detailedErr == nil {
-		// Fallback to raw body if no specific keys found or unmarshalling failed
-		detailedErr = errkit.New("api error", "status_code", resp.StatusCode, "error", strings.TrimSpace(string(bodyBytes)))
-	}
-
-	switch resp.StatusCode {
-	case http.StatusBadRequest:
-		return errkit.Append(ErrBadRequest, detailedErr)
-	case http.StatusUnauthorized:
-		return errkit.Append(ErrUnauthorized, detailedErr)
-	case http.StatusTooManyRequests:
-		return errkit.Append(ErrTooManyRequests, detailedErr)
-	case http.StatusInternalServerError:
-		return errkit.Append(ErrInternalServerError, detailedErr)
-	default:
-		return errkit.Append(ErrUnknownAPIError, detailedErr)
+func (c *Client) discard(resp *http.Response) {
+	if err := resp.Body.Close(); err != nil {
+		gologger.Debug().Msgf("closing response body: %s", err)
 	}
 }
 
-// paramsToQuery converts SearchParams to url.Values for query string.
-func paramsToQuery(params SearchParams) url.Values {
-	q := make(url.Values)
-	if params.Limit != nil {
-		q.Set("limit", fmt.Sprintf("%d", *params.Limit))
+// waitNotice is the line shown at the default log level for a retry wait: none for a short wait, one neutral line
+// for a wait of longWaitNotice or more, so the CLI does not look hung.
+func waitNotice(wait time.Duration, rateLimited bool) string {
+	if wait < longWaitNotice {
+		return ""
 	}
-	if params.Offset != nil {
-		q.Set("offset", fmt.Sprintf("%d", *params.Offset))
+	what := "the API"
+	if rateLimited {
+		what = "the API rate limit"
 	}
-	if params.SortAsc != nil {
-		q.Set("sort_asc", *params.SortAsc)
+	return fmt.Sprintf("waiting %s for %s", wait.Round(time.Second), what)
+}
+
+// retryDelay decides whether a failed attempt is retried and after how long: a 429 or 503 (the server did not
+// act on the request) with a Retry-After of at most maxRateLimitWait, and, for GET and HEAD only, a network
+// error, another 5xx, or a 503 without a usable Retry-After. A POST that may have reached the server is not
+// sent twice.
+func (c *Client) retryDelay(req *http.Request, resp *http.Response, err error) (time.Duration, bool) {
+	if req.Context().Err() != nil {
+		return 0, false
 	}
-	if params.SortDesc != nil {
-		q.Set("sort_desc", *params.SortDesc)
+	idempotent := req.Method == http.MethodGet || req.Method == http.MethodHead
+	if err != nil {
+		// a response with an error is a redirect the redirect policy refused, not a network failure
+		return c.retryWait, idempotent && resp == nil
 	}
-	if len(params.Fields) > 0 {
-		q.Set("fields", strings.Join(params.Fields, ","))
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable &&
+		(!idempotent || resp.StatusCode < 500) {
+		return 0, false
 	}
-	if len(params.TermFacets) > 0 {
-		q.Set("term_facets", strings.Join(params.TermFacets, ","))
+	if wait, ok := retryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+		return wait, wait <= maxRateLimitWait
 	}
-	if len(params.RangeFacets) > 0 {
-		q.Set("range_facets", strings.Join(params.RangeFacets, ","))
+	// a 429 without Retry-After says nothing about when to come back
+	return c.retryWait, idempotent && resp.StatusCode != http.StatusTooManyRequests
+}
+
+// handleAPIError turns a non-2xx response into an error carrying the server's message, cleaned for a terminal.
+func (c *Client) handleAPIError(resp *http.Response) error {
+	kind := ErrUnknownAPIError
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		kind = ErrNotFound
+	case http.StatusBadRequest:
+		kind = ErrBadRequest
+	case http.StatusUnauthorized:
+		kind = ErrUnauthorized
+	case http.StatusTooManyRequests:
+		kind = ErrTooManyRequests
+	case http.StatusInternalServerError:
+		kind = ErrInternalServerError
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		kind = ErrServiceUnavailable
 	}
-	if params.Query != nil {
-		q.Set("q", *params.Query)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+	if err != nil {
+		return &APIError{StatusCode: resp.StatusCode, Message: "could not read the response body: " + err.Error(), kind: kind}
 	}
-	if params.Highlight != nil {
-		q.Set("highlight", fmt.Sprintf("%t", *params.Highlight))
+	msg := strings.TrimSpace(string(bodyBytes))
+	var errorBody map[string]any
+	if json.Unmarshal(bodyBytes, &errorBody) == nil {
+		for _, key := range []string{"error", "msg", "message", "cause"} {
+			if v, ok := errorBody[key]; ok {
+				msg = fmt.Sprint(v)
+				break
+			}
+		}
 	}
-	if params.FacetSize != nil {
-		q.Set("facet_size", fmt.Sprintf("%d", *params.FacetSize))
+	msg = termtext.Clean(msg)
+	if r := []rune(msg); len(r) > maxErrorMessage {
+		msg = string(r[:maxErrorMessage]) + "..."
 	}
-	return q
+	return &APIError{StatusCode: resp.StatusCode, Message: msg, kind: kind}
+}
+
+// APIError is a non-2xx answer from the API. errors.Is matches it against the sentinel for its status
+// (ErrBadRequest, ErrUnauthorized, ...); Message is the server's message, cleaned for a terminal.
+type APIError struct {
+	StatusCode int
+	Message    string
+	kind       error
+}
+
+func (e *APIError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("%s (HTTP %d)", e.kind, e.StatusCode)
+	}
+	return fmt.Sprintf("%s (HTTP %d): %s", e.kind, e.StatusCode, e.Message)
+}
+
+func (e *APIError) Unwrap() error { return e.kind }
+
+// wrapErr returns an error that matches sentinel and cause under errors.Is. It never modifies sentinel:
+// errkit.Append adds the cause to the package-level sentinel itself, so its text would accumulate every
+// earlier error in the process.
+func wrapErr(sentinel, cause error) error {
+	return fmt.Errorf("%w: %w", sentinel, cause)
+}
+
+// retryAfter reads a Retry-After header, in seconds or as an HTTP date, as a wait from now. A wait past
+// maxRateLimitWait is reported as just over it, so a huge value cannot overflow into a short wait.
+func retryAfter(h string, now time.Time) (time.Duration, bool) {
+	h = strings.TrimSpace(h)
+	if h != "" && strings.Trim(h, "0123456789") == "" {
+		// all digits: a delay in seconds, however long (one too big for int64 is still over the cap)
+		n, err := strconv.ParseInt(h, 10, 64)
+		if err != nil || n > int64(maxRateLimitWait/time.Second) {
+			return maxRateLimitWait + time.Second, true
+		}
+		return time.Duration(n)*time.Second + 500*time.Millisecond, true
+	}
+	t, err := http.ParseTime(h)
+	if err != nil {
+		return 0, false
+	}
+	return min(max(t.Sub(now), 0), maxRateLimitWait+time.Second) + 500*time.Millisecond, true
 }

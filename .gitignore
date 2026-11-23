@@ -25,3 +25,10 @@ go.work
 /cmd/integration-test/vulnx
 cmd/integration-test/integration-test
 /cmd/vulnx/vulnx
+
+# Host scan reports written in the working directory
+/vulnx-host-*.json
+/vulnx-host-*.graph.html
+/vulnx-host-*.html
+/vulnx-host-*.cdx.json
+/host-scan-*/
