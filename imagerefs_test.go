@@ -80,3 +80,11 @@ func TestImageFileNames(t *testing.T) {
 		}
 	}
 }
+
+// TestDockerfileCRLF reads a Dockerfile with Windows line endings, continued lines included.
+func TestDockerfileCRLF(t *testing.T) {
+	refs, _ := dockerfileImages([]byte("ARG V=3.20\r\nFROM alpine:${V} AS b\r\nRUN a \\\r\n  && b\r\nFROM b\r\n"))
+	if !slices.Equal(refs, []string{"alpine:3.20"}) {
+		t.Errorf("%q", refs)
+	}
+}

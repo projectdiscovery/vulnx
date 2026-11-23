@@ -269,6 +269,14 @@ BUNDLED WITH
 		if err != nil {
 			t.Fatalf("%s: %v", c.file, err)
 		}
+		// the same file with Windows line endings reads the same
+		crlf, err := parse([]byte(strings.ReplaceAll(c.body, "\n", "\r\n")))
+		if err != nil {
+			t.Fatalf("%s with CRLF: %v", c.file, err)
+		}
+		if !slices.Equal(crlf.entries, r.entries) || !slices.Equal(crlf.skipped, r.skipped) {
+			t.Errorf("%s with CRLF:\n got %q %v\nwant %q %v", c.file, crlf.entries, crlf.skipped, r.entries, r.skipped)
+		}
 		got := slices.Clone(r.entries)
 		sort.Strings(got)
 		want := slices.Clone(c.entries)
@@ -309,7 +317,7 @@ func TestLockParsersMatchServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		kind, want, _ := strings.Cut(line, "\t")
+		kind, want, _ := strings.Cut(strings.TrimRight(line, "\r"), "\t") // a Windows checkout ends lines with CRLF
 		files, err := filepath.Glob(filepath.Join("testdata", "lockparity", kind, "*"))
 		if err != nil || len(files) != 1 {
 			t.Fatalf("%s: %v %v", kind, files, err)

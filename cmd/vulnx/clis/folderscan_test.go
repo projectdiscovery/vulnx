@@ -53,8 +53,18 @@ func folderServer(t *testing.T) *httptest.Server {
 	}))
 }
 
+// fakeHome points the home directory (HOME, and USERPROFILE on Windows) and the XDG config directory at a new
+// directory, so the user's own git ignore rules do not change what a folder scan reads.
+func fakeHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+}
+
 // folderFixture is a project: a lockfile, a requirements file with a range, and its node_modules.
 func folderFixture(t *testing.T) string {
+	fakeHome(t)
 	dir := t.TempDir()
 	for rel, body := range map[string]string{
 		"package-lock.json":                `{"lockfileVersion": 3, "packages": {"": {}, "node_modules/lodash": {"version": "4.17.20"}}}`,
@@ -221,6 +231,7 @@ func TestFolderImages(t *testing.T) {
 	saved := vulnxClient
 	t.Cleanup(func() { vulnxClient, scanImages = saved, false })
 	vulnxClient = client
+	fakeHome(t)
 	dir := t.TempDir()
 	for rel, body := range map[string]string{
 		"Dockerfile":          "FROM alpine:3.20 AS base\nFROM base\nFROM ${REGISTRY}/tools:1\n",

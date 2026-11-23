@@ -60,9 +60,7 @@ file[0-9].txt
 // TestFolderIgnore skips what a repository ignores (.gitignore at each level, a deeper one winning, info/exclude,
 // the global excludes file) and repositories and worktrees nested in the folder; --no-ignore reads them all.
 func TestFolderIgnore(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	home := fakeHome(t)
 	root := t.TempDir()
 	lock := func(name string) string {
 		return `{"lockfileVersion": 3, "packages": {"node_modules/` + name + `": {"version": "1.0.0"}}}`
@@ -131,8 +129,7 @@ func TestFolderIgnore(t *testing.T) {
 
 // TestFolderIgnoreOutsideRepository applies a folder's own .gitignore when it is in no repository.
 func TestFolderIgnoreOutsideRepository(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	fakeHome(t)
 	root := t.TempDir()
 	for rel, body := range map[string]string{
 		".gitignore":             "dist\n",
@@ -153,5 +150,25 @@ func TestFolderIgnoreOutsideRepository(t *testing.T) {
 	}
 	if !slices.Equal(inv.Entries, []string{"pkg:npm/a@1.0.0"}) || inv.Skipped == nil || inv.Skipped.Ignored != 1 {
 		t.Errorf("entries %q skipped %+v", inv.Entries, inv.Skipped)
+	}
+}
+
+// fakeHome points the home directory (HOME, and USERPROFILE, which Windows reads) and the XDG config directory at
+// a new directory, so the user's own git configuration is not read.
+func fakeHome(t *testing.T) string {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	return home
+}
+
+// TestIgnoreCRLF reads an ignore file with Windows line endings as the same patterns.
+func TestIgnoreCRLF(t *testing.T) {
+	f := parseIgnore("/r", []byte("*.log\r\n!keep.log\r\nbuild/\r\n"))
+	for path, want := range map[string]bool{"a.log": true, "keep.log": false, "build": true} {
+		if _, excluded := f.match("/r/"+path, path == "build"); excluded != want {
+			t.Errorf("%s: %v", path, excluded)
+		}
 	}
 }

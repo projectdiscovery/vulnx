@@ -16,6 +16,7 @@ import (
 // (version control and links are not followed).
 func TestFolderEntries(t *testing.T) {
 	skipOnWindows(t) // symlinks need a privilege there, and an executable is told by its name
+	fakeHome(t)
 	root, outside := t.TempDir(), t.TempDir()
 	write := func(dir, rel, body string) {
 		path := filepath.Join(dir, rel)
