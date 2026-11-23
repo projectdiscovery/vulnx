@@ -97,12 +97,23 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 		if progress != nil {
 			progress(len(rows), resp.Total)
 		}
-		if p.Cursor == "" || len(p.Advisories) == 0 || !full && len(rows) >= want {
+		need := resp.Total // the whole list for filters, sorting and --all
+		if !full {
+			need = min(want, resp.Total)
+		}
+		// a cursor already used means paging would loop, so the rows read are not the list
+		if p.Cursor != "" && seen[p.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(rows), need)
+		}
+		if !full && len(rows) >= want {
 			break
 		}
-		// the whole list is needed (or more rows than read): a repeated cursor would leave it incomplete
-		if seen[p.Cursor] {
-			return resp, incomplete("the server repeated a page cursor", len(rows), max(p.AdvisoriesTotal, want))
+		if p.Cursor == "" || len(p.Advisories) == 0 {
+			// the reported total says more rows exist than paging returned
+			if len(rows) < need {
+				return resp, incomplete("paging ended early", len(rows), need)
+			}
+			break
 		}
 		seen[p.Cursor] = true
 		cursor = p.Cursor

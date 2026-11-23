@@ -533,6 +533,7 @@ func TestRetryAfter(t *testing.T) {
 		"Mon, 23 Nov 2026 12:00:02 GMT": 2500 * time.Millisecond,
 		"Mon, 23 Nov 2026 11:00:00 GMT": 500 * time.Millisecond,
 		"Tue, 24 Nov 2026 12:00:00 GMT": maxRateLimitWait + 1500*time.Millisecond,
+		"9223372036854775808":           maxRateLimitWait + time.Second,
 	} {
 		if got, ok := retryAfter(in, now); !ok || got != want {
 			t.Errorf("%q: %s %v, want %s", in, got, ok, want)
@@ -734,5 +735,73 @@ func TestGetStackRepeatedCursor(t *testing.T) {
 	_, err := newTestClient(t, srv).GetStack(context.Background(), "s1")
 	if err == nil || !strings.Contains(err.Error(), "repeated a page cursor") {
 		t.Errorf("repeated stack cursor: %v", err)
+	}
+}
+
+func TestSearchIncompletePaging(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		srv     *cveServer
+		params  SearchParams
+		wantErr string
+	}{
+		{"repeated cursor at the requested count", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(200)}, "repeated a page cursor after 200 of 200"},
+		{"ordinary search ends before the total", &cveServer{total: 250, shortAt: 200}, SearchParams{Limit: Ptr(250)}, "paging ended early after 200 of 250"},
+		{"ordinary search that has every row", &cveServer{total: 200}, SearchParams{Limit: Ptr(250)}, ""},
+		{"all with a huge offset", &cveServer{total: 5}, SearchParams{All: true, Offset: Ptr(math.MaxInt)}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			c.srv.t = t
+			srv := httptest.NewServer(c.srv)
+			defer srv.Close()
+			r, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), c.params)
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Errorf("err %v, want %q", err, c.wantErr)
+			}
+			for _, q := range c.srv.cveQueries() {
+				if n, _ := strconv.Atoi(q.Get("limit")); n < 1 || n > scMaxPage {
+					t.Errorf("sent limit %q", q.Get("limit"))
+				}
+			}
+			if c.wantErr == "" && c.params.All && r.Count != 0 {
+				t.Errorf("offset past the total returned %d rows", r.Count)
+			}
+		})
+	}
+}
+
+func TestSearchCVEIDsRejectSortAndFacets(t *testing.T) {
+	s := &cveServer{t: t}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	q := Ptr("(cve_id:CVE-2021-44228 || cve_id:CVE-2023-4966)")
+	for _, p := range []SearchParams{{Query: q, TermFacets: []string{"severity"}}, {Query: q, SortDesc: Ptr("cvss_score")}} {
+		if _, err := c.SearchVulnerabilities(context.Background(), p); !errors.Is(err, ErrUnsupportedQuery) {
+			t.Errorf("%+v: %v", p, err)
+		}
+	}
+	if n := len(s.requests()); n != 0 {
+		t.Errorf("rejected id searches sent %d requests", n)
+	}
+}
+
+func TestSearchCVEIDsProgressOnMissing(t *testing.T) {
+	s := &cveServer{t: t, notFounds: map[string]bool{"CVE-2000-0001": true}}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	var calls [][2]int
+	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{
+		Query:    Ptr("(cve_id:CVE-2000-0001 || cve_id:CVE-2021-44228)"),
+		Progress: func(fetched, total int) { calls = append(calls, [2]int{fetched, total}) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := [][2]int{{0, 2}, {1, 2}}; !slices.Equal(calls, want) {
+		t.Errorf("progress %v, want %v", calls, want)
 	}
 }
