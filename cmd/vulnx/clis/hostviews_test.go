@@ -78,7 +78,7 @@ func TestRenderHostReachability(t *testing.T) {
 		// it comes before an equally severe one no binary is shown to link
 		"medium       go      golang.org/x/net                 v0.7.0                1              1/2     caddy\n" +
 			"  medium       go      github.com/c/d                   v2.0.0                1              0/2?    tool3",
-		"Not counted: 1 Go module versions no program can reach",
+		"Not counted: 1 Go module version no program links",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
@@ -108,8 +108,8 @@ func TestHostReports(t *testing.T) {
 		"actions": {"macOS 26.4 · 9 components · 7 affected (6 a program can reach) · 3 known exploited",
 			"Update now · known exploited\n  Software Update (softwareupdate --install --all)\n      macOS 26.4 → 26.7.3\n",
 			"  go install github.com/air-verse/air@latest\n      air: x/net\n",
-			"Later: 1 more update for medium and low findings", "Not counted: 1 Go module versions no program can reach",
-			"Not checked: 1 with no exact identifier (1 homebrew"},
+			"Later          1 more update for medium and low findings", "Not counted    1 Go module version no program links",
+			"Not checked    1 with no exact identifier: 1 homebrew"},
 		"brief": {"Update now: Software Update, Google Chrome, 1 Homebrew formula, 1 Go tool",
 			"Next:       1 Homebrew formula", "Then:       1 Python package"},
 		"programs": {"critical caddy KEV  brew upgrade caddy\n    critical x/net v0.7.0\n",

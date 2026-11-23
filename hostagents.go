@@ -31,22 +31,23 @@ type HostRisk struct {
 	Detail string `json:"detail"`
 }
 
-// RiskText says each risk in a few words, for a count line.
-var RiskText = map[string]string{
-	"removed_malware":     "removed from a marketplace as malware",
-	"removed":             "removed from a marketplace as an impersonation or untrustworthy",
-	"unpinned":            "run whatever version is newest at each start",
-	"unverified_source":   "fetched from a git URL or a non-default registry",
-	"plaintext":           "reached over unencrypted http",
-	"sideloaded":          "installed from a file, not a marketplace",
-	"lookalike":           "named like a well-known extension from another publisher",
-	"pipe_to_shell":       "download code and run it",
-	"hidden_text":         "carry invisible characters in their instructions",
-	"approvals_off":       "run commands without asking",
-	"model_runs_commands": "import command-running code when loaded",
-	"exposed":             "set to listen beyond this machine with no login",
-	"pickle_format":       "in a format that can run code when loaded (pickle)",
-	"custom_code":         "ship their own code, run when loaded with remote code trusted",
+// RiskText says each risk in a few words after a count, for one thing and for several: "1 MCP server runs ...",
+// "2 MCP servers run ...".
+var RiskText = map[string][2]string{
+	"removed_malware":     {"was removed from a marketplace as malware", "were removed from a marketplace as malware"},
+	"removed":             {"was removed from a marketplace as an impersonation or untrustworthy", "were removed from a marketplace as impersonations or untrustworthy"},
+	"unpinned":            {"runs the newest version at every start", "run the newest version at every start"},
+	"unverified_source":   {"is fetched from a git URL or a non-default registry", "are fetched from a git URL or a non-default registry"},
+	"plaintext":           {"is reached over unencrypted HTTP", "are reached over unencrypted HTTP"},
+	"sideloaded":          {"was installed from a file, not a marketplace", "were installed from a file, not a marketplace"},
+	"lookalike":           {"is named like a well-known extension from another publisher", "are named like well-known extensions from other publishers"},
+	"pipe_to_shell":       {"downloads and runs code", "download and run code"},
+	"hidden_text":         {"carries invisible characters in its instructions", "carry invisible characters in their instructions"},
+	"approvals_off":       {"runs commands without asking", "run commands without asking"},
+	"model_runs_commands": {"imports command-running code when loaded", "import command-running code when loaded"},
+	"exposed":             {"is set to listen beyond this machine with no login", "are set to listen beyond this machine with no login"},
+	"pickle_format":       {"uses a format that can run code when loaded (pickle)", "use a format that can run code when loaded (pickle)"},
+	"custom_code":         {"ships its own code, run when loaded with remote code trusted", "ship their own code, run when loaded with remote code trusted"},
 }
 
 // knownExtensions names the publisher of extensions whose name is copied to deceive ("python" from anyone but

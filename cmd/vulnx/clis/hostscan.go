@@ -129,23 +129,23 @@ func printHostScan(ctx context.Context, inv vulnx.HostInventory, res vulnx.Stack
 	if err != nil {
 		return fmt.Errorf("failed to write the report: %w", err)
 	}
-	out.printf("  JSON: %s\n", path)
+	out.print(hostLabel("JSON") + path + "\n")
 	if scanView == "grid" && !scanReport {
-		out.print("  " + c.Colorize("Add --report for a shareable link (expires in 24 hours)", renderer.Gray) + "\n")
+		out.print(hostIndent + c.Colorize("Add --report for a shareable link (expires in 24 hours)", renderer.Gray) + "\n")
 	}
 	if scanGraph {
 		path, err := writeHostGraph(inv, res)
 		if err != nil {
 			return fmt.Errorf("failed to write the graph: %w", err)
 		}
-		out.printf("  Graph: %s\n", path)
+		out.print(hostLabel("Graph") + path + "\n")
 	}
 	if scanSBOM != "" || scanReport {
 		path, err := writeHostSBOM(scanSBOM, inv)
 		if err != nil {
 			return fmt.Errorf("failed to write the SBOM: %w", err)
 		}
-		out.printf("  SBOM: %s\n", path)
+		out.print(hostLabel("SBOM") + path + "\n")
 		if scanReport {
 			if err := shareHostReport(ctx, path, out); err != nil {
 				return err
@@ -174,10 +174,10 @@ func shareHostReport(ctx context.Context, path string, out *stdoutText) error {
 		return fmt.Errorf("--report: %w", err)
 	}
 	if expiresAt == "" {
-		out.printf("  Report: %s (the API did not say when it expires: the link may not)\n", vulnxClient.StackPage(id))
+		out.print(hostLabel("Report") + vulnxClient.StackPage(id) + " (the API did not say when it expires: the link may not)\n")
 		return nil
 	}
-	out.printf("  Report: %s (expires in 24 hours)\n", vulnxClient.StackPage(id))
+	out.print(hostLabel("Report") + vulnxClient.StackPage(id) + " (expires in 24 hours)\n")
 	return nil
 }
 

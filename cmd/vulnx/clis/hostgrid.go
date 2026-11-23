@@ -81,13 +81,44 @@ func hostGrid(inv vulnx.HostInventory, res vulnx.StackResult) (rows []gridRow, t
 	return rows, total, counts
 }
 
+// hostLabelWidth is the label column of the lines under the grid, "Agent setup" and the gap after it: every
+// label pads to it, so the values start in one column.
+const hostLabelWidth = len("Agent setup") + 4
+
+// hostLabel starts a line under the grid: its label padded to the label column.
+func hostLabel(label string) string { return fmt.Sprintf("  %-*s", hostLabelWidth, label) }
+
+// hostIndent starts a line under the grid that has no label of its own: it begins in the value column.
+var hostIndent = strings.Repeat(" ", 2+hostLabelWidth)
+
 // hostFooter is the last line of the grid view, after any report links: what was scanned and how long it took.
 func hostFooter(inv vulnx.HostInventory, elapsed time.Duration, c *renderer.ColorConfig) string {
-	line := fmt.Sprintf("%s: %s components scanned", termtext.Clean(inv.OS), formatNumber(len(inv.Entries)))
+	parts := []string{termtext.Clean(inv.OS), plural(len(inv.Entries), "component", "components")}
 	if elapsed > 0 {
-		line += " in " + elapsed.Round(time.Second).String()
+		parts = append(parts, elapsed.Round(time.Second).String())
 	}
-	return "\n  " + c.Colorize(line, renderer.Gray) + "\n"
+	return "\n" + c.Colorize(hostLabel("Scanned")+strings.Join(parts, " · "), renderer.Gray) + "\n"
+}
+
+// notCheckedSources counts what could not be checked per source, the largest first: "145 homebrew, 45 applications".
+func notCheckedSources(inv vulnx.HostInventory) string {
+	var sources []vulnx.HostSource
+	for _, s := range inv.Sources {
+		if s.NotAssessed > 0 {
+			sources = append(sources, s)
+		}
+	}
+	slices.SortStableFunc(sources, func(a, b vulnx.HostSource) int { return b.NotAssessed - a.NotAssessed })
+	parts := make([]string, len(sources))
+	for i, s := range sources {
+		parts[i] = formatNumber(s.NotAssessed) + " " + s.Name
+	}
+	return strings.Join(parts, ", ")
+}
+
+// notLinkedText counts the affected Go module versions no program links, which no count above includes.
+func notLinkedText(n int) string {
+	return plural(n, "Go module version", "Go module versions") + " no program links"
 }
 
 // renderHostGrid is the default view, one screen: the headline numbers and, per source, its findings by severity.
@@ -143,19 +174,13 @@ func renderHostGrid(inv vulnx.HostInventory, res vulnx.StackResult, elapsed time
 	b.WriteString("\n")
 	b.WriteString(agentSetup(inv, c))
 	if len(inv.NotAssessed) > 0 {
-		var parts []string
-		for _, s := range inv.Sources {
-			if s.NotAssessed > 0 {
-				parts = append(parts, fmt.Sprintf("%d %s", s.NotAssessed, s.Name))
-			}
-		}
-		b.WriteString(dim(fmt.Sprintf("  Not checked: %s with no exact identifier (%s)", formatNumber(len(inv.NotAssessed)), strings.Join(parts, ", "))) + "\n")
+		b.WriteString(dim(hostLabel("Not checked")+fmt.Sprintf("%s with no exact identifier: %s", formatNumber(len(inv.NotAssessed)), notCheckedSources(inv))) + "\n")
 	}
 	if n.NotLinked > 0 {
-		b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", formatNumber(n.NotLinked))) + "\n")
+		b.WriteString(dim(hostLabel("Not counted")+notLinkedText(n.NotLinked)) + "\n")
 	}
 	if res.FunctionsUnavailable {
-		b.WriteString(dim("  Go reachability was not checked (the API does not serve affected functions yet)") + "\n")
+		b.WriteString(dim(hostLabel("Not checked")+"Go reachability: the API does not serve affected functions yet") + "\n")
 	}
 	return b.String()
 }
@@ -190,26 +215,24 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 	}
 	var parts []string
 	for _, k := range agentKinds {
-		if n[k.kind] == 1 {
-			parts = append(parts, "1 "+k.one)
-		} else if n[k.kind] > 1 {
-			parts = append(parts, fmt.Sprintf("%d %s", n[k.kind], k.many))
+		if n[k.kind] > 0 {
+			parts = append(parts, plural(n[k.kind], k.one, k.many))
 		}
 	}
-	var b strings.Builder
-	head := "  Agent setup: " + strings.Join(parts, ", ")
 	risky := 0
 	for _, r := range inv.Risks {
 		if !infoRisks[r.Risk] {
 			risky++
 		}
 	}
-	if len(inv.Risks) == 0 {
-		return dim(head+", no risky setup found") + "\n"
-	}
 	if risky == 0 {
-		head += ", no risky setup found"
+		parts = append(parts, "no risky setup found")
 	}
+	head := hostLabel("Agent setup") + strings.Join(parts, " · ")
+	if len(inv.Risks) == 0 {
+		return dim(head) + "\n"
+	}
+	var b strings.Builder
 	b.WriteString(head + "\n")
 	for _, risk := range agentRisks {
 		var names []string
@@ -225,20 +248,20 @@ func agentSetup(inv vulnx.HostInventory, c *renderer.ColorConfig) string {
 		if len(names) == 0 {
 			continue
 		}
-		subject := riskSubject[kind][1]
+		subject, says := riskSubject[kind][1], vulnx.RiskText[risk][1]
 		if len(names) == 1 {
-			subject = riskSubject[kind][0]
+			subject, says = riskSubject[kind][0], vulnx.RiskText[risk][0]
 		}
 		shown := names
 		if len(shown) > 4 {
 			shown = append(slices.Clone(names[:4]), fmt.Sprintf("+%d", len(names)-4))
 		}
-		text := fmt.Sprintf("%d %s %s: %s", len(names), subject, vulnx.RiskText[risk], strings.Join(shown, ", "))
+		text := fmt.Sprintf("%d %s %s: %s", len(names), subject, says, strings.Join(shown, ", "))
 		if infoRisks[risk] {
-			b.WriteString(dim("      "+text) + "\n")
+			b.WriteString(dim(hostIndent+"· "+text) + "\n")
 			continue
 		}
-		b.WriteString("    " + c.Colorize("!", gridColors["high"]) + " " + text + "\n")
+		b.WriteString(hostIndent + c.Colorize("!", gridColors["high"]) + " " + text + "\n")
 	}
 	return b.String()
 }

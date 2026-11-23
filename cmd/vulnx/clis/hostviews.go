@@ -259,7 +259,7 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 		b.WriteString(dim("  LINKED: programs that link a function the advisories name as affected, of those carrying it; ? some are "+
 			"unknown (no function list, or the package is linked but no listed function by name: it may be inlined)") + "\n")
 		if notLinked > 0 {
-			b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", formatNumber(notLinked))) + "\n")
+			b.WriteString(dim("  Not counted: "+notLinkedText(notLinked)) + "\n")
 		}
 	}
 	if len(placeOrder) > 0 {
@@ -470,7 +470,7 @@ func renderHostActions(inv vulnx.HostInventory, res vulnx.StackResult, all bool,
 	}
 	b.WriteString("\n")
 	if later > 0 {
-		b.WriteString(dim(fmt.Sprintf("  Later: %s for medium and low findings (--show-all lists them)", plural(later, "more update", "more updates"))) + "\n")
+		b.WriteString(dim(hostLabel("Later")+plural(later, "more update", "more updates")+" for medium and low findings (--show-all lists them)") + "\n")
 	}
 	notLinked := 0
 	for _, it := range res.Items {
@@ -479,26 +479,19 @@ func renderHostActions(inv vulnx.HostInventory, res vulnx.StackResult, all bool,
 		}
 	}
 	if notLinked > 0 {
-		b.WriteString(dim(fmt.Sprintf("  Not counted: %s Go module versions no program can reach", formatNumber(notLinked))) + "\n")
+		b.WriteString(dim(hostLabel("Not counted")+notLinkedText(notLinked)) + "\n")
 	}
-	b.WriteString(dim("  "+notCheckedLine(inv)) + "\n")
-	b.WriteString(dim("  More: --view programs | details | brief | markdown · --json for everything") + "\n")
+	b.WriteString(dim(hostLabel("Not checked")+notCheckedText(inv)) + "\n")
+	b.WriteString(dim(hostLabel("More")+"--view programs | details | brief | markdown · --json for everything") + "\n")
 	return b.String()
 }
 
-// notCheckedLine counts what was read but could not be checked, by source.
-func notCheckedLine(inv vulnx.HostInventory) string {
+// notCheckedText counts what was read but could not be checked, by source.
+func notCheckedText(inv vulnx.HostInventory) string {
 	if len(inv.NotAssessed) == 0 {
-		return "Not checked: nothing (every component read has an exact identifier)"
+		return "nothing (every component read has an exact identifier)"
 	}
-	var parts []string
-	for _, s := range inv.Sources {
-		if s.NotAssessed > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", s.NotAssessed, s.Name))
-		}
-	}
-	return fmt.Sprintf("Not checked: %s with no exact identifier (%s; --view details names them)",
-		formatNumber(len(inv.NotAssessed)), strings.Join(parts, ", "))
+	return fmt.Sprintf("%s with no exact identifier: %s (--view details names them)", formatNumber(len(inv.NotAssessed)), notCheckedSources(inv))
 }
 
 // briefNouns name what an update of each kind updates, one and many, for the brief view's counts.
@@ -655,6 +648,6 @@ func renderHostMarkdown(inv vulnx.HostInventory, res vulnx.StackResult) string {
 			}
 		}
 	}
-	fmt.Fprintf(&b, "\n%s.\n", notCheckedLine(inv))
+	fmt.Fprintf(&b, "\nNot checked: %s.\n", notCheckedText(inv))
 	return b.String()
 }
