@@ -3,7 +3,6 @@ package clis
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/projectdiscovery/gologger"
@@ -56,13 +55,7 @@ vulnx filters --output filters.csv`,
 					gologger.Info().Msgf("Wrote filter information to file: %s", outputFile)
 					return
 				}
-				// Print to stdout
-				if _, err := os.Stdout.Write(data); err != nil {
-					gologger.Error().Msgf("Failed to write JSON output: %s", err)
-				}
-				if _, err := os.Stdout.Write([]byte("\n")); err != nil {
-					gologger.Error().Msgf("Failed to write newline: %s", err)
-				}
+				writeStdout(data)
 				return
 			}
 

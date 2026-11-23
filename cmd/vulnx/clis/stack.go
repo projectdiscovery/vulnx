@@ -285,9 +285,7 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) {
 			gologger.Info().Msgf("Wrote %s", outputFile)
 			return
 		}
-		if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
-			gologger.Error().Msgf("writing output: %s", err)
-		}
+		writeStdout(data)
 		return
 	}
 	fmt.Print(termtext.Clean(renderStackText(res, show)))

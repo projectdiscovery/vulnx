@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -86,5 +88,27 @@ func TestFillProductCVEsFails(t *testing.T) {
 		AdvisoryRows: []vulnx.StackAdvisory{{CVE: "CVE-2021-1"}}}}}
 	if err := fillProductCVEs(context.Background(), &res); err == nil || !strings.Contains(err.Error(), "apache:tomcat 8.5.62") {
 		t.Errorf("failed expansion: %v, want an error naming the product", err)
+	}
+}
+
+func TestWriteStdoutFailureExits(t *testing.T) {
+	if os.Getenv("VULNX_TEST_WRITE_STDOUT") == "1" {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		writeStdout([]byte(`{"results":[]}`))
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWriteStdoutFailureExits$")
+	cmd.Env = append(os.Environ(), "VULNX_TEST_WRITE_STDOUT=1")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() == 0 {
+		t.Errorf("a failed stdout write exited with %v, want a non-zero status\n%s", err, out)
 	}
 }

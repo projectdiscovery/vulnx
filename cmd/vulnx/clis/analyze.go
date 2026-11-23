@@ -90,9 +90,7 @@ Global flags:
 					gologger.Info().Msgf("Wrote output to file: %s", outputFile)
 					return
 				}
-				if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
-					gologger.Error().Msgf("Failed to write JSON to stdout: %s", err)
-				}
+				writeStdout(data)
 				return
 			}
 			printFacetTables(resp.Facets, analyzeFields)
