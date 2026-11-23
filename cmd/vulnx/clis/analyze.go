@@ -95,27 +95,32 @@ Global flags:
 				}
 				return
 			}
-			for _, f := range analyzeFields {
-				name, _, _ := strings.Cut(strings.ReplaceAll(f, "=", ":"), ":")
-				name = strings.TrimSpace(name)
-				fmt.Printf("\nField: %s\n", name)
-				buckets := extractBuckets(resp.Facets, name)
-				if len(buckets) == 0 {
-					fmt.Printf("No data found for field '%s'\n", name)
-					continue
-				}
-				tbl := table.NewWriter()
-				tbl.SetOutputMirror(os.Stdout)
-				tbl.SetStyle(table.StyleRounded)
-				tbl.AppendHeader(table.Row{"Value", "Count"})
-				for _, b := range buckets {
-					tbl.AppendRow(table.Row{termtext.Clean(b.key), b.count})
-				}
-				tbl.Render()
-			}
+			printFacetTables(resp.Facets, analyzeFields)
 		},
 	}
 )
+
+// printFacetTables prints one table per requested facet (field or field=size), in the order asked.
+func printFacetTables(facets map[string]any, fields []string) {
+	for _, f := range fields {
+		name, _, _ := strings.Cut(strings.ReplaceAll(f, "=", ":"), ":")
+		name = strings.TrimSpace(name)
+		fmt.Printf("\nField: %s\n", name)
+		buckets := extractBuckets(facets, name)
+		if len(buckets) == 0 {
+			fmt.Printf("No data found for field '%s'\n", name)
+			continue
+		}
+		tbl := table.NewWriter()
+		tbl.SetOutputMirror(os.Stdout)
+		tbl.SetStyle(table.StyleRounded)
+		tbl.AppendHeader(table.Row{"Value", "Count"})
+		for _, b := range buckets {
+			tbl.AppendRow(table.Row{termtext.Clean(b.key), b.count})
+		}
+		tbl.Render()
+	}
+}
 
 // maxFacetSize bounds --facet-size for search and analyze.
 const maxFacetSize = analyzetool.MaxFacetSize

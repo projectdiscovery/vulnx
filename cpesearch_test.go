@@ -62,7 +62,7 @@ func TestSearchCPEPaging(t *testing.T) {
 		{"bare cpe fetches only the rows asked for", 250, SearchParams{Limit: Ptr(5)}, 5, 250, "CVE-2020-0000", "5"},
 		{"bare cpe with offset", 250, SearchParams{Limit: Ptr(10), Offset: Ptr(95)}, 10, 250, "CVE-2020-0095", "100,5"},
 		{"filter fetches the whole list", 250, SearchParams{Query: Ptr("severity:high"), Limit: Ptr(3)}, 3, 125, "CVE-2020-0001", "100,100,100"},
-		{"default sort keeps the server's order", 250, SearchParams{SortDesc: Ptr("cve_created_at"), Limit: Ptr(2)}, 2, 250, "CVE-2020-0000", "2"},
+		{"explicit newest-first sort is applied", 250, SearchParams{SortDesc: Ptr("cve_created_at"), Limit: Ptr(2)}, 2, 250, "CVE-2020-0004", "100,100,100"},
 		{"ascending cvss sort", 30, SearchParams{SortAsc: Ptr("cvss_score"), Limit: Ptr(2)}, 2, 30, "CVE-2020-0029", "100"},
 		{"date sort is stable", 30, SearchParams{SortAsc: Ptr("cve_created_at"), Limit: Ptr(1)}, 1, 30, "CVE-2020-0000", "100"},
 		{"all", 150, SearchParams{All: true}, 150, 150, "CVE-2020-0000", "100,100"},
@@ -158,5 +158,35 @@ func TestCPERowMatches(t *testing.T) {
 		if got := q(s); got != want {
 			t.Errorf("%s: %v, want %v", s, got, want)
 		}
+	}
+}
+
+func TestSearchCPERepeatedCursor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rows := []map[string]any{}
+		for i := range 100 {
+			rows = append(rows, map[string]any{"cve": fmt.Sprintf("CVE-2020-%04d", i), "severity": "high"})
+		}
+		writeJSON(t, w, map[string]any{"found": true, "advisories_total": 300, "advisories": rows, "cursor": "same"})
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	_, err := c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr(tomcatCPE), All: true})
+	if err == nil || !strings.Contains(err.Error(), "repeated a page cursor") {
+		t.Errorf("--all with a repeated cursor: %v", err)
+	}
+	if _, err := c.SearchVulnerabilities(context.Background(), SearchParams{Query: Ptr(tomcatCPE), Limit: Ptr(50)}); err != nil {
+		t.Errorf("a bare search that already has its rows: %v", err)
+	}
+}
+
+func TestSortRowsUsesShownTimestamp(t *testing.T) {
+	rows := []scCVE{
+		{CVE: "early", PublishedDate: "2026-01-01", PublishedAt: "2026-01-01T01:00:00Z"},
+		{CVE: "late", PublishedDate: "2026-01-01", PublishedAt: "2026-01-01T23:00:00Z"},
+	}
+	sortRows(rows, "published_date:desc")
+	if rows[0].CVE != "late" {
+		t.Errorf("same-day rows not ordered by published_at: %s first", rows[0].CVE)
 	}
 }

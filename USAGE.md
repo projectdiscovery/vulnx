@@ -177,7 +177,7 @@ vulnx search "vendor:apache && severity:critical" --all --json --silent | jq '.c
 ```bash
 vulnx scan npm/lodash@4.17.20 pypi/requests@2.19.0
 vulnx scan --show 3 pypi/requests@2.19.0                # 3 CVEs per package in the report
-vulnx scan --full --show 0 apache:tomcat@8.5.62         # every CVE of a product version, not the 10 most urgent
+vulnx scan --full apache:tomcat@8.5.62                  # every CVE of a product version, not the 10 most urgent
 vulnx scan --list versions.txt --json
 vulnx scan package-lock.json --vex openvex --vex-author "Acme PSIRT" --output vex.json
 vulnx scan --image debian:12-slim --wait 45m            # give a large image longer than the default 20m

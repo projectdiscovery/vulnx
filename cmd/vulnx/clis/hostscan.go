@@ -99,7 +99,7 @@ func checkHost(ctx context.Context, root string) (vulnx.HostInventory, vulnx.Sta
 	inv.DropUnknownProducts(&res)
 	// the full lists first: DropOtherSchemes judges every row a product has, not its 10 most urgent
 	if scanFull || scanVEX != "" {
-		if err := fillProductCVEs(ctx, &res, scanVEX != ""); err != nil {
+		if err := fillProductCVEs(ctx, &res); err != nil {
 			return inv, res, err
 		}
 	}

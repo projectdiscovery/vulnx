@@ -139,3 +139,52 @@ func TestVEX(t *testing.T) {
 		t.Errorf("cyclonedx: %s", raw)
 	}
 }
+
+func TestVEXDuplicateKeepsFix(t *testing.T) {
+	res := StackResult{Items: []StackItem{{Input: "npm/minimist@1.2.5", Package: "npm/minimist", Version: "1.2.5",
+		AdvisoryRows: []StackAdvisory{{CVE: "CVE-2021-44906"}, {CVE: "CVE-2021-44906", FixedIn: "1.2.6"}}}}}
+	st := vexStatements(res)
+	if len(st) != 1 || st[0].fix != "1.2.6" {
+		t.Errorf("statements %+v, want one with fix 1.2.6", st)
+	}
+}
+
+func TestCycloneDXVEXComponents(t *testing.T) {
+	res := StackResult{Items: []StackItem{
+		{Input: "npm/a@1", Package: "npm/a", Version: "1", AdvisoryRows: []StackAdvisory{{CVE: "CVE-2021-1"}, {CVE: "CVE-2021-2"}}},
+		{Input: "cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*", Package: "cpe/apache:tomcat", Version: "8.5.62", AdvisoryRows: []StackAdvisory{{CVE: "CVE-2021-3"}}},
+	}}
+	raw, err := CycloneDXVEX(res, time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Components      []map[string]string `json:"components"`
+		Vulnerabilities []struct {
+			Affects []struct {
+				Ref string `json:"ref"`
+			} `json:"affects"`
+		} `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	refs := map[string]map[string]string{}
+	for _, c := range doc.Components {
+		refs[c["bom-ref"]] = c
+	}
+	if len(doc.Components) != 2 {
+		t.Fatalf("components %v, want one per product", doc.Components)
+	}
+	for _, v := range doc.Vulnerabilities {
+		if refs[v.Affects[0].Ref] == nil {
+			t.Errorf("affects ref %q has no component", v.Affects[0].Ref)
+		}
+	}
+	if c := refs["pkg:npm/a@1"]; c["name"] != "a" || c["version"] != "1" || c["purl"] != "pkg:npm/a@1" {
+		t.Errorf("purl component: %v", c)
+	}
+	if c := refs["cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*"]; c["name"] != "apache:tomcat" || c["version"] != "8.5.62" || c["cpe"] == "" {
+		t.Errorf("cpe component: %v", c)
+	}
+}

@@ -410,7 +410,7 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 	var out []StackAdvisory
 	path := fmt.Sprintf("/v1/products/%s/%s/versions/%s", url.PathEscape(vendor), url.PathEscape(product), url.PathEscape(version))
 	cursor := ""
-	for page := 0; page < 200; page++ {
+	for range 200 {
 		q := url.Values{"limit": {"100"}}
 		if cursor != "" {
 			q.Set("cursor", cursor)
@@ -439,11 +439,14 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 				CvssScore: a.CvssScore, EpssScore: a.EpssScore, Match: a.Match, Exploit: a.Exploit})
 		}
 		if resp.Cursor == "" || len(resp.Advisories) == 0 {
-			break
+			return out, nil
+		}
+		if resp.Cursor == cursor {
+			return out, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s:%s %s: the server repeated a page cursor after %d CVEs", vendor, product, version, len(out)))
 		}
 		cursor = resp.Cursor
 	}
-	return out, nil
+	return out, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s:%s %s has more than %d CVEs; only %d were read", vendor, product, version, 200*100, len(out)))
 }
 
 // ScanFile uploads a lockfile, SBOM, Compose file or Dockerfile (POST /v1/stack, multipart) and returns the
@@ -559,10 +562,7 @@ func (c *Client) uploadInto(ctx context.Context, path string, fields map[string]
 		return "", wrapErr(ErrCreateHTTPRequest, err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("User-Agent", c.userAgent)
-	if c.apiKey != "" {
-		req.Header.Set("X-Api-Key", c.apiKey)
-	}
+	c.setHeaders(req)
 	// a body that can be sent again, for do()'s one retry after a 429
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body.Bytes())), nil }
 	if err := c.do(req, page); err != nil {
@@ -737,11 +737,14 @@ func (c *Client) getStack(ctx context.Context, id string) (StackResult, error) {
 		}
 		res.Items = append(res.Items, p.Items...)
 		if p.Cursor == "" || len(p.Items) == 0 {
-			break
+			return res, nil
+		}
+		if p.Cursor == cursor {
+			return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("stack %s: the server repeated a page cursor after %d items", id, len(res.Items)))
 		}
 		cursor = p.Cursor
 	}
-	return res, nil
+	return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("stack %s has more than %d items; only %d were read", id, 500*100, len(res.Items)))
 }
 
 // WaitStack polls a stack until it is ready or failed (or ctx ends), calling progress with each status seen.

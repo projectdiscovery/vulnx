@@ -348,7 +348,7 @@ investigation (with the reason). Clean packages get no statement.
 | `--list <file>` | Read package versions from a file (one per line or comma-separated) |
 | `--show <n>` | CVEs listed per package in text output (default 10; `0` lists all) |
 | `--show-all` | List every CVE per package in text output (same as `--show 0`) |
-| `--full` | Fetch every CVE of a product version (`vendor:product@version`); without it a scan returns the 10 most urgent. `--vex` implies it. The text output lists them all unless `--show` is given |
+| `--full` | Fetch every CVE of a product version (`vendor:product@version`); without it a scan returns the 10 most urgent. `--vex` implies it; text output lists them all unless `--show` is set |
 | `--vex openvex\|cyclonedx` | Write a VEX document instead of the report |
 | `--vex-author <name>` | Author of the OpenVEX document (default `vulnx`) |
 | `--wait <duration>` | How long to wait for the scan (default `20m`; image pulls can take minutes) |
@@ -356,7 +356,7 @@ investigation (with the reason). Clean packages get no statement.
 | `--host`, `--root <dir>` | Scan this machine, or a mounted Linux root filesystem |
 
 ```bash
-vulnx scan --full apache:tomcat@8.5.62                    # every CVE of that version
+vulnx scan --full apache:tomcat@8.5.62                   # every CVE of that version
 vulnx scan --vex openvex --vex-author "Acme PSIRT" -o vex.json --list versions.txt
 vulnx scan --image debian:12-slim --wait 45m
 ```

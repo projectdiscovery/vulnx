@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -126,7 +127,7 @@ func init() {
 
 	// HTTP client config flags
 	rootCmd.PersistentFlags().StringVar(&httpProxy, "proxy", "", "http proxy to use (e.g. http://127.0.0.1:8080)")
-	rootCmd.PersistentFlags().DurationVar(&httpTimeout, "timeout", 30*time.Second, "http request timeout (e.g. 30s, 1m)")
+	rootCmd.PersistentFlags().DurationVar(&httpTimeout, "timeout", defaultTimeout, "http request timeout (e.g. 30s, 1m)")
 
 	rootCmd.PersistentFlags().BoolVar(&debugReq, "debug-req", false, "dump http requests to stderr (api key redacted)")
 	rootCmd.PersistentFlags().BoolVar(&debugResp, "debug-resp", false, "dump http responses to stderr")
@@ -213,6 +214,10 @@ func ensureVulnxClientInitialized(_ *cobra.Command) error {
 		} else {
 			transport.Proxy = http.ProxyFromEnvironment
 		}
+		// a zero or negative --timeout would disable the deadline: keep the default
+		if httpTimeout <= 0 {
+			httpTimeout = defaultTimeout
+		}
 		httpClient := &http.Client{
 			Transport: transport,
 			Timeout:   httpTimeout,
@@ -235,7 +240,7 @@ func ensureVulnxClientInitialized(_ *cobra.Command) error {
 		}
 		if debugResp {
 			opts = append(opts, vulnx.WithDebugResponse(func(resp *http.Response) {
-				dump, err := httputil.DumpResponse(resp, true)
+				dump, err := dumpResponsePreview(resp)
 				printDump("HTTP RESPONSE", dump, err)
 			}))
 		}
@@ -578,6 +583,9 @@ func renderVendorBreakdown(facets map[string]any) {
 	fmt.Printf("\n")
 }
 
+// cweLabel is a CWE id as a weakness bucket key; other keys (NVD-CWE-noinfo, CWE-Other) are not weaknesses.
+var cweLabel = regexp.MustCompile(`^CWE-[0-9]+$`)
+
 // cweNames names the weaknesses that lead the CVE list (CWE Top 25 and other frequent ones).
 var cweNames = map[string]string{
 	"CWE-79": "cross-site scripting", "CWE-787": "out-of-bounds write", "CWE-89": "sql injection",
@@ -605,7 +613,7 @@ func renderWeaknesses(handler *analyze.Handler) {
 	}
 	var buckets []bucket
 	for _, b := range extractBuckets(resp.Facets, "cwe") {
-		if strings.HasPrefix(b.key, "CWE-") && b.key != "CWE-Other" && b.key != "CWE-noinfo" {
+		if cweLabel.MatchString(b.key) {
 			buckets = append(buckets, b)
 		}
 	}
@@ -651,6 +659,10 @@ func renderEPSSDistribution(totalCount int) {
 		}
 		return
 	}
+	// four separate counts: if the index changed between them, the bands would not add up
+	if totalCount <= 0 || n07 > n03 || n03 > n01 || n01 > totalCount {
+		return
+	}
 	fmt.Printf("📈 exploit prediction scoring system (epss) distribution\n")
 	bands := []struct {
 		label, range_ string
@@ -659,7 +671,7 @@ func renderEPSSDistribution(totalCount int) {
 		{"critical", "0.7-1.0", n07},
 		{"high", "0.3-0.7", n03 - n07},
 		{"medium", "0.1-0.3", n01 - n03},
-		{"low", "<0.1", totalCount - n01}, // includes CVEs with no EPSS score
+		{"low", "<0.1 or none", totalCount - n01},
 	}
 	for _, b := range bands {
 		percentage := float64(b.count) / float64(totalCount) * 100
@@ -775,6 +787,33 @@ var sensitiveHeaderRe = regexp.MustCompile(`(?i)(X-Api-Key:\s*).*`)
 
 func redactSensitiveHeaders(dump []byte) string {
 	return sensitiveHeaderRe.ReplaceAllString(string(dump), "${1}[REDACTED]")
+}
+
+const defaultTimeout = 30 * time.Second
+
+// maxDumpBody bounds the body shown by --debug-resp; the client reads the rest as usual.
+const maxDumpBody = 64 << 10
+
+// dumpResponsePreview dumps the headers and up to maxDumpBody of the body, then puts what it read back in front
+// of the body, so the client still decodes (and size-checks) the whole response.
+func dumpResponsePreview(resp *http.Response) ([]byte, error) {
+	head, err := httputil.DumpResponse(resp, false)
+	if err != nil {
+		return nil, err
+	}
+	preview, err := io.ReadAll(io.LimitReader(resp.Body, maxDumpBody))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(preview), resp.Body), resp.Body}
+	if err != nil {
+		return nil, err
+	}
+	dump := append(head, preview...)
+	if len(preview) == maxDumpBody {
+		dump = append(dump, fmt.Sprintf("\n[body truncated at %d KiB]", maxDumpBody>>10)...)
+	}
+	return dump, nil
 }
 
 // printDump writes a request or response dump to stderr, so it never mixes with --json output.

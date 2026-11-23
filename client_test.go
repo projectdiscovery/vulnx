@@ -5,14 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
 )
 
 // newTestClient returns a client for srv with no key from the environment and a short retry wait.
@@ -170,7 +175,7 @@ func TestErrorMessageCleaned(t *testing.T) {
 }
 
 // statusServer answers each request with the next status in the list (and Retry-After when given), then 200.
-func statusServer(t *testing.T, statuses []int, retryAfter string) (*httptest.Server, *int) {
+func statusServer(t *testing.T, statuses []int, retryAfter string) (*httptest.Server, func() int) {
 	t.Helper()
 	calls := 0
 	var mu sync.Mutex
@@ -188,7 +193,11 @@ func statusServer(t *testing.T, statuses []int, retryAfter string) (*httptest.Se
 		}
 		writeJSON(t, w, map[string]any{"cve": "CVE-2021-44228"})
 	}))
-	return srv, &calls
+	return srv, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
 }
 
 func TestRetry(t *testing.T) {
@@ -204,6 +213,9 @@ func TestRetry(t *testing.T) {
 		{"GET 500 twice fails", http.MethodGet, []int{500, 500}, "", ErrInternalServerError, 2},
 		{"POST 500 not retried", http.MethodPost, []int{500}, "", ErrInternalServerError, 1},
 		{"POST 503 with Retry-After retried", http.MethodPost, []int{503}, "0", nil, 2},
+		{"POST 503 without Retry-After not retried", http.MethodPost, []int{503}, "", ErrUnknownAPIError, 1},
+		{"GET 503 without Retry-After retried", http.MethodGet, []int{503}, "", nil, 2},
+		{"429 with overflowing Retry-After not retried", http.MethodGet, []int{429}, "18446744074", ErrTooManyRequests, 1},
 		{"429 with short Retry-After retried", http.MethodGet, []int{429}, "0", nil, 2},
 		{"429 without Retry-After not retried", http.MethodGet, []int{429}, "", ErrTooManyRequests, 1},
 		{"429 with long Retry-After not retried", http.MethodGet, []int{429}, "120", ErrTooManyRequests, 1},
@@ -226,8 +238,8 @@ func TestRetry(t *testing.T) {
 			if c.wantErr == nil && err != nil || c.wantErr != nil && !errors.Is(err, c.wantErr) {
 				t.Errorf("err = %v, want %v", err, c.wantErr)
 			}
-			if *calls != c.wantCalls {
-				t.Errorf("calls = %d, want %d", *calls, c.wantCalls)
+			if calls() != c.wantCalls {
+				t.Errorf("calls = %d, want %d", calls(), c.wantCalls)
 			}
 		})
 	}
@@ -244,8 +256,8 @@ func TestRetryWaitCancelled(t *testing.T) {
 	if !errors.Is(err, ErrRequestFailed) || time.Since(start) > 5*time.Second {
 		t.Errorf("cancelled wait: err %v after %s", err, time.Since(start))
 	}
-	if *calls != 1 {
-		t.Errorf("calls = %d, want 1", *calls)
+	if calls() != 1 {
+		t.Errorf("calls = %d, want 1", calls())
 	}
 }
 
@@ -254,6 +266,7 @@ type cveServer struct {
 	t         *testing.T
 	total     int
 	repeat    bool // answer every page with the same cursor
+	shortAt   int  // end paging (no cursor) after this many rows, though total is larger
 	mu        sync.Mutex
 	queries   []url.Values
 	products  []map[string]string
@@ -287,6 +300,8 @@ func (s *cveServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	next := ""
 	if s.repeat {
 		next = "7"
+	} else if s.shortAt > 0 && start+len(items) >= s.shortAt {
+		next = ""
 	} else if start+len(items) < s.total {
 		next = strconv.Itoa(start + len(items))
 	}
@@ -355,15 +370,12 @@ func TestSearchRepeatedCursorStops(t *testing.T) {
 	s := &cveServer{t: t, total: 1000, repeat: true}
 	srv := httptest.NewServer(s)
 	defer srv.Close()
-	r, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(500)})
-	if err != nil {
-		t.Fatal(err)
+	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(500)})
+	if err == nil || !strings.Contains(err.Error(), "repeated a page cursor after 200 of 500") {
+		t.Errorf("repeated cursor: %v, want an incomplete-result error", err)
 	}
 	if n := len(s.cveQueries()); n != 2 {
 		t.Errorf("requests = %d, want 2 (stop when a cursor repeats)", n)
-	}
-	if r.Count != 200 {
-		t.Errorf("count = %d, want 200", r.Count)
 	}
 }
 
@@ -482,13 +494,21 @@ func TestGetVulnerabilityByIDRejectsNonCVE(t *testing.T) {
 }
 
 func TestRetryAfter(t *testing.T) {
-	for in, want := range map[string]time.Duration{"0": 500 * time.Millisecond, " 2 ": 2500 * time.Millisecond} {
-		if got, ok := retryAfter(in); !ok || got != want {
-			t.Errorf("%q: %s %v", in, got, ok)
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	for in, want := range map[string]time.Duration{
+		"0":                             500 * time.Millisecond,
+		" 2 ":                           2500 * time.Millisecond,
+		"18446744074":                   maxRateLimitWait + time.Second,
+		"Mon, 23 Nov 2026 12:00:02 GMT": 2500 * time.Millisecond,
+		"Mon, 23 Nov 2026 11:00:00 GMT": 500 * time.Millisecond,
+		"Tue, 24 Nov 2026 12:00:00 GMT": maxRateLimitWait + 1500*time.Millisecond,
+	} {
+		if got, ok := retryAfter(in, now); !ok || got != want {
+			t.Errorf("%q: %s %v, want %s", in, got, ok, want)
 		}
 	}
-	for _, in := range []string{"", "-1", "Wed, 21 Oct 2015 07:28:00 GMT"} {
-		if _, ok := retryAfter(in); ok {
+	for _, in := range []string{"", "-1", "soon"} {
+		if _, ok := retryAfter(in, now); ok {
 			t.Errorf("%q accepted", in)
 		}
 	}
@@ -547,5 +567,140 @@ func TestUserAgent(t *testing.T) {
 		if got != c.want {
 			t.Errorf("User-Agent = %q, want %q", got, c.want)
 		}
+	}
+}
+
+func TestSearchAllEndsEarly(t *testing.T) {
+	s := &cveServer{t: t, total: 250, shortAt: 150}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{All: true})
+	if err == nil || !strings.Contains(err.Error(), "paging ended early after 200 of 250") {
+		t.Errorf("--all ending before the total: %v", err)
+	}
+}
+
+func TestSearchRejectsBadPaging(t *testing.T) {
+	s := &cveServer{t: t, total: 1}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	for _, p := range []SearchParams{
+		{Query: Ptr("cve_id:CVE-2021-44228"), Offset: Ptr(-1)},
+		{Limit: Ptr(-1)},
+		{Offset: Ptr(math.MaxInt), Limit: Ptr(10)},
+		{Query: Ptr("cve_id:CVE-2021-44228"), Offset: Ptr(math.MaxInt), Limit: Ptr(10)},
+		{Query: Ptr("cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*"), Offset: Ptr(1000), Limit: Ptr(1)},
+	} {
+		if _, err := c.SearchVulnerabilities(context.Background(), p); !errors.Is(err, ErrUnsupportedQuery) {
+			t.Errorf("%+v: %v", p, err)
+		}
+	}
+	if len(s.queries) != 0 {
+		t.Errorf("rejected paging sent %d requests", len(s.queries))
+	}
+}
+
+func TestSearchDefaultSort(t *testing.T) {
+	s := &cveServer{t: t, total: 1}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	c := newTestClient(t, srv)
+	for sortDesc, want := range map[string]string{"": "published_date:desc", "cvss_score": "cvss_score:desc"} {
+		p := SearchParams{}
+		if sortDesc != "" {
+			p.SortDesc = Ptr(sortDesc)
+		}
+		if _, err := c.SearchVulnerabilities(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.queries[len(s.queries)-1].Get("sort"); got != want {
+			t.Errorf("sort %q: sent %q, want %q", sortDesc, got, want)
+		}
+	}
+}
+
+func TestSearchCVEIDsAll(t *testing.T) {
+	s := &cveServer{t: t}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	var progress []int
+	r, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{
+		Query: Ptr("(cve_id:CVE-2021-44228 || cve_id:CVE-2023-4966)"), Limit: Ptr(1), All: true,
+		Progress: func(fetched, total int) { progress = append(progress, fetched) },
+	})
+	if err != nil || r.Count != 2 {
+		t.Errorf("All with ids and Limit 1: count %d, %v", r.Count, err)
+	}
+	if len(progress) != 2 {
+		t.Errorf("progress calls %v, want one per id", progress)
+	}
+}
+
+func TestRedirectRefusedNotRetried(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	defer srv.Close()
+	hc := retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle)
+	hc.HTTPClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("no redirects") }
+	_, err := newTestClient(t, srv, WithClient(hc)).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil)
+	if err == nil || calls != 1 {
+		t.Errorf("refused redirect: err %v after %d requests, want an error after 1", err, calls)
+	}
+}
+
+func TestNotFoundIsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(t, w, map[string]string{"error": "not found"})
+	}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv).GetVulnerabilityByID(context.Background(), "CVE-1900-0001", nil)
+	var apiErr *APIError
+	if !errors.Is(err, ErrNotFound) || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Errorf("404: %#v", err)
+	}
+}
+
+func TestScanFileKeyTransport(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get(apiKeyHeader)+"|"+r.Header.Get("User-Agent"))
+		writeJSON(t, w, map[string]any{"id": "s1"})
+	}))
+	defer srv.Close()
+	f := filepath.Join(t.TempDir(), "package-lock.json")
+	if err := os.WriteFile(f, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newTestClient(t, srv, WithAPIKey("k"), WithUserAgent("vulnx/9")).ScanFile(context.Background(), f); err != nil {
+		t.Fatal(err)
+	}
+	if got[0] != "k|vulnx/9" {
+		t.Errorf("loopback upload sent %q, want the key and User-Agent", got[0])
+	}
+	c := newTestClient(t, srv, WithAPIKey("k"))
+	c.baseURL = "http://api.example.invalid"
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/v1/stack", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.setHeaders(req)
+	if req.Header.Get(apiKeyHeader) != "" {
+		t.Errorf("key set for a plain-http, non-loopback upload")
+	}
+}
+
+func TestGetStackRepeatedCursor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"id": "s1", "status": "ready", "items": []map[string]any{{"input": "npm/a@1"}}, "cursor": "same"})
+	}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv).getStack(context.Background(), "s1")
+	if err == nil || !strings.Contains(err.Error(), "repeated a page cursor") {
+		t.Errorf("repeated stack cursor: %v", err)
 	}
 }

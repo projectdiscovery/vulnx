@@ -3,6 +3,7 @@ package clis
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,5 +51,40 @@ func TestCLIUserAgent(t *testing.T) {
 	}
 	if want := "vulnx/" + strings.TrimPrefix(Version, "v"); got != want {
 		t.Errorf("User-Agent = %q, want %q", got, want)
+	}
+}
+
+func TestDumpResponsePreview(t *testing.T) {
+	body := strings.Repeat("x", maxDumpBody+10)
+	resp := &http.Response{StatusCode: 200, ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+	dump, err := dumpResponsePreview(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dump), "[body truncated at 64 KiB]") || len(dump) > maxDumpBody+200 {
+		t.Errorf("dump is %d bytes, want a bounded preview", len(dump))
+	}
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil || string(rest) != body {
+		t.Errorf("body after the dump: %d bytes, %v; want the whole body", len(rest), err)
+	}
+}
+
+func TestFillProductCVEsFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	t.Setenv(vulnx.BaseURLEnvVar, srv.URL)
+	origClient := vulnxClient
+	t.Cleanup(func() { vulnxClient = origClient })
+	vulnxClient = nil
+	if err := ensureVulnxClientInitialized(nil); err != nil {
+		t.Fatal(err)
+	}
+	res := vulnx.StackResult{Items: []vulnx.StackItem{{Package: "cpe/apache:tomcat", Version: "8.5.62", AdvisoryRowsTotal: 20,
+		AdvisoryRows: []vulnx.StackAdvisory{{CVE: "CVE-2021-1"}}}}}
+	if err := fillProductCVEs(context.Background(), &res); err == nil || !strings.Contains(err.Error(), "apache:tomcat 8.5.62") {
+		t.Errorf("failed expansion: %v, want an error naming the product", err)
 	}
 }

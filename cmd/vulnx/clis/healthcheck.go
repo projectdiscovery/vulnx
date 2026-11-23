@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -38,8 +39,10 @@ vulnx hc --proxy http://127.0.0.1:8080
 		resp, err := vulnxClient.SearchVulnerabilities(context.Background(), vulnx.SearchParams{Limit: vulnx.Ptr(1)})
 		elapsed := time.Since(start).Round(time.Millisecond)
 		switch {
+		case errors.Is(err, vulnx.ErrUnauthorized) && vulnxClient.IsAuthenticated():
+			return fmt.Errorf("the API answered 401 Unauthorized: check %s, and that the API URL is https (a key is not sent over plain http)", vulnx.APIKeyEnvVar)
 		case errors.Is(err, vulnx.ErrUnauthorized):
-			return errors.New("the API rejected the API key: check " + vulnx.APIKeyEnvVar)
+			return fmt.Errorf("the API answered 401 Unauthorized to an anonymous request: set %s", vulnx.APIKeyEnvVar)
 		case err != nil:
 			return err
 		}

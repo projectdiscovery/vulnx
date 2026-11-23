@@ -1,6 +1,7 @@
 package clis
 
 import (
+	"math"
 	"slices"
 	"testing"
 )
@@ -37,6 +38,9 @@ func TestValidateSearchInputs(t *testing.T) {
 		{"zero limit", 0, 0, false, 10, true},
 		{"negative offset", -1, 10, false, 10, true},
 		{"all ignores the window", 5000, 10, true, 10, false},
+		{"all ignores a zero limit", 0, 0, true, 10, false},
+		{"all ignores a limit over the cap", 0, 1001, true, 10, false},
+		{"huge offset cannot wrap", math.MaxInt, 10, false, 10, true},
 		{"facet size at cap", 0, 10, false, 50, false},
 		{"facet size over cap", 0, 10, false, 51, true},
 	}

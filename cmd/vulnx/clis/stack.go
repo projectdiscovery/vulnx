@@ -197,7 +197,7 @@ func waitAndWrite(ctx context.Context, id string, show int) error {
 	last := ""
 	res, err := vulnxClient.WaitStack(ctx, id, func(status string) {
 		if status != last && status != "ready" {
-			gologger.Info().Msgf("scan %s", status)
+			gologger.Info().Msgf("scan %s", termtext.Clean(status))
 			last = status
 		}
 	})
@@ -210,7 +210,7 @@ func waitAndWrite(ctx context.Context, id string, show int) error {
 // writeChecked writes a result, with every CVE of each product version first when --full or --vex asks.
 func writeChecked(ctx context.Context, res vulnx.StackResult, show int) error {
 	if scanFull || scanVEX != "" {
-		if err := fillProductCVEs(ctx, &res, scanVEX != ""); err != nil {
+		if err := fillProductCVEs(ctx, &res); err != nil {
 			return err
 		}
 	}
@@ -281,9 +281,9 @@ func readEntries(r io.Reader) ([]string, error) {
 }
 
 // fillProductCVEs replaces a product item's top rows with its full CVE list (a stack item carries the 10 most
-// urgent; /v1/products/.../versions/... pages through all of them). With strict (a VEX, which states every CVE)
-// a list that cannot be read fails the scan; otherwise the item keeps its top rows and a warning says so.
-func fillProductCVEs(ctx context.Context, res *vulnx.StackResult, strict bool) error {
+// urgent; /v1/products/.../versions/... pages through all of them). A failure is returned rather than leaving the
+// item's top rows, since --full and VEX output promise every CVE.
+func fillProductCVEs(ctx context.Context, res *vulnx.StackResult) error {
 	for i := range res.Items {
 		it := &res.Items[i]
 		key, isProduct := strings.CutPrefix(it.Package, "cpe/")
@@ -295,12 +295,8 @@ func fillProductCVEs(ctx context.Context, res *vulnx.StackResult, strict bool) e
 			continue
 		}
 		rows, err := vulnxClient.ProductVersionCVEs(ctx, vendor, product, it.Version)
-		if err != nil && strict {
-			return fmt.Errorf("failed to read every CVE of %s %s: %w", key, it.Version, err)
-		}
 		if err != nil {
-			gologger.Info().Msgf("Could not read the full CVE list of %s %s (its 10 most urgent are listed): %s", key, it.Version, err)
-			continue
+			return fmt.Errorf("failed to fetch the full CVE list of %s %s: %w", key, it.Version, err)
 		}
 		it.AdvisoryRows = rows
 	}
@@ -480,7 +476,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 
 func init() {
 	scanCmd.Flags().StringVar(&scanList, "list", "", "read package versions from a file (one per line or comma-separated)")
-	scanCmd.Flags().BoolVar(&scanFull, "full", false, "list every CVE of a product version (a scan lists its 10 most urgent)")
+	scanCmd.Flags().BoolVar(&scanFull, "full", false, "list every CVE of a product version (a scan lists its 10 most urgent); text output shows all unless --show is set")
 	scanCmd.Flags().IntVar(&scanShow, "show", 10, "CVEs to list per package in text output (0: all)")
 	scanCmd.Flags().StringVar(&scanVEX, "vex", "", "write a VEX document instead: openvex or cyclonedx")
 	scanCmd.Flags().StringVar(&scanAuthor, "vex-author", "vulnx", "author of the OpenVEX document")

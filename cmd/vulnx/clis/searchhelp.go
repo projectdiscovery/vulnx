@@ -35,7 +35,7 @@ var (
 					boolToYN(f.FacetPossible),
 				})
 			}
-			tbl.Render()
+			fmt.Println(tbl.Render())
 		},
 	}
 )

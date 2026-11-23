@@ -178,8 +178,11 @@ func runIDs(vulnIDs []string) {
 		}
 		fmt.Println(renderer.RenderDetailed(renderer.FromVulnerability(vuln), colors))
 		if idHistory {
-			attachHistory(vuln)
-			fmt.Println(renderHistory(vuln.History))
+			if attachHistory(vuln) {
+				fmt.Println(renderHistory(vuln.History))
+			} else {
+				fmt.Println("Changes 🕒\n  ↳ history unavailable")
+			}
 		}
 		printed++
 	}
@@ -243,16 +246,18 @@ func noVulnsMessage(failures []idFailure) string {
 }
 
 // attachHistory adds the CVE's recorded changes when --history is set.
-func attachHistory(v *vulnx.Vulnerability) {
+// It reports whether the history was fetched, since an empty history and a failed lookup look alike.
+func attachHistory(v *vulnx.Vulnerability) bool {
 	if !idHistory {
-		return
+		return false
 	}
 	h, err := vulnxClient.GetCVEHistory(context.Background(), v.CVEID)
 	if err != nil {
 		gologger.Error().Msgf("history for %s: %s", v.CVEID, err)
-		return
+		return false
 	}
 	v.History = h
+	return true
 }
 
 // renderHistory prints a CVE's recorded changes, newest first.
