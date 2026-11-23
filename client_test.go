@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/levels"
+	"github.com/projectdiscovery/gologger/writer"
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
 )
 
@@ -216,7 +219,8 @@ func TestRetry(t *testing.T) {
 		{"GET 500 twice fails", http.MethodGet, []int{500, 500}, "", ErrInternalServerError, 2},
 		{"POST 500 not retried", http.MethodPost, []int{500}, "", ErrInternalServerError, 1},
 		{"POST 503 with Retry-After retried", http.MethodPost, []int{503}, "0", nil, 2},
-		{"POST 503 without Retry-After not retried", http.MethodPost, []int{503}, "", ErrUnknownAPIError, 1},
+		{"POST 503 without Retry-After not retried", http.MethodPost, []int{503}, "", ErrServiceUnavailable, 1},
+		{"GET 502 twice fails as unavailable", http.MethodGet, []int{502, 502}, "", ErrServiceUnavailable, 2},
 		{"GET 503 without Retry-After retried", http.MethodGet, []int{503}, "", nil, 2},
 		{"429 with overflowing Retry-After not retried", http.MethodGet, []int{429}, "18446744074", ErrTooManyRequests, 1},
 		{"429 with short Retry-After retried", http.MethodGet, []int{429}, "0", nil, 2},
@@ -844,5 +848,52 @@ func TestIncompleteCleansServerText(t *testing.T) {
 	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(3)})
 	if err == nil || strings.ContainsAny(err.Error(), "\x1b\u202e") || !strings.Contains(err.Error(), "returned CVE-2024-0001[2J twice") {
 		t.Errorf("duplicate-CVE error: %q, want the id without control or bidi characters", err)
+	}
+}
+
+// logLines collects gologger output at the levels the default configuration prints.
+type logLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logLines) Write(data []byte, level levels.Level) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, string(data))
+}
+
+func TestRetryQuietAtDefaultLevel(t *testing.T) {
+	logs := &logLines{}
+	gologger.DefaultLogger.SetWriter(logs)
+	// the default level, as a CLI run without --verbose or --debug has it
+	gologger.DefaultLogger.SetMaxLevel(levels.LevelInfo)
+	t.Cleanup(func() { gologger.DefaultLogger.SetWriter(writer.NewCLI()) })
+	srv, _ := statusServer(t, []int{503}, "")
+	defer srv.Close()
+	if _, err := newTestClient(t, srv).GetVulnerabilityByID(context.Background(), "CVE-2021-44228", nil); err != nil {
+		t.Fatal(err)
+	}
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	if len(logs.lines) != 0 {
+		t.Errorf("a retry that succeeded logged at the default level: %q", logs.lines)
+	}
+}
+
+func TestWaitNotice(t *testing.T) {
+	for _, c := range []struct {
+		wait        time.Duration
+		rateLimited bool
+		want        string
+	}{
+		{500 * time.Millisecond, false, ""},
+		{4900 * time.Millisecond, true, ""},
+		{5 * time.Second, false, "waiting 5s for the API"},
+		{30500 * time.Millisecond, true, "waiting 31s for the API rate limit"},
+	} {
+		if got := waitNotice(c.wait, c.rateLimited); got != c.want {
+			t.Errorf("waitNotice(%s, %v) = %q, want %q", c.wait, c.rateLimited, got, c.want)
+		}
 	}
 }
