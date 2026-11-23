@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -247,15 +248,28 @@ func TestRetry(t *testing.T) {
 	}
 }
 
-// signalTransport reports each response it receives, so a test can act once the client has one in hand.
-type signalTransport struct {
-	got chan int
+// closeSignalTransport reports when a response body is closed. do closes a retryable response only after
+// retryDelay has accepted it, just before waiting, so the signal marks the start of the retry wait.
+type closeSignalTransport struct {
+	closed chan int
 }
 
-func (s signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+type signalBody struct {
+	io.ReadCloser
+	status int
+	closed chan int
+}
+
+func (b signalBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closed <- b.status
+	return err
+}
+
+func (s closeSignalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err == nil {
-		s.got <- resp.StatusCode
+		resp.Body = signalBody{ReadCloser: resp.Body, status: resp.StatusCode, closed: s.closed}
 	}
 	return resp, err
 }
@@ -263,22 +277,25 @@ func (s signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestRetryWaitCancelled(t *testing.T) {
 	srv, calls := statusServer(t, []int{503}, "30")
 	defer srv.Close()
-	got := make(chan int, 2)
+	closed := make(chan int, 2)
 	hc := retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle)
-	hc.HTTPClient.Transport = signalTransport{got: got}
+	hc.HTTPClient.Transport = closeSignalTransport{closed: closed}
 	c := newTestClient(t, srv, WithClient(hc))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		// cancel only once the 503 (with its 30s Retry-After) has reached the client
-		if <-got == http.StatusServiceUnavailable {
+		// the 503's body is closed once its 30s Retry-After was accepted: cancel during that wait
+		if <-closed == http.StatusServiceUnavailable {
 			cancel()
 		}
 	}()
 	start := time.Now()
 	_, err := c.GetVulnerabilityByID(ctx, "CVE-2021-44228", nil)
-	if err == nil || time.Since(start) > 5*time.Second {
-		t.Errorf("cancelled retry wait: err %v after %s, want an error well before 30s", err, time.Since(start))
+	if !errors.Is(err, ErrRequestFailed) || !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled retry wait: %v, want ErrRequestFailed wrapping context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("returned after %s, want well before the 30s Retry-After", elapsed)
 	}
 	if calls() != 1 {
 		t.Errorf("calls = %d, want 1 (no request after the cancelled wait)", calls())
@@ -289,7 +306,9 @@ func TestRetryWaitCancelled(t *testing.T) {
 type cveServer struct {
 	t         *testing.T
 	total     int
-	repeat    bool // answer every page with the same cursor
+	repeat    bool // answer every page with the same cursor, rows continuing where the last page ended
+	overlap   bool // with repeat: the cursor means row 7, so the second page overlaps the first
+	served    int  // rows served so far, for repeat
 	shortAt   int  // end paging (no cursor) after this many rows, though total is larger
 	mu        sync.Mutex
 	queries   []url.Values
@@ -317,10 +336,18 @@ func (s *cveServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	start, _ := strconv.Atoi(q.Get("cursor"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
+	if s.repeat && !s.overlap && q.Has("cursor") {
+		s.mu.Lock()
+		start = s.served
+		s.mu.Unlock()
+	}
 	var items []map[string]any
 	for i := start; i < s.total && len(items) < limit; i++ {
 		items = append(items, map[string]any{"cve": fmt.Sprintf("CVE-2024-%04d", i)})
 	}
+	s.mu.Lock()
+	s.served = start + len(items)
+	s.mu.Unlock()
 	next := ""
 	if s.repeat {
 		next = "7"
@@ -745,7 +772,9 @@ func TestSearchIncompletePaging(t *testing.T) {
 		params  SearchParams
 		wantErr string
 	}{
-		{"repeated cursor at the requested count", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(200)}, "repeated a page cursor after 200 of 200"},
+		{"overlapping pages at the requested count", &cveServer{total: 1000, repeat: true, overlap: true}, SearchParams{Limit: Ptr(200)}, "returned CVE-2024-0007 twice"},
+		{"repeated cursor on the page that completes the request", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(200)}, ""},
+		{"repeated cursor while rows are still needed", &cveServer{total: 1000, repeat: true}, SearchParams{Limit: Ptr(300)}, "repeated a page cursor after 200 of 300"},
 		{"ordinary search ends before the total", &cveServer{total: 250, shortAt: 200}, SearchParams{Limit: Ptr(250)}, "paging ended early after 200 of 250"},
 		{"ordinary search that has every row", &cveServer{total: 200}, SearchParams{Limit: Ptr(250)}, ""},
 		{"all with a huge offset", &cveServer{total: 5}, SearchParams{All: true, Offset: Ptr(math.MaxInt)}, ""},
@@ -803,5 +832,17 @@ func TestSearchCVEIDsProgressOnMissing(t *testing.T) {
 	}
 	if want := [][2]int{{0, 2}, {1, 2}}; !slices.Equal(calls, want) {
 		t.Errorf("progress %v, want %v", calls, want)
+	}
+}
+
+func TestIncompleteCleansServerText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bad := "CVE-2024-0001\x1b[2J\u202e"
+		writeJSON(t, w, map[string]any{"total": 3, "items": []map[string]any{{"cve": bad}, {"cve": bad}}, "cursor": "x"})
+	}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(3)})
+	if err == nil || strings.ContainsAny(err.Error(), "\x1b\u202e") || !strings.Contains(err.Error(), "returned CVE-2024-0001[2J twice") {
+		t.Errorf("duplicate-CVE error: %q, want the id without control or bidi characters", err)
 	}
 }

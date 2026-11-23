@@ -65,6 +65,7 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 	var rows []scCVE
 	cursor := ""
 	seen := map[string]bool{}
+	ids := map[string]bool{}
 	for {
 		q := url.Values{"limit": {strconv.Itoa(scMaxPage)}}
 		if !full && want-len(rows) < scMaxPage {
@@ -90,6 +91,15 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 		if resp.Total == 0 {
 			resp.Total = p.AdvisoriesTotal
 		}
+		for _, a := range p.Advisories {
+			// a CVE seen on an earlier page means the pages overlap: the rows are not one consistent list
+			if a.CVE != "" {
+				if ids[a.CVE] {
+					return resp, incomplete("the server returned "+a.CVE+" twice", len(rows), resp.Total)
+				}
+				ids[a.CVE] = true
+			}
+		}
 		rows = append(rows, p.Advisories...)
 		if full && max(p.AdvisoriesTotal, len(rows)) > cpeMaxRows {
 			return resp, unsupported("%s:%s %s has more than %d CVEs; filters, sorting and --all fetch at most %d (narrow with a bare --cpe search)", ref.vendor, ref.product, ref.version, cpeMaxRows, cpeMaxRows)
@@ -101,12 +111,12 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 		if !full {
 			need = min(want, resp.Total)
 		}
-		// a cursor already used means paging would loop, so the rows read are not the list
-		if p.Cursor != "" && seen[p.Cursor] {
-			return resp, incomplete("the server repeated a page cursor", len(rows), need)
-		}
 		if !full && len(rows) >= want {
 			break
+		}
+		// more rows are needed (or the whole list), but a cursor already used would only loop
+		if p.Cursor != "" && seen[p.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(rows), need)
 		}
 		if p.Cursor == "" || len(p.Advisories) == 0 {
 			// the reported total says more rows exist than paging returned

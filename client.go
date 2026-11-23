@@ -6,7 +6,7 @@
 //
 //	ctx := context.Background()
 //
-//	client, err := vulnx.New() // reads SECURITYCONTEXT_API_KEY when set
+//	client, err := vulnx.New()
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -23,7 +23,7 @@
 //
 // # Rate Limiting
 //
-// Calls without an API key are rate limited per address. The client waits out a short 429 by itself;
+// Calls are anonymous and rate limited per address. The client waits out a short 429 by itself;
 // a longer one is returned as ErrTooManyRequests.
 //
 // The client is safe for concurrent use by multiple goroutines.
@@ -94,7 +94,7 @@ var (
 // construction.
 //
 //	client, err := vulnx.New(
-//	    vulnx.WithAPIKey("<YOUR_KEY>"),
+//	    vulnx.WithUserAgent("my-tool/1.0"),
 //	    vulnx.WithRetryableHTTPOptions(retryablehttp.Options{RetryMax: 5}),
 //	)
 type Option func(*Client)
@@ -322,6 +322,7 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 	skipped, consumed := 0, 0
 	cursor := ""
 	seen := map[string]bool{}
+	ids := map[string]bool{}
 	for page := 0; ; page++ {
 		query.Set("limit", strconv.Itoa(min(want-consumed, scMaxPage)))
 		if cursor != "" {
@@ -348,6 +349,13 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 		}
 		pageRows := len(list.Items)
 		for i := range list.Items {
+			// a CVE seen on an earlier page means the pages overlap: the rows are not one consistent listing
+			if id := list.Items[i].CVE; id != "" {
+				if ids[id] {
+					return resp, incomplete("the server returned "+id+" twice", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
+				}
+				ids[id] = true
+			}
 			consumed++
 			if skipped < offset {
 				skipped++
@@ -360,12 +368,12 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 		if params.Progress != nil {
 			params.Progress(len(resp.Results), resp.Total)
 		}
-		// a cursor already used means the next page would repeat rows, so these rows cannot be trusted as a result
-		if list.Cursor != "" && seen[list.Cursor] {
-			return resp, incomplete("the server repeated a page cursor", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
-		}
 		if consumed >= want {
 			break
+		}
+		// more rows are needed, but a cursor already used would only loop
+		if list.Cursor != "" && seen[list.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
 		}
 		if list.Cursor == "" || pageRows == 0 {
 			// the reported total says more rows exist than paging returned
@@ -386,8 +394,9 @@ const defaultSort = "published_date:desc"
 
 // incomplete reports a paged search that stopped before returning the rows it needed. The rows fetched so far are
 // in the response, but they are not the full result.
+// why can quote server text (a CVE id), so it is cleaned for a terminal.
 func incomplete(why string, got, want int) error {
-	return wrapErr(ErrUnknownAPIError, fmt.Errorf("%s after %d of %d results; the index may have changed during the search, retry", why, got, want))
+	return wrapErr(ErrUnknownAPIError, fmt.Errorf("%s after %d of %d results; the index may have changed during the search, retry", termtext.Clean(why), got, want))
 }
 
 // lookupIDs fetches cve_id: terms one record at a time; Total counts the distinct ids asked for, found or not.
