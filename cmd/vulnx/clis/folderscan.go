@@ -41,7 +41,7 @@ func runFolderScan(ctx context.Context, dir string, show int) (failed bool, err 
 	}
 	start := time.Now()
 	hostProgress("Reading " + dir + " ...")
-	inv, err := vulnx.FolderEntries(ctx, dir)
+	inv, err := vulnx.FolderEntries(ctx, dir, vulnx.FolderOptions{NoIgnore: scanNoIgnore})
 	if err != nil {
 		hostProgress("")
 		return false, fmt.Errorf("failed to read %s: %w", dir, err)
@@ -193,8 +193,8 @@ func renderFolder(inv vulnx.HostInventory, res vulnx.StackResult, from scanSourc
 		}
 	}
 	if len(deps.NotAssessed) > 0 {
-		b.WriteString(dim(hostLabel("Not checked")+fmt.Sprintf("%s git, local or unpinned dependencies: %s",
-			formatNumber(len(deps.NotAssessed)), notCheckedSources(deps))) + "\n")
+		b.WriteString(dim(hostLabel("Not checked")+plural(len(deps.NotAssessed), "git, local or unpinned dependency",
+			"git, local or unpinned dependencies")+": "+notCheckedSources(deps)) + "\n")
 	}
 	for _, im := range images {
 		b.WriteString(dim(hostLabel("Not checked")+"image "+termtext.Clean(im.Name)+": "+termtext.Clean(im.Reason)) + "\n")
@@ -212,6 +212,16 @@ func renderFolder(inv vulnx.HostInventory, res vulnx.StackResult, from scanSourc
 		if why != vulnx.FolderNotRead {
 			b.WriteString(dim(hostLabel("Not read")+termtext.Clean(why)) + "\n")
 		}
+	}
+	if sk := inv.Skipped; sk != nil {
+		var parts []string
+		if sk.Repositories > 0 {
+			parts = append(parts, plural(sk.Repositories, "nested repository", "nested repositories"))
+		}
+		if sk.Ignored > 0 {
+			parts = append(parts, plural(sk.Ignored, "ignored path", "ignored paths"))
+		}
+		b.WriteString(dim(hostLabel("Skipped")+strings.Join(parts, ", ")+" (--no-ignore includes them)") + "\n")
 	}
 	scanned := []string{termtext.Clean(from.input), plural(len(inv.Entries), "package", "packages")}
 	if !from.start.IsZero() {
@@ -347,7 +357,12 @@ func scanFolderImages(ctx context.Context, inv *vulnx.HostInventory, res *vulnx.
 	failed := 0
 	for i, ref := range refs {
 		if errs[i] != nil {
-			notChecked(ref, errs[i].Error())
+			why := errs[i].Error()
+			// the image holds no package database: a static or distroless image, nothing the index can judge
+			if strings.Contains(why, "no package with a version was found") {
+				why = "no package database in the image (nothing to check)"
+			}
+			notChecked(ref, why)
 			failed++
 			continue
 		}

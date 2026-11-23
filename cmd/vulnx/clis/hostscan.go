@@ -44,6 +44,9 @@ func checkHostFlags(flags *pflag.FlagSet, args []string) error {
 	if scanImages && !folder {
 		return errors.New("--images works only with a folder")
 	}
+	if scanNoIgnore && !folder {
+		return errors.New("--no-ignore works only with a folder")
+	}
 	switch {
 	case scanHost && (len(args) > 0 || scanList != "" || scanImage != ""):
 		return errors.New("--host scans this machine: it takes no file, package versions, --list or --image")

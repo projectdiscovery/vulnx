@@ -265,7 +265,10 @@ pnpm-lock.yaml, requirements*.txt, Pipfile.lock, poetry.lock, uv.lock, go.mod wi
 Cargo.lock, Gemfile.lock, composer.lock) and JSON SBOMs; reads the packages installed under it (node_modules,
 site-packages, gem specifications), its Go and Rust programs, and the MCP servers its own configuration starts
 (`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`). The walk stays inside the folder: links are not followed and
-version control directories are not entered. A package found in several places is checked once and keeps every
+version control directories are not entered. What the folder's git ignore rules exclude (each `.gitignore`, the
+repository's `info/exclude` and the global excludes file, as git reads them) and repositories or worktrees nested
+in it are skipped, so installed trees and build output a repository ignores are left to its lockfiles; the grid
+says how many, and `--no-ignore` reads them too. A package found in several places is checked once and keeps every
 place, relative to the folder. A git, local or unpinned dependency has no release to judge and is listed as not
 checked. Only the names and versions are sent to SecurityContext, as with `--host`; the files and their paths stay
 on this machine.

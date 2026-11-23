@@ -51,6 +51,42 @@ type folderWalk struct {
 	entries  map[string][]found // source -> entries, with where each was found
 	skipped  map[string][]HostComponent
 	details  map[string]int // source -> files or directories read
+	left     *FolderSkipped // what was skipped; nil with --no-ignore
+}
+
+// skip decides whether the walk leaves a path out: what the ignore rules exclude, and a repository or worktree
+// nested in the folder (a directory below it with a .git of its own). A directory's .gitignore is read as the
+// walk enters it. ret is what the walk function returns for a skipped path.
+func (w *folderWalk) skip(ignore *gitIgnore, path, rel string, d fs.DirEntry) (skip bool, ret error) {
+	if rel == "." {
+		ignore.load(path)
+		return false, nil
+	}
+	ret = nil
+	if d.IsDir() {
+		if folderSkip[d.Name()] {
+			return false, nil // never entered, and not counted: version control is no part of the project
+		}
+		ret = fs.SkipDir
+	}
+	note := func(n *int) {
+		*n++
+		if len(w.left.Paths) < maxSkippedPaths {
+			w.left.Paths = append(w.left.Paths, rel)
+		}
+	}
+	if ignore.ignored(path, d.IsDir()) {
+		note(&w.left.Ignored)
+		return true, ret
+	}
+	if d.IsDir() {
+		if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+			note(&w.left.Repositories)
+			return true, ret
+		}
+		ignore.load(path)
+	}
+	return false, nil
 }
 
 func (w *folderWalk) rel(path string) string {
@@ -74,10 +110,26 @@ func (w *folderWalk) notRead(rel string, err error) {
 	w.h.inv.NotRead = append(w.h.inv.NotRead, fmt.Sprintf("%s: %v", rel, err))
 }
 
+// FolderOptions are FolderEntries' options.
+type FolderOptions struct {
+	// NoIgnore reads what the folder's git ignore rules exclude and the repositories nested in it too.
+	NoIgnore bool
+}
+
+// FolderSkipped counts what a folder walk left out, with the paths (relative, at most maxSkippedPaths).
+type FolderSkipped struct {
+	Ignored      int      `json:"ignored"`
+	Repositories int      `json:"nested_repositories"`
+	Paths        []string `json:"paths,omitempty"`
+}
+
+// maxSkippedPaths bounds the skipped paths a result lists.
+const maxSkippedPaths = 200
+
 // FolderEntries reads what a directory installs and holds: lockfiles and manifests (parsed here), JSON SBOMs, the
 // packages installed under it, its Go and Rust executables and the MCP servers its own configuration starts. The
 // walk stays inside the folder: symlinks are not followed and version control directories are not entered.
-func FolderEntries(ctx context.Context, dir string) (HostInventory, error) {
+func FolderEntries(ctx context.Context, dir string, opts FolderOptions) (HostInventory, error) {
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return HostInventory{}, err
@@ -90,6 +142,11 @@ func FolderEntries(ctx context.Context, dir string) (HostInventory, error) {
 	w := &folderWalk{h: newHostReader(root, runtime.GOOS), root: root, entries: map[string][]found{},
 		skipped: map[string][]HostComponent{}, details: map[string]int{}}
 	w.h.ctx = ctx
+	var ignore *gitIgnore
+	if !opts.NoIgnore {
+		ignore = newGitIgnore(root)
+		w.left = &FolderSkipped{}
+	}
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -112,6 +169,11 @@ func FolderEntries(ctx context.Context, dir string) (HostInventory, error) {
 			return nil // a link may lead out of the folder
 		}
 		rel := w.rel(path)
+		if ignore != nil {
+			if skip, why := w.skip(ignore, path, rel, d); skip {
+				return why
+			}
+		}
 		if d.IsDir() {
 			return w.dir(path, rel, d.Name())
 		}
@@ -153,6 +215,9 @@ func FolderEntries(ctx context.Context, dir string) (HostInventory, error) {
 		w.h.add(source, detail, w.entries[source], w.skipped[source])
 	}
 	w.h.inv.NotRead = append(w.h.inv.NotRead, FolderNotRead)
+	if w.left != nil && (w.left.Ignored > 0 || w.left.Repositories > 0) {
+		w.h.inv.Skipped = w.left
+	}
 	return w.h.inv, nil
 }
 

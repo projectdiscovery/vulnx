@@ -68,7 +68,7 @@ func TestFolderEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inv, err := FolderEntries(context.Background(), root)
+	inv, err := FolderEntries(context.Background(), root, FolderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestFolderEntries(t *testing.T) {
 	if goEntries != 1 && runtime.GOOS != "windows" {
 		t.Errorf("the Go program's toolchain: %d entries", goEntries)
 	}
-	if _, err := FolderEntries(context.Background(), filepath.Join(root, "package-lock.json")); err == nil {
+	if _, err := FolderEntries(context.Background(), filepath.Join(root, "package-lock.json"), FolderOptions{}); err == nil {
 		t.Error("a file read as a folder")
 	}
 }

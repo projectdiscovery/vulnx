@@ -85,7 +85,7 @@ func TestRenderFolder(t *testing.T) {
 	t.Cleanup(func() { vulnxClient, scanShowAll = saved, false })
 	vulnxClient = client
 	dir := folderFixture(t)
-	inv, err := vulnx.FolderEntries(t.Context(), dir)
+	inv, err := vulnx.FolderEntries(t.Context(), dir, vulnx.FolderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestRenderFolder(t *testing.T) {
   ───────────────────────────────────────────────────────────────────────────────────────────
   total                    0            1            0            0                 -         2
 
-  Not checked    1 git, local or unpinned dependencies: 1 api/requirements.txt
+  Not checked    1 git, local or unpinned dependency: 1 api/requirements.txt
   Scanned        app · 2 packages
 
 [AFFECTED] npm/lodash@4.17.20  high, 1 advisories  fix: 4.17.21
@@ -235,7 +235,7 @@ func TestFolderImages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	inv, err := vulnx.FolderEntries(t.Context(), dir)
+	inv, err := vulnx.FolderEntries(t.Context(), dir, vulnx.FolderOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

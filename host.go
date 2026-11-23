@@ -74,6 +74,8 @@ type HostInventory struct {
 	Extensions []string `json:"-"`
 	// Images are the container images a folder's Dockerfiles and Compose files name (folder scans only)
 	Images []FolderImage `json:"images,omitempty"`
+	// Skipped is what a folder scan left out: ignored paths and nested repositories (folder scans only)
+	Skipped *FolderSkipped `json:"skipped,omitempty"`
 
 	runtimePlaces map[string]bool
 }
