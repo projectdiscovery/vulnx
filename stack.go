@@ -135,20 +135,23 @@ func countVerdicts(res *StackResult) {
 
 // StackSummary counts a stack's items.
 type StackSummary struct {
-	Packages            int            `json:"packages"`
-	Affected            int            `json:"affected"`
-	Clean               int            `json:"clean"`
-	Undetermined        int            `json:"undetermined"`
-	Unseen              int            `json:"unseen"`
-	KnownExploited      int            `json:"known_exploited"`
-	PublicExploit       int            `json:"public_exploit"`
-	Malicious           int            `json:"malicious"`
-	BySeverity          map[string]int `json:"by_severity,omitempty"`
-	UndeterminedReasons []struct {
-		Reason string `json:"reason"`
-		Count  int    `json:"count"`
-		Why    string `json:"why"`
-	} `json:"undetermined_reasons,omitempty"`
+	Packages            int                  `json:"packages"`
+	Affected            int                  `json:"affected"`
+	Clean               int                  `json:"clean"`
+	Undetermined        int                  `json:"undetermined"`
+	Unseen              int                  `json:"unseen"`
+	KnownExploited      int                  `json:"known_exploited"`
+	PublicExploit       int                  `json:"public_exploit"`
+	Malicious           int                  `json:"malicious"`
+	BySeverity          map[string]int       `json:"by_severity,omitempty"`
+	UndeterminedReasons []UndeterminedReason `json:"undetermined_reasons,omitempty"`
+}
+
+// UndeterminedReason counts the items left undetermined for one reason.
+type UndeterminedReason struct {
+	Reason string `json:"reason"`
+	Count  int    `json:"count"`
+	Why    string `json:"why"`
 }
 
 // StackInfo describes a queued or finished stack.
@@ -194,8 +197,12 @@ type stackPage struct {
 // MaxCheckEntries is how many entries one check sends (one request).
 const MaxCheckEntries = 500
 
-// MaxCompactEntries is how many entries one compact check sends: a whole machine's inventory.
+// MaxCompactEntries is the most entries one compact check takes.
 const MaxCompactEntries = 5000
+
+// CompactChunkEntries is how many entries CheckManyWith sends in one compact request: a machine's whole inventory
+// in one request can outlast the API's query timeout (a 503 query_timeout), so it is checked a part at a time.
+const CompactChunkEntries = 1000
 
 // checkMode is what a check asks the API for besides the verdicts.
 type checkMode struct {
@@ -206,6 +213,14 @@ type checkMode struct {
 func (m checkMode) maxEntries() int {
 	if m.compact {
 		return MaxCompactEntries
+	}
+	return MaxCheckEntries
+}
+
+// chunkEntries is how many entries CheckManyWith sends a request.
+func (m checkMode) chunkEntries() int {
+	if m.compact {
+		return CompactChunkEntries
 	}
 	return MaxCheckEntries
 }
@@ -402,7 +417,15 @@ func mergeStack(a *StackResult, b StackResult) {
 	for k, v := range r.BySeverity {
 		s.BySeverity[k] += v
 	}
-	s.UndeterminedReasons = append(s.UndeterminedReasons, r.UndeterminedReasons...)
+	// one row per reason, as one request over both lists would answer
+	for _, u := range r.UndeterminedReasons {
+		i := slices.IndexFunc(s.UndeterminedReasons, func(have UndeterminedReason) bool { return have.Reason == u.Reason })
+		if i < 0 {
+			s.UndeterminedReasons = append(s.UndeterminedReasons, u)
+			continue
+		}
+		s.UndeterminedReasons[i].Count += u.Count
+	}
 }
 
 // ProductVersionCVEs pages a product version's full CVE list (GET /v1/products/{vendor}/{product}/versions/{v}).
@@ -942,7 +965,7 @@ type CheckOptions struct {
 	// Functions asks for each Go advisory's affected functions (StackResult.GoFunctions). An API that does not
 	// serve them yet answers without: StackResult.FunctionsUnavailable.
 	Functions bool
-	// Compact asks for compact answers: MaxCompactEntries entries a request, each advisory once, a gzip body. An
+	// Compact asks for compact answers: CompactChunkEntries entries a request, each advisory once, a gzip body. An
 	// API without them is asked again the plain way.
 	Compact bool
 	// Progress, when set, is called after each request with the entries checked so far.
@@ -953,7 +976,7 @@ type CheckOptions struct {
 func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts CheckOptions) (StackResult, error) {
 	var all StackResult
 	mode := checkMode{functions: opts.Functions, compact: opts.Compact}
-	size := mode.maxEntries()
+	size := mode.chunkEntries()
 	for start := 0; start < len(entries); start += size {
 		end := min(start+size, len(entries))
 		res, err := c.checkPackages(ctx, entries[start:end], mode)
@@ -968,6 +991,9 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 			retry, err := c.CheckManyWith(ctx, entries, opts)
 			retry.FunctionsUnavailable = retry.FunctionsUnavailable || all.FunctionsUnavailable
 			return retry, err
+		}
+		if err != nil && len(entries) > size {
+			return all, fmt.Errorf("failed to check components %d to %d of %d: %w", start+1, end, len(entries), err)
 		}
 		if err != nil {
 			return all, err

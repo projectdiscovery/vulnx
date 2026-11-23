@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -193,7 +194,7 @@ func TestCheckCompact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries := make([]string, 1200) // more than a plain request takes: one compact request
+	entries := make([]string, 1200) // more than a plain request takes
 	for i := range entries {
 		entries[i] = fmt.Sprintf("pkg:npm/p%d@1", i)
 	}
@@ -493,5 +494,132 @@ func TestRequestFailedOnce(t *testing.T) {
 	_, err = c.CheckMany(context.Background(), []string{"npm/a@1"})
 	if !errors.Is(err, ErrRequestFailed) || strings.Count(err.Error(), "request failed") != 1 {
 		t.Errorf("%v", err)
+	}
+}
+
+// chunkServer answers a compact check from the entries alone, so one request over a list and several over its parts
+// can be compared: every third entry affected (with a Go function list), every third undetermined for one of two
+// reasons, the rest clean. It records each request's size and fails the request that holds failOn.
+func chunkServer(t *testing.T, failOn string) (*httptest.Server, func() []int) {
+	var mu sync.Mutex
+	var sizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var body struct{ Packages []string }
+		if err := json.NewDecoder(zr).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		mu.Lock()
+		sizes = append(sizes, len(body.Packages))
+		mu.Unlock()
+		if slices.Contains(body.Packages, failOn) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		summary := StackSummary{Packages: len(body.Packages), BySeverity: map[string]int{}}
+		reasons := map[string]int{}
+		var items []StackItem
+		functions := GoFunctions{}
+		for _, p := range body.Packages {
+			var n int
+			if _, err := fmt.Sscanf(p, "pkg:golang/example.com/m%d@v1.0.0", &n); err != nil {
+				t.Error(err)
+				return
+			}
+			it := StackItem{Input: p, Package: fmt.Sprintf("golang/example.com/m%d", n), Version: "v1.0.0"}
+			switch n % 3 {
+			case 0:
+				it.Status, it.WorstSeverity = "affected", "high"
+				it.AdvisoryRows = []StackAdvisory{{AdvisoryID: fmt.Sprintf("GO-%d", n), Severity: "high"}}
+				summary.Affected++
+				summary.BySeverity["high"]++
+				functions[it.Package] = map[string][]AffectedPackage{fmt.Sprintf("GO-%d", n): nil}
+			case 1:
+				it.Status, it.Reason = "undetermined", fmt.Sprintf("reason%d", n%2)
+				summary.Undetermined++
+				reasons[it.Reason]++
+			default:
+				it.Status = "clean"
+				summary.Clean++
+			}
+			items = append(items, it)
+		}
+		for _, reason := range []string{"reason0", "reason1"} {
+			if reasons[reason] > 0 {
+				summary.UndeterminedReasons = append(summary.UndeterminedReasons, UndeterminedReason{Reason: reason, Count: reasons[reason], Why: "why " + reason})
+			}
+		}
+		writeJSON(t, w, map[string]any{"total": len(items), "summary": summary, "items": items, "go_functions": functions})
+	}))
+	return srv, func() []int { mu.Lock(); defer mu.Unlock(); return slices.Clone(sizes) }
+}
+
+func moduleEntries(n int) []string {
+	entries := make([]string, n)
+	for i := range entries {
+		entries[i] = fmt.Sprintf("pkg:golang/example.com/m%d@v1.0.0", i)
+	}
+	return entries
+}
+
+// TestCheckCompactChunks checks a large list CompactChunkEntries a request, and merges the parts into the answer
+// one request over the whole list gives: items in order, counts, one row per undetermined reason, function lists.
+func TestCheckCompactChunks(t *testing.T) {
+	for _, c := range []struct {
+		entries int
+		sizes   []int
+	}{
+		{CompactChunkEntries, []int{CompactChunkEntries}},
+		{CompactChunkEntries + 1, []int{CompactChunkEntries, 1}},
+		{2*CompactChunkEntries + 500, []int{CompactChunkEntries, CompactChunkEntries, 500}},
+	} {
+		srv, sizes := chunkServer(t, "")
+		client := newTestClient(t, srv)
+		entries := moduleEntries(c.entries)
+		var progress []int
+		got, err := client.CheckManyWith(context.Background(), entries, CheckOptions{Compact: true, Functions: true,
+			Progress: func(done, total int) {
+				if total != c.entries {
+					t.Errorf("progress total %d", total)
+				}
+				progress = append(progress, done)
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(sizes(), c.sizes) {
+			t.Errorf("%d entries: requests of %v, want %v", c.entries, sizes(), c.sizes)
+		}
+		if progress[len(progress)-1] != c.entries || len(progress) != len(c.sizes) {
+			t.Errorf("%d entries: progress %v", c.entries, progress)
+		}
+		want, err := client.checkPackages(context.Background(), entries, checkMode{functions: true, compact: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		countVerdicts(&want)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%d entries: the merged answer differs from one request's:\n%+v\n%+v", c.entries, got.Summary, want.Summary)
+		}
+		srv.Close()
+	}
+}
+
+// TestCheckCompactChunkFails fails the whole check when one part fails, and names which part.
+func TestCheckCompactChunkFails(t *testing.T) {
+	entries := moduleEntries(2*CompactChunkEntries + 500)
+	srv, sizes := chunkServer(t, entries[CompactChunkEntries+3])
+	defer srv.Close()
+	_, err := newTestClient(t, srv).CheckManyWith(context.Background(), entries, CheckOptions{Compact: true})
+	if !errors.Is(err, ErrInternalServerError) || !strings.Contains(err.Error(), "components 1001 to 2000 of 2500") {
+		t.Errorf("err %v", err)
+	}
+	if !slices.Equal(sizes(), []int{CompactChunkEntries, CompactChunkEntries}) {
+		t.Errorf("requests %v: the check goes on after a failed part", sizes())
 	}
 }

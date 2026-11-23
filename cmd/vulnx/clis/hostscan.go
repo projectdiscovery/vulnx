@@ -65,6 +65,12 @@ func runHostScan(ctx context.Context) (failed bool, err error) {
 	}
 	failed = failsOn(scanFailOn, inv, res)
 	if scanVEX != "" || jsonOutput || outputFile != "" {
+		// these write the result instead of the day's files: the SBOM only when --sbom names it
+		if scanSBOM != "" && scanSBOM != "auto" {
+			if _, err := writeHostSBOM(scanSBOM, inv); err != nil {
+				return failed, fmt.Errorf("failed to write the SBOM: %w", err)
+			}
+		}
 		return failed, writeHostJSON(inv, res, scanVEX)
 	}
 	return failed, printHostScan(ctx, inv, res, time.Since(start))
@@ -119,7 +125,7 @@ func checkHost(ctx context.Context, root string) (vulnx.HostInventory, vulnx.Sta
 	return inv, res, nil
 }
 
-// printHostScan prints the chosen view and writes the day's JSON report, then the files --graph, --sbom and
+// printHostScan prints the chosen view and writes the day's JSON report and the SBOM, then the files --graph and
 // --report ask for. A failed write to stdout fails the scan, as a failed file write does.
 func printHostScan(ctx context.Context, inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration) error {
 	c := colorConfig()
@@ -130,9 +136,11 @@ func printHostScan(ctx context.Context, inv vulnx.HostInventory, res vulnx.Stack
 		return fmt.Errorf("failed to write the report: %w", err)
 	}
 	out.print(hostLabel("JSON") + path + "\n")
-	if scanView == "grid" && !scanReport {
-		out.print(hostIndent + c.Colorize("Add --report for a shareable link (expires in 24 hours)", renderer.Gray) + "\n")
+	sbom, err := writeHostSBOM(scanSBOM, inv)
+	if err != nil {
+		return fmt.Errorf("failed to write the SBOM: %w", err)
 	}
+	out.print(hostLabel("SBOM") + sbom + "\n")
 	if scanGraph {
 		path, err := writeHostGraph(inv, res)
 		if err != nil {
@@ -140,16 +148,12 @@ func printHostScan(ctx context.Context, inv vulnx.HostInventory, res vulnx.Stack
 		}
 		out.print(hostLabel("Graph") + path + "\n")
 	}
-	if scanSBOM != "" || scanReport {
-		path, err := writeHostSBOM(scanSBOM, inv)
-		if err != nil {
-			return fmt.Errorf("failed to write the SBOM: %w", err)
-		}
-		out.print(hostLabel("SBOM") + path + "\n")
-		if scanReport {
-			if err := shareHostReport(ctx, path, out); err != nil {
-				return err
-			}
+	if scanView == "grid" && !scanReport {
+		out.print(hostIndent + c.Colorize("Add --report for a shareable link (expires in 24 hours)", renderer.Gray) + "\n")
+	}
+	if scanReport {
+		if err := shareHostReport(ctx, sbom, out); err != nil {
+			return err
 		}
 	}
 	if scanView == "grid" {

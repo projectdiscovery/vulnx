@@ -66,7 +66,9 @@ Or an operating system:
                                   servers). The names and versions of what it finds, editor extensions and MCP
                                   server packages included, are sent to SecurityContext; paths, configuration and
                                   the runtime snapshot of listening sockets stay on this machine. The terminal
-                                  shows one screen and the full result is written as vulnx-host-<date>.json.
+                                  shows one screen; the full result is written as vulnx-host-<date>.json and
+                                  what was checked as the CycloneDX SBOM vulnx-host-<date>.cdx.json (no runtime
+                                  data). --json, -o and --vex write the result instead of both.
 
 --vex writes a VEX document instead of the result: one statement per (package, CVE); affected rows are
 "affected" / "exploitable" with the fixed version when known, undetermined rows "under_investigation" / "in_triage".`,
@@ -488,7 +490,7 @@ func init() {
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
 	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine; sends the names and versions it finds to SecurityContext")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
-	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: also write what was checked as a CycloneDX SBOM (--sbom=path to name it; an existing file is not overwritten)")
+	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: name the CycloneDX SBOM of what was checked, written beside the JSON report as vulnx-host-<date>.cdx.json unless named (an existing file is not overwritten; with --json, -o or --vex it is written only when named)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
 	scanCmd.Flags().BoolVar(&scanGraph, "graph", false, "with --host: also write a local graph page of the findings (opens in a browser, nothing uploaded)")
 	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: upload the SBOM and print a report link that expires in 24 hours (the runtime snapshot stays local)")

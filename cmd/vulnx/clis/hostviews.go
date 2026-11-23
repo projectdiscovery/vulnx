@@ -4,12 +4,17 @@ package clis
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/levels"
+	"github.com/projectdiscovery/gologger/writer"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	"github.com/projectdiscovery/vulnx/v2/pkg/tools/renderer"
@@ -286,18 +291,8 @@ func renderHostText(inv vulnx.HostInventory, res vulnx.StackResult, all bool, c 
 	}
 	if s.Undetermined > 0 {
 		title(fmt.Sprintf("Undetermined · %s", formatNumber(s.Undetermined)))
-		// answers merged from several requests repeat a reason once per request
-		counts, why := map[string]int{}, map[string]string{}
-		var reasons []string
-		for _, r := range s.UndeterminedReasons {
-			if _, ok := counts[r.Reason]; !ok {
-				reasons = append(reasons, r.Reason)
-			}
-			counts[r.Reason] += r.Count
-			why[r.Reason] = r.Why
-		}
-		for _, r := range reasons {
-			fmt.Fprintf(&b, "  %d %s: %s\n", counts[r], termtext.Clean(r), dim(termtext.Clean(why[r])))
+		for _, r := range s.UndeterminedReasons { // one row per reason, merged across requests
+			fmt.Fprintf(&b, "  %d %s: %s\n", r.Count, termtext.Clean(r.Reason), dim(termtext.Clean(r.Why)))
 		}
 	}
 	if notAssessed > 0 {
@@ -369,13 +364,57 @@ func renderHost(view string, inv vulnx.HostInventory, res vulnx.StackResult, ela
 	return renderHostGrid(inv, res, elapsed, c)
 }
 
+// progress is the host scan's progress line: where it is drawn, whether that is a terminal, and the line shown
+// now ("" when none).
+var progress = struct {
+	sync.Mutex
+	out      io.Writer
+	terminal func() bool
+	line     string
+	failed   bool // a write to out failed: progress is not drawn again
+}{out: os.Stderr, terminal: func() bool { return term.IsTerminal(int(os.Stderr.Fd())) }}
+
 // hostProgress shows what a host scan is doing on one line of the terminal, replaced by the next message and
 // cleared by an empty one; nothing when stderr is not a terminal.
 func hostProgress(msg string) {
-	if silent || !term.IsTerminal(int(os.Stderr.Fd())) {
+	if silent || !progress.terminal() {
 		return
 	}
-	fmt.Fprint(os.Stderr, "\r\033[K"+msg)
+	progress.Lock()
+	defer progress.Unlock()
+	progress.line = msg
+	drawProgress("\r\033[K" + msg)
+}
+
+// drawProgress writes to the progress line; progress.Lock is held. Progress is only a courtesy, so a terminal
+// that stops taking it ends it rather than the scan.
+func drawProgress(s string) {
+	if progress.failed {
+		return
+	}
+	if _, err := io.WriteString(progress.out, s); err != nil {
+		progress.failed, progress.line = true, ""
+	}
+}
+
+// progressWriter writes log lines around the progress line: it clears the line first and draws it again after,
+// so a notice never lands on the end of "Checking ... components".
+type progressWriter struct{ next writer.Writer }
+
+func (w progressWriter) Write(data []byte, level levels.Level) {
+	progress.Lock()
+	defer progress.Unlock()
+	if progress.line != "" {
+		drawProgress("\r\033[K")
+	}
+	w.next.Write(data, level)
+	if progress.line != "" {
+		drawProgress(progress.line)
+	}
+}
+
+func init() {
+	gologger.DefaultLogger.SetWriter(progressWriter{next: writer.NewCLI()})
 }
 
 // headline is a host scan's first line: what was checked and what needs doing.

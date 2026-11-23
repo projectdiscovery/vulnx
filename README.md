@@ -301,15 +301,17 @@ an agent set to run commands without asking; a model file that imports something
 Ollama or LM Studio set to listen beyond this machine. These are read from the files and are risks, not verdicts:
 the JSON lists them under `host.agent_surface` and `host.risks`, apart from the vulnerabilities.
 
-A scan printed to the terminal also writes the full result as `vulnx-host-<date>.json` in the current directory
-(readable by you only): every component with its advisories, where it was found, how to update it, Go reachability,
-the runtime snapshot and what was not checked. `--json`, `-o` and `--vex` write the result instead.
+A scan printed to the terminal always writes two files in the current directory, readable by you only: the full
+result as `vulnx-host-<date>.json` (every component with its advisories, where it was found, how to update it, Go
+reachability, the runtime snapshot and what was not checked) and what was checked as the CycloneDX SBOM
+`vulnx-host-<date>.cdx.json`, which holds no runtime data. `--json`, `-o` and `--vex` write the result instead of
+both; with them the SBOM is written only when `--sbom=path` names it.
 ```bash
-vulnx scan --host                       # the grid, and the full result as vulnx-host-<date>.json
+vulnx scan --host                       # the grid; the full result and the SBOM as vulnx-host-<date>.json / .cdx.json
 vulnx scan --host --view actions        # what to update, most urgent first, as commands
 vulnx scan --host --view details        # per component (also: brief, programs, markdown)
 vulnx scan --host --json                # the full result on stdout (-o names a file)
-vulnx scan --host --sbom                # also write what was checked as a CycloneDX SBOM (vulnx-host-<date>.cdx.json)
+vulnx scan --host --sbom=host.cdx.json  # name the SBOM file (an existing file is not overwritten)
 vulnx scan --host --graph               # also write a local graph page of the findings
 vulnx scan --host --report              # also upload the SBOM and print a link that expires in 24 hours
 vulnx scan --host --fail-on kev         # exit 2 if a reachable finding is known exploited
@@ -329,7 +331,7 @@ and states its scope and gaps. No service is contacted, no privilege raised, and
 environments or secrets read; a listening executable's embedded Go or Rust package versions are read from the file,
 never by running it. Wildcard and specific bind addresses do not establish internet access. `--root` skips it.
 
-`--sbom` names, for each component, the source that read it and the places that hold it, and for each place where
+The SBOM names, for each component, the source that read it and the places that hold it, and for each place where
 it is on disk and how it is updated; home directories read `~`, and places seen only by the runtime snapshot are
 left out. `--graph` writes `vulnx-host-<date>.graph.html`: one page that loads nothing from the network, drawing
 the places things are installed in, the affected components there and the advisories that affect them.

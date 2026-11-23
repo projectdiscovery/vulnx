@@ -9,9 +9,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/projectdiscovery/gologger/levels"
 	"github.com/projectdiscovery/vulnx/v2"
 	"github.com/spf13/pflag"
 )
@@ -111,7 +114,7 @@ func TestRunHostScanJSON(t *testing.T) {
 	saved := vulnxClient
 	t.Cleanup(func() {
 		vulnxClient = saved
-		scanHost, scanRoot, scanFailOn, jsonOutput, outputFile = false, "", "", false, ""
+		scanHost, scanRoot, scanFailOn, jsonOutput, outputFile, scanSBOM = false, "", "", false, "", ""
 	})
 	vulnxClient, scanHost, scanRoot, jsonOutput = client, true, root, true
 	outputFile = filepath.Join(t.TempDir(), "host.json")
@@ -131,6 +134,16 @@ func TestRunHostScanJSON(t *testing.T) {
 	}
 	if left, err := filepath.Glob("vulnx-host-*"); err != nil || len(left) > 0 {
 		t.Errorf("--json left %v (%v)", left, err)
+	}
+	scanSBOM = filepath.Join(t.TempDir(), "named.cdx.json") // named, the SBOM is written with --json too
+	if err := os.RemoveAll(outputFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runHostScan(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(scanSBOM); err != nil || !bytes.Contains(raw, []byte(`"CycloneDX"`)) {
+		t.Errorf("named SBOM: %v", err)
 	}
 }
 
@@ -157,5 +170,92 @@ func TestStdoutTextFails(t *testing.T) {
 	}
 	if first == nil || out.err != first {
 		t.Errorf("%v %v", first, out.err)
+	}
+}
+
+// fakeLog writes a log line where the progress line is drawn.
+type fakeLog struct{ out *bytes.Buffer }
+
+func (f fakeLog) Write(data []byte, _ levels.Level) { f.out.Write(append(data, '\n')) }
+
+// TestProgressAroundLogLines clears the progress line before a log line and draws it again after, and draws no
+// progress where stderr is not a terminal.
+func TestProgressAroundLogLines(t *testing.T) {
+	var out bytes.Buffer
+	saved := progress.out
+	savedTerminal := progress.terminal
+	t.Cleanup(func() { progress.out, progress.terminal, progress.line, progress.failed = saved, savedTerminal, "", false })
+	progress.out, progress.terminal = &out, func() bool { return true }
+	w := progressWriter{next: fakeLog{&out}}
+	w.Write([]byte("[INF] before any progress"), levels.LevelInfo)
+	hostProgress("Checking 7,412 components ...")
+	w.Write([]byte("[INF] SecurityContext: 503 Service Unavailable; retrying in 5.5s"), levels.LevelInfo)
+	hostProgress("")
+	w.Write([]byte("[INF] after"), levels.LevelInfo)
+	want := "[INF] before any progress\n" +
+		"\r\033[KChecking 7,412 components ..." +
+		"\r\033[K[INF] SecurityContext: 503 Service Unavailable; retrying in 5.5s\nChecking 7,412 components ..." +
+		"\r\033[K" + "[INF] after\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+	out.Reset()
+	progress.terminal = func() bool { return false }
+	hostProgress("Checking ...")
+	if out.Len() != 0 {
+		t.Errorf("progress on a non-terminal: %q", out.String())
+	}
+}
+
+// TestPrintHostScanFiles writes the day's JSON report and SBOM, readable by their owner only, and lists both under
+// the grid in the label column.
+func TestPrintHostScanFiles(t *testing.T) {
+	t.Chdir(t.TempDir())
+	inv, res := hostFixture()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	done := make(chan []byte)
+	go func() {
+		raw, err := io.ReadAll(r)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- raw
+	}()
+	err = printHostScan(t.Context(), inv, res, time.Second)
+	os.Stdout = saved
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	out := string(<-done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{".json", ".cdx.json"} {
+		path, err := filepath.Abs("vulnx-host-" + time.Now().Format("2006-01-02") + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode %v", path, info.Mode().Perm())
+		}
+		label := "  JSON           "
+		if suffix == ".cdx.json" {
+			label = "  SBOM           "
+		}
+		if !strings.Contains(out, label+path+"\n") {
+			t.Errorf("no %q line in\n%s", label+path, out)
+		}
+	}
+	if !strings.Contains(out, "Add --report for a shareable link") {
+		t.Errorf("no --report hint in\n%s", out)
 	}
 }
