@@ -1,0 +1,31 @@
+[[package]]
+name = "Django"
+version = "3.2.0"
+description = "x"
+optional = false
+python-versions = ">=3.6"
+
+[package.dependencies]
+asgiref = ">=3.3.2,<4"
+
+[[package]]
+name = "requests"
+version = "2.25.1"
+description = "x"
+optional = false
+python-versions = "*"
+
+[package.extras]
+socks = ["PySocks (>=1.5.6,!=1.5.7)"]
+
+[[package]]
+name = "typing_extensions"
+version = "4.5.0"
+description = "x"
+optional = false
+python-versions = ">=3.7"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.9"
+content-hash = "abc"

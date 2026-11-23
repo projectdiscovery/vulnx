@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestCheckHostFlags(t *testing.T) {
 		fs := pflag.NewFlagSet("scan", pflag.ContinueOnError)
 		var s string
 		var b bool
-		for _, name := range hostOnlyFlags {
+		for _, name := range append(slices.Clone(hostOnlyFlags), inventoryFlags...) {
 			if name == "graph" || name == "report" {
 				fs.BoolVar(&b, name, false, "")
 			} else {
@@ -47,6 +48,22 @@ func TestCheckHostFlags(t *testing.T) {
 	if err := checkHostFlags(flags(), []string{"package-lock.json"}); err != nil {
 		t.Errorf("a file scan: %v", err)
 	}
+	folder := t.TempDir()
+	for _, set := range [][]string{{"--fail-on=high"}, {"--sbom=x.json"}, {"--report"}} {
+		if err := checkHostFlags(flags(set...), []string{folder}); err != nil {
+			t.Errorf("%v with a folder: %v", set, err)
+		}
+	}
+	for _, set := range [][]string{{"--view=actions"}, {"--graph"}, {"--root=/mnt"}} {
+		if err := checkHostFlags(flags(set...), []string{folder}); err == nil || !strings.Contains(err.Error(), "only with --host") {
+			t.Errorf("%v with a folder: %v", set, err)
+		}
+	}
+	scanFailOn = "medium"
+	if err := checkHostFlags(flags(), []string{folder}); err == nil {
+		t.Error("an unknown --fail-on level with a folder")
+	}
+	scanFailOn = ""
 	scanHost, scanView = true, "grid"
 	if err := checkHostFlags(flags("--fail-on=high"), nil); err != nil {
 		t.Errorf("--host --fail-on: %v", err)

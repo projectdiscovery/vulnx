@@ -18,24 +18,35 @@ import (
 )
 
 // hostOnlyFlags mean something only with --host: given without it they are an error, not ignored.
-var hostOnlyFlags = []string{"view", "sbom", "graph", "report", "fail-on", "root"}
+var hostOnlyFlags = []string{"view", "graph", "root"}
 
-// checkHostFlags rejects a host-only flag without --host, and --host's flags with values it does not take.
+// inventoryFlags mean something with --host or a folder.
+var inventoryFlags = []string{"sbom", "report", "fail-on"}
+
+// checkHostFlags rejects a flag that --host or a folder scan gives a meaning to on any other scan, and --host's
+// flags with values it does not take.
 func checkHostFlags(flags *pflag.FlagSet, args []string) error {
+	_, folder := folderArg(args)
 	if !scanHost {
 		for _, name := range hostOnlyFlags {
 			if flags.Changed(name) {
 				return fmt.Errorf("--%s works only with --host", name)
 			}
 		}
-		return nil
+		if !folder {
+			for _, name := range inventoryFlags {
+				if flags.Changed(name) {
+					return fmt.Errorf("--%s works only with --host or a folder", name)
+				}
+			}
+		}
 	}
 	switch {
-	case len(args) > 0 || scanList != "" || scanImage != "":
+	case scanHost && (len(args) > 0 || scanList != "" || scanImage != ""):
 		return errors.New("--host scans this machine: it takes no file, package versions, --list or --image")
-	case !slices.Contains(hostViews, scanView):
+	case scanHost && !slices.Contains(hostViews, scanView):
 		return fmt.Errorf("--view takes %s (got %s)", strings.Join(hostViews, ", "), scanView)
-	case scanFailOn != "" && !slices.Contains(failOnLevels, scanFailOn):
+	case (scanHost || folder) && scanFailOn != "" && !slices.Contains(failOnLevels, scanFailOn):
 		return fmt.Errorf("--fail-on takes %s (got %s)", strings.Join(failOnLevels, ", "), scanFailOn)
 	}
 	return nil

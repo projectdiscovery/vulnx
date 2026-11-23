@@ -83,7 +83,12 @@ func writeHostSBOM(path string, inv vulnx.HostInventory) (string, error) {
 // absolute path. The data goes to a new file beside it, readable by its owner only (a report holds paths and
 // the runtime snapshot), renamed over the old one: a symlink planted at the name is replaced, not followed.
 func writeDated(suffix string, data []byte) (string, error) {
-	abs, err := filepath.Abs("vulnx-host-" + time.Now().Format("2006-01-02") + suffix)
+	return writeDatedAs("vulnx-host-", suffix, data)
+}
+
+// writeDatedAs is writeDated for a name of its own: prefix<date><suffix>.
+func writeDatedAs(prefix, suffix string, data []byte) (string, error) {
+	abs, err := filepath.Abs(prefix + time.Now().Format("2006-01-02") + suffix)
 	if err != nil {
 		return "", err
 	}

@@ -44,8 +44,8 @@ var (
 	scanRoot    string
 
 	scanCmd = &cobra.Command{
-		Use:   "scan <file> | scan <package@version>... | scan --image <ref> | scan --host",
-		Short: "scan a dependency file or a list of package versions",
+		Use:   "scan <file> | scan <folder> | scan <package@version>... | scan --image <ref> | scan --host",
+		Short: "scan a dependency file, a folder or a list of package versions",
 		Long: `Scan with SecurityContext and list each package as affected, clean, undetermined or unseen.
 
 A file is recognised by name: package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock, uv.lock, poetry.lock,
@@ -53,6 +53,12 @@ Cargo.lock, go.mod, Gemfile.lock, composer.lock, packages.lock.json, gradle.lock
 docker-compose.yml (each service's image is pulled and scanned), or a Dockerfile (its base image and the packages
 its RUN lines install). The file is uploaded to SecurityContext and scanned there. A CycloneDX or SPDX JSON SBOM is
 read here instead and its components checked as a list.
+
+Or a folder: its lockfiles and manifests (package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml,
+requirements*.txt, Pipfile.lock, poetry.lock, uv.lock, go.mod, Cargo.lock, Gemfile.lock, composer.lock) and JSON
+SBOMs are read here, with the packages installed in it (node_modules, site-packages, gem specifications), its Go
+and Rust programs and the MCP servers its own configuration starts. Only names and versions are sent; no file is
+uploaded and paths stay on this machine. A git, local or unpinned dependency is listed as not checked.
 
 Or give package versions directly (arguments, --list file, or stdin), checked in one request:
   ecosystem/name@version          npm/lodash@4.17.20, pypi/django@3.2.0, maven/org.apache.logging.log4j:log4j-core@2.14.1
@@ -75,6 +81,8 @@ Or an operating system:
 "affected" / "exploitable" with the fixed version when known, undetermined rows "under_investigation" / "in_triage".`,
 		Example: `
 vulnx scan package-lock.json
+vulnx scan .
+vulnx scan ~/src/app --fail-on high --sbom
 vulnx scan sbom.cdx.json --vex openvex -o sbom.vex.json
 vulnx scan compose.yaml --json
 vulnx scan npm/lodash@4.17.20 pypi/django@3.2.0
@@ -97,6 +105,17 @@ cat versions.txt | vulnx scan`,
 				gologger.Fatal().Msgf("%s", err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), scanWait)
+			if dir, ok := folderArg(args); ok {
+				failed, err := runFolderScan(ctx, dir, textShow(cmd.Flags().Changed("show")))
+				cancel()
+				if err != nil {
+					fatalScan(err)
+				}
+				if failed {
+					os.Exit(2)
+				}
+				return
+			}
 			if scanHost {
 				failed, err := runHostScan(ctx)
 				cancel()
@@ -493,6 +512,43 @@ func renderStackText(res vulnx.StackResult, show int, from scanSource) string {
 	if grid {
 		b.WriteString(renderStackGrid(res, from, colorConfig()))
 	}
+	b.WriteString(renderStackList(res, show))
+	s := res.Summary
+	if !grid {
+		// counted from the rows: the API's summary counts these for packages, not for products (CPE entries)
+		kev, poc := 0, 0
+		for _, it := range res.Items {
+			k, p := itemExploits(it)
+			if k {
+				kev++
+			}
+			if p {
+				poc++
+			}
+		}
+		fmt.Fprintf(&b, "\n%s: %d affected, %d clean, %d undetermined, %d unseen", plural(s.Packages, "package", "packages"),
+			s.Affected, s.Clean, s.Undetermined, s.Unseen)
+		if kev > 0 || poc > 0 {
+			fmt.Fprintf(&b, " (%d with a known exploited CVE, %d with a public exploit)", kev, poc)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(undeterminedLines(res))
+	return b.String()
+}
+
+// undeterminedLines says why items were left undetermined, a line per reason.
+func undeterminedLines(res vulnx.StackResult) string {
+	var b strings.Builder
+	for _, r := range res.Summary.UndeterminedReasons {
+		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", termtext.Clean(r.Reason), r.Count, termtext.Clean(r.Why))
+	}
+	return b.String()
+}
+
+// renderStackList lists each package with its CVEs (show caps them, 0: all), affected first.
+func renderStackList(res vulnx.StackResult, show int) string {
+	var b strings.Builder
 	items := append([]vulnx.StackItem(nil), res.Items...)
 	statusRank := map[string]int{"affected": 0, "undetermined": 1, "unseen": 2, "clean": 3}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -569,29 +625,6 @@ func renderStackText(res vulnx.StackResult, show int, from scanSource) string {
 			}
 		}
 	}
-	s := res.Summary
-	if !grid {
-		// counted from the rows: the API's summary counts these for packages, not for products (CPE entries)
-		kev, poc := 0, 0
-		for _, it := range res.Items {
-			k, p := itemExploits(it)
-			if k {
-				kev++
-			}
-			if p {
-				poc++
-			}
-		}
-		fmt.Fprintf(&b, "\n%s: %d affected, %d clean, %d undetermined, %d unseen", plural(s.Packages, "package", "packages"),
-			s.Affected, s.Clean, s.Undetermined, s.Unseen)
-		if kev > 0 || poc > 0 {
-			fmt.Fprintf(&b, " (%d with a known exploited CVE, %d with a public exploit)", kev, poc)
-		}
-		b.WriteString("\n")
-	}
-	for _, r := range s.UndeterminedReasons {
-		fmt.Fprintf(&b, "  undetermined %s (%d): %s\n", termtext.Clean(r.Reason), r.Count, termtext.Clean(r.Why))
-	}
 	return b.String()
 }
 
@@ -602,16 +635,16 @@ func init() {
 	scanCmd.Flags().StringVar(&scanVEX, "vex", "", "write a VEX document instead: openvex or cyclonedx")
 	scanCmd.Flags().StringVar(&scanAuthor, "vex-author", "vulnx", "author of the OpenVEX document")
 	scanCmd.Flags().DurationVar(&scanWait, "wait", 20*time.Minute, "how long to wait for the scan (image pulls can take minutes)")
-	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output (with --host: every affected component and every one not checked)")
+	scanCmd.Flags().BoolVar(&scanShowAll, "show-all", false, "list every CVE per package in text output (with --host: every affected component and every one not checked; with a folder: its clean packages too)")
 	scanCmd.Flags().StringVar(&scanImage, "image", "", "scan a public container image by reference (e.g. debian:12-slim, ghcr.io/owner/name:tag)")
 	scanCmd.Flags().StringVar(&scanPlat, "platform", "", "image platform, e.g. linux/arm64 (default linux/amd64)")
 	scanCmd.Flags().BoolVar(&scanHost, "host", false, "scan what is installed on this machine; sends the names and versions it finds to SecurityContext")
 	scanCmd.Flags().StringVar(&scanView, "view", "grid", "with --host, what the terminal shows: grid (findings per source and severity), actions, brief, programs, details or markdown")
-	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: name the CycloneDX SBOM of what was checked, written beside the JSON report as vulnx-host-<date>.cdx.json unless named (an existing file is not overwritten; with --json, -o or --vex it is written only when named)")
+	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: name the CycloneDX SBOM of what was checked, written beside the JSON report as vulnx-host-<date>.cdx.json unless named (an existing file is not overwritten; with --json, -o or --vex it is written only when named); with a folder: write its SBOM (vulnx-folder-<date>.cdx.json unless named)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
 	scanCmd.Flags().BoolVar(&scanGraph, "graph", false, "with --host: also write a local graph page of the findings (opens in a browser, nothing uploaded)")
-	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host: upload the SBOM and print a report link that expires in 24 hours (the runtime snapshot stays local)")
-	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host: exit 2 if a reachable finding is at or above this level: kev (known exploited), critical or high")
+	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host or a folder: upload the SBOM and print a report link that expires in 24 hours (the runtime snapshot stays local)")
+	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host or a folder: exit 2 if a reachable finding is at or above this level: kev (known exploited), critical or high")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of this machine (no runtime snapshot)")
 	rootCmd.AddCommand(scanCmd)
 }

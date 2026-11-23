@@ -1,0 +1,35 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+  .:
+    dependencies:
+      lodash:
+        specifier: 4.17.20
+        version: 4.17.20
+      react-dom:
+        specifier: 18.2.0
+        version: 18.2.0(react@18.2.0)
+
+packages:
+  lodash@4.17.20:
+    resolution: {integrity: sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==}
+  '@babel/core@7.22.0':
+    resolution: {integrity: sha512-x}
+  react-dom@18.2.0:
+    resolution: {integrity: sha512-x}
+    peerDependencies:
+      react: ^18.2.0
+  react@18.2.0:
+    resolution: {integrity: sha512-x}
+
+snapshots:
+  lodash@4.17.20: {}
+  '@babel/core@7.22.0': {}
+  react-dom@18.2.0(react@18.2.0):
+    dependencies:
+      react: 18.2.0
+  react@18.2.0: {}

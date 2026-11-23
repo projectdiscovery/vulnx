@@ -259,6 +259,26 @@ vulnx scan --list versions.txt --json
 vulnx scan sbom.cdx.json --vex openvex -o sbom.openvex.json     # OpenVEX
 vulnx scan sbom.cdx.json --vex cyclonedx -o sbom.vex.cdx.json   # CycloneDX VEX
 ```
+**Scan a folder:** `vulnx scan <folder>` reads a project or any directory here, without uploading a file. It
+parses the lockfiles and manifests it finds (package-lock.json and npm-shrinkwrap.json, yarn.lock in both formats,
+pnpm-lock.yaml, requirements*.txt, Pipfile.lock, poetry.lock, uv.lock, go.mod with its replace directives,
+Cargo.lock, Gemfile.lock, composer.lock) and JSON SBOMs; reads the packages installed under it (node_modules,
+site-packages, gem specifications), its Go and Rust programs, and the MCP servers its own configuration starts
+(`.mcp.json`, `.cursor/mcp.json`, `.vscode/mcp.json`). The walk stays inside the folder: links are not followed and
+version control directories are not entered. A package found in several places is checked once and keeps every
+place, relative to the folder. A git, local or unpinned dependency has no release to judge and is listed as not
+checked. Only the names and versions are sent to SecurityContext, as with `--host`; the files and their paths stay
+on this machine.
+
+The terminal shows the grid with one row per source (each lockfile by its path, installed packages by kind, Go and
+Rust programs), then the affected packages; `--show-all` lists the clean ones too. `--json`, `-o`, `--vex`,
+`--full`, `--fail-on`, `--sbom` (the folder's SBOM, `vulnx-folder-<date>.cdx.json` unless named) and `--report`
+work as with `--host`; Go reachability is checked for the programs in the folder.
+```bash
+vulnx scan .                            # the current directory
+vulnx scan ~/src/app --fail-on high     # exit 2 if a reachable finding is known exploited, critical or high
+vulnx scan ~/src/app --json -o app.json
+```
 **Scan an operating system:** a container image, or the machine vulnx runs on:
 ```bash
 vulnx scan --image debian:12-slim                       # a public image: SecurityContext pulls and scans it
