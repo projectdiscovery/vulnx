@@ -127,7 +127,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&httpProxy, "proxy", "", "http proxy to use (e.g. http://127.0.0.1:8080)")
 	rootCmd.PersistentFlags().DurationVar(&httpTimeout, "timeout", defaultTimeout, "http request timeout (e.g. 30s, 1m)")
 
-	rootCmd.PersistentFlags().BoolVar(&debugReq, "debug-req", false, "dump http requests to stderr (api key redacted)")
+	rootCmd.PersistentFlags().BoolVar(&debugReq, "debug-req", false, "dump http requests to stderr")
 	rootCmd.PersistentFlags().BoolVar(&debugResp, "debug-resp", false, "dump http responses to stderr")
 
 	// Add persistent json and output flags

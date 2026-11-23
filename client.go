@@ -6,7 +6,7 @@
 //
 //	ctx := context.Background()
 //
-//	client, err := vulnx.New() // reads SECURITYCONTEXT_API_KEY when set
+//	client, err := vulnx.New()
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -23,7 +23,7 @@
 //
 // # Rate Limiting
 //
-// Calls without an API key are rate limited per address. The client waits out a short 429 by itself;
+// Calls are anonymous and rate limited per address. The client waits out a short 429 by itself;
 // a longer one is returned as ErrTooManyRequests.
 //
 // The client is safe for concurrent use by multiple goroutines.
@@ -94,7 +94,7 @@ var (
 // construction.
 //
 //	client, err := vulnx.New(
-//	    vulnx.WithAPIKey("<YOUR_KEY>"),
+//	    vulnx.WithUserAgent("my-tool/1.0"),
 //	    vulnx.WithRetryableHTTPOptions(retryablehttp.Options{RetryMax: 5}),
 //	)
 type Option func(*Client)

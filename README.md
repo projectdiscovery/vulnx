@@ -36,8 +36,7 @@ vulnx id CVE-2021-44228                # One CVE in detail
 
 vulnx reads [SecurityContext](https://securitycontext.com) (`https://api.securitycontext.com/v1/cves`). It serves
 CVE records only: nuclei template records without a CVE (`vulnx id <template-id>`) are not supported. No API key is
-needed; see [API key and rate limits](#api-key-and-rate-limits). `VULNX_API_URL` points vulnx at another
-SecurityContext deployment.
+needed; see [Rate limits](#rate-limits). `VULNX_API_URL` points vulnx at another SecurityContext deployment.
 
 Queries are `field:value` terms joined with `&&`; `||` works between values of one field
 (`severity:critical || severity:high`), a keyword search takes up to 5 words, and a search filters on one vendor or
@@ -93,7 +92,7 @@ vulnx search "apache" --no-color          # No colors (also off when output is n
 ```bash
 vulnx --verbose search "apache"           # Verbose (-v): also show notices hidden by default
 vulnx --debug search "apache"             # Debug logs plus request and response dumps
-vulnx --debug-req search "apache"         # Dump requests only (API key redacted)
+vulnx --debug-req search "apache"         # Dump requests only
 vulnx --debug-resp search "apache"        # Dump responses only
 ```
 
@@ -403,17 +402,10 @@ vulnx search "age_in_days:>365"           # Older than 1 year
 
 ## Configuration
 
-### API key and rate limits
+### Rate limits
 
-vulnx works without an API key: calls are anonymous and SecurityContext allows a limited number of requests a minute
-per address. Set `SECURITYCONTEXT_API_KEY` to send a SecurityContext API key with every request. The key goes only
-over https (or to a loopback host) and is not sent on a redirect to another host. A short rate limit is waited out
-automatically; a longer one stops with a message.
-
-```bash
-export SECURITYCONTEXT_API_KEY=<your key>
-vulnx healthcheck                        # shows whether a key is set and that the API answers
-```
+Calls are anonymous, and SecurityContext allows a limited number of requests a minute per address. A short rate limit
+is waited out automatically; a longer one stops with a message.
 
 **Version management:**
 ```bash
@@ -433,7 +425,7 @@ vulnx --disable-update-check search "apache"  # Disable automatic update checks
 
 ## Troubleshooting
 
-**Rate limit issues:** wait a minute and retry, or set an API key (see [API key and rate limits](#api-key-and-rate-limits)).
+**Rate limit issues:** wait a minute and retry (see [Rate limits](#rate-limits)).
 
 **"unsupported query":** the query uses a field, operator or sort SecurityContext does not offer; the message says
 which. Run `vulnx filters` for the fields that work.
@@ -456,7 +448,7 @@ vulnx search --fields cve_id,severity "apache"  # Fewer fields
 vulnx --timeout 60s search "apache"       # Increase timeout
 vulnx --proxy http://localhost:8080 search "apache"  # Use proxy
 vulnx --debug search "apache"             # Debug mode
-vulnx --debug-req search "apache"         # Dump requests to stderr (API key redacted)
+vulnx --debug-req search "apache"         # Dump requests to stderr
 ```
 
 ## Getting Help
@@ -498,28 +490,23 @@ For advanced usage patterns and examples, see [USAGE.md](USAGE.md).
 vulnx no longer ships an MCP server. Point an MCP client at the hosted SecurityContext server,
 `https://mcp.securitycontext.com` (Streamable HTTP, stateless). It offers three tools: `get_security_context` (one
 repository, package, product, CVE, ...), `search_security_context` (find and filter them) and
-`create_security_context` (scan a public repository it does not have yet). Anonymous use works with rate limits; send
-a SecurityContext API key in the `X-Api-Key` header for higher limits.
+`create_security_context` (scan a public repository it does not have yet). It is anonymous and rate limited.
 
 ```json
 {
   "mcpServers": {
     "securitycontext": {
-      "url": "https://mcp.securitycontext.com",
-      "headers": { "X-Api-Key": "<your key>" }
+      "url": "https://mcp.securitycontext.com"
     }
   }
 }
 ```
 
-Leave out `headers` to use it anonymously.
-
 ## Breaking Changes in v2 (SecurityContext backend)
 
 - The API is `https://api.securitycontext.com` (override with `VULNX_API_URL`); the `/v2/vulnerability` API is no
   longer called.
-- ProjectDiscovery Cloud (PDCP) keys are not used: `vulnx auth` is removed. Set `SECURITYCONTEXT_API_KEY` instead,
-  or use vulnx without a key. In Go, use `vulnx.WithAPIKey` (`WithPDCPKey` and `WithKeyFromEnv` are deprecated).
+- `vulnx auth` is removed: vulnx works without an API key (ProjectDiscovery Cloud keys are no longer used).
 - Only CVE records are served: `vulnx id` with a nuclei template id that has no CVE fails.
 - Removed search flags: `--tags`, `--vuln-type`, `--hackerone`, `--highlight`, `--range-facets`. `--product` and
   `--vendor` take one value. `--cvss-score` and `--epss-score` take a minimum (`>=N`).

@@ -1,7 +1,7 @@
 # vulnx Advanced Usage Guide
 
 Every example below is a valid query for the SecurityContext backend. `vulnx filters` lists the fields; README.md
-describes the query rules and the [API key and rate limits](README.md#api-key-and-rate-limits).
+describes the query rules and the [rate limits](README.md#rate-limits).
 
 ## Quick Reference
 
@@ -195,7 +195,7 @@ vulnx search "product:apache:log4j && is_remote:true"
 
 ```bash
 vulnx healthcheck                       # API URL, whether a key is set, and that the API answers
-vulnx --debug-req search "apache"       # request dump on stderr (API key redacted)
+vulnx --debug-req search "apache"       # request dump on stderr
 vulnx filters                           # the fields a query can use
 ```
 
@@ -208,4 +208,4 @@ keyword searches to 5 words, and search one vendor or product at a time.
 - Start broad and add filters; use `--limit 1` to check a query before a large run.
 - Use `--json` and `jq` in scripts, and `--silent` to keep the banner out of output.
 - Use `analyze` or `--term-facets` to see how matches are distributed before fetching rows.
-- Set `SECURITYCONTEXT_API_KEY` for heavy scripted use; anonymous calls are rate limited per address.
+- Calls are anonymous and rate limited per address: pace scripted use, and expect a long run to wait out limits.
