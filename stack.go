@@ -23,8 +23,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/projectdiscovery/utils/errkit"
 )
 
 // StackAdvisory is one advisory row of a stack item.
@@ -148,10 +146,10 @@ func isEcosystem(s string) bool {
 func (c *Client) CheckPackages(ctx context.Context, entries []string) (StackResult, error) {
 	var res StackResult
 	if len(entries) == 0 {
-		return res, errkit.Append(ErrBadRequest, fmt.Errorf("nothing to check"))
+		return res, wrapErr(ErrBadRequest, fmt.Errorf("nothing to check"))
 	}
 	if len(entries) > MaxCheckEntries {
-		return res, errkit.Append(ErrBadRequest, fmt.Errorf("at most %d entries per check (got %d)", MaxCheckEntries, len(entries)))
+		return res, wrapErr(ErrBadRequest, fmt.Errorf("at most %d entries per check (got %d)", MaxCheckEntries, len(entries)))
 	}
 	norm := make([]string, len(entries))
 	for i, e := range entries {
@@ -167,11 +165,11 @@ func (c *Client) checkChunk(ctx context.Context, entries []string) (StackResult,
 	var res StackResult
 	req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", nil, map[string]any{"packages": entries})
 	if err != nil {
-		return res, errkit.Append(ErrRequestBuildFailure, err)
+		return res, wrapErr(ErrRequestBuildFailure, err)
 	}
 	var page stackPage
 	if err := c.do(req, &page); err != nil {
-		return res, errkit.Append(ErrRequestFailed, err)
+		return res, err
 	}
 	if !page.Truncated || len(page.Items) >= page.Total || len(entries) < 2 {
 		res.Summary, res.Items, res.Total = page.Summary, page.Items, page.Total
@@ -217,14 +215,14 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 	var out []StackAdvisory
 	path := fmt.Sprintf("/v1/products/%s/%s/versions/%s", url.PathEscape(vendor), url.PathEscape(product), url.PathEscape(version))
 	cursor := ""
-	for page := 0; page < 200; page++ {
+	for range 200 {
 		q := url.Values{"limit": {"100"}}
 		if cursor != "" {
 			q.Set("cursor", cursor)
 		}
 		req, err := c.newRequest(ctx, http.MethodGet, path, q, nil)
 		if err != nil {
-			return out, errkit.Append(ErrRequestBuildFailure, err)
+			return out, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var resp struct {
 			Advisories []struct {
@@ -239,18 +237,21 @@ func (c *Client) ProductVersionCVEs(ctx context.Context, vendor, product, versio
 			Cursor string `json:"cursor"`
 		}
 		if err := c.do(req, &resp); err != nil {
-			return out, errkit.Append(ErrRequestFailed, err)
+			return out, err
 		}
 		for _, a := range resp.Advisories {
 			out = append(out, StackAdvisory{AdvisoryID: a.CVE, CVE: a.CVE, Name: a.Name, Severity: a.Severity,
 				CvssScore: a.CvssScore, EpssScore: a.EpssScore, Match: a.Match, Exploit: a.Exploit})
 		}
 		if resp.Cursor == "" || len(resp.Advisories) == 0 {
-			break
+			return out, nil
+		}
+		if resp.Cursor == cursor {
+			return out, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s:%s %s: the server repeated a page cursor after %d CVEs", vendor, product, version, len(out)))
 		}
 		cursor = resp.Cursor
 	}
-	return out, nil
+	return out, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s:%s %s has more than %d CVEs; only %d were read", vendor, product, version, 200*100, len(out)))
 }
 
 // ScanFile uploads a lockfile, SBOM, Compose file or Dockerfile (POST /v1/stack, multipart) and returns the
@@ -275,25 +276,22 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/stack", bytes.NewReader(body.Bytes()))
 	if err != nil {
-		return "", errkit.Append(ErrCreateHTTPRequest, err)
+		return "", wrapErr(ErrCreateHTTPRequest, err)
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("User-Agent", c.userAgent)
-	if c.apiKey != "" {
-		req.Header.Set("X-Api-Key", c.apiKey)
-	}
+	c.setHeaders(req)
 	// a body that can be sent again, for do()'s one retry after a 429
 	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body.Bytes())), nil }
 	var page stackPage
 	if err := c.do(req, &page); err != nil {
-		return "", errkit.Append(ErrRequestFailed, err)
+		return "", wrapErr(ErrRequestFailed, err)
 	}
 	id := page.ID
 	if id == "" && page.Stack != nil {
 		id = page.Stack.ID
 	}
 	if id == "" {
-		return "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("the upload was accepted but no stack id came back"))
+		return "", wrapErr(ErrUnknownAPIError, fmt.Errorf("the upload was accepted but no stack id came back"))
 	}
 	return id, nil
 }
@@ -303,18 +301,18 @@ func (c *Client) ScanFile(ctx context.Context, path string) (string, error) {
 func (c *Client) GetStack(ctx context.Context, id string) (StackResult, error) {
 	var res StackResult
 	cursor := ""
-	for page := 0; page < 500; page++ {
+	for page := range 500 {
 		q := url.Values{"limit": {"100"}}
 		if cursor != "" {
 			q.Set("cursor", cursor)
 		}
 		req, err := c.newRequest(ctx, http.MethodGet, "/v1/stack/"+url.PathEscape(id), q, nil)
 		if err != nil {
-			return res, errkit.Append(ErrRequestBuildFailure, err)
+			return res, wrapErr(ErrRequestBuildFailure, err)
 		}
 		var p stackPage
 		if err := c.do(req, &p); err != nil {
-			return res, errkit.Append(ErrRequestFailed, err)
+			return res, err
 		}
 		if page == 0 {
 			res.Stack = p.Stack
@@ -328,11 +326,14 @@ func (c *Client) GetStack(ctx context.Context, id string) (StackResult, error) {
 		}
 		res.Items = append(res.Items, p.Items...)
 		if p.Cursor == "" || len(p.Items) == 0 {
-			break
+			return res, nil
+		}
+		if p.Cursor == cursor {
+			return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("stack %s: the server repeated a page cursor after %d items", id, len(res.Items)))
 		}
 		cursor = p.Cursor
 	}
-	return res, nil
+	return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("stack %s has more than %d items; only %d were read", id, 500*100, len(res.Items)))
 }
 
 // WaitStack polls a stack until it is ready or failed (or ctx ends), calling progress with each status seen.
@@ -358,7 +359,7 @@ func (c *Client) WaitStack(ctx context.Context, id string, progress func(status 
 			if res.Stack != nil && res.Stack.Error != "" {
 				msg = res.Stack.Error
 			}
-			return res, errkit.Append(ErrUnknownAPIError, fmt.Errorf("%s", msg))
+			return res, wrapErr(ErrUnknownAPIError, fmt.Errorf("%s", msg))
 		}
 		select {
 		case <-ctx.Done():
@@ -383,18 +384,18 @@ type ChangeEntry struct {
 // GetCVEHistory returns the changes SecurityContext recorded for a CVE (oldest first).
 func (c *Client) GetCVEHistory(ctx context.Context, id string) ([]ChangeEntry, error) {
 	if !IsCVEID(id) {
-		return nil, errkit.Append(ErrNotFound, fmt.Errorf("%s is not a CVE id", id))
+		return nil, wrapErr(ErrNotFound, fmt.Errorf("%s is not a CVE id", id))
 	}
 	q := url.Values{"include": {"history"}}
 	req, err := c.newRequest(ctx, http.MethodGet, "/v1/cves/"+url.PathEscape(strings.ToUpper(strings.TrimSpace(id))), q, nil)
 	if err != nil {
-		return nil, errkit.Append(ErrRequestBuildFailure, err)
+		return nil, wrapErr(ErrRequestBuildFailure, err)
 	}
 	var resp struct {
 		History []ChangeEntry `json:"history"`
 	}
 	if err := c.do(req, &resp); err != nil {
-		return nil, errkit.Append(ErrRequestFailed, err)
+		return nil, err
 	}
 	return resp.History, nil
 }
@@ -538,17 +539,17 @@ func (c *Client) ScanImage(ctx context.Context, ref, platform string) (string, e
 	}
 	req, err := c.newRequest(ctx, http.MethodPost, "/v1/stack", nil, body)
 	if err != nil {
-		return "", errkit.Append(ErrRequestBuildFailure, err)
+		return "", wrapErr(ErrRequestBuildFailure, err)
 	}
 	var page stackPage
 	if err := c.do(req, &page); err != nil {
-		return "", errkit.Append(ErrRequestFailed, err)
+		return "", wrapErr(ErrRequestFailed, err)
 	}
 	if page.ID == "" && page.Stack != nil {
 		page.ID = page.Stack.ID
 	}
 	if page.ID == "" {
-		return "", errkit.Append(ErrUnknownAPIError, fmt.Errorf("the image scan was accepted but no stack id came back"))
+		return "", wrapErr(ErrUnknownAPIError, fmt.Errorf("the image scan was accepted but no stack id came back"))
 	}
 	return page.ID, nil
 }

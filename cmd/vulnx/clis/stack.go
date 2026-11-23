@@ -17,6 +17,7 @@ import (
 	"github.com/projectdiscovery/gologger"
 	fileutil "github.com/projectdiscovery/utils/file"
 	"github.com/projectdiscovery/vulnx/v2"
+	"github.com/projectdiscovery/vulnx/v2/internal/termtext"
 	"github.com/spf13/cobra"
 )
 
@@ -77,8 +78,18 @@ cat versions.txt | vulnx scan`,
 			ctx, cancel := context.WithTimeout(context.Background(), scanWait)
 			defer cancel()
 			show := scanShow
-			if scanShowAll {
+			// --full asks for every CVE, so the default text cap would hide what it fetched
+			if scanShowAll || scanFull && !cmd.Flags().Changed("show") {
 				show = 0
+			}
+			finish := func(res vulnx.StackResult) {
+				// a VEX states every CVE, not a product's 10 most urgent
+				if scanFull || scanVEX != "" {
+					if err := fillProductCVEs(ctx, &res); err != nil {
+						fatalAPI("fetch the full CVE list", err)
+					}
+				}
+				writeStackOutput(res, scanVEX, show)
 			}
 			// an image by registry reference: pulled and scanned by SecurityContext
 			if scanImage != "" {
@@ -90,14 +101,14 @@ cat versions.txt | vulnx scan`,
 				last := ""
 				res, err := vulnxClient.WaitStack(ctx, id, func(status string) {
 					if status != last && status != "ready" {
-						gologger.Info().Msgf("scan %s", status)
+						gologger.Info().Msgf("scan %s", termtext.Clean(status))
 						last = status
 					}
 				})
 				if err != nil {
 					fatalAPI("scan", err)
 				}
-				writeStackOutput(res, scanVEX, show)
+				finish(res)
 				return
 			}
 			// this machine (or a mounted root filesystem): its OS packages, checked as a list
@@ -114,10 +125,7 @@ cat versions.txt | vulnx scan`,
 				if err != nil {
 					fatalAPI("scan", err)
 				}
-				if scanFull || scanVEX != "" {
-					fillProductCVEs(&res)
-				}
-				writeStackOutput(res, scanVEX, show)
+				finish(res)
 				return
 			}
 			// package versions rather than a file: arguments that are not a file, --list, or stdin
@@ -127,10 +135,7 @@ cat versions.txt | vulnx scan`,
 				if err != nil {
 					fatalAPI("scan", err)
 				}
-				if scanFull || scanVEX != "" {
-					fillProductCVEs(&res)
-				}
-				writeStackOutput(res, scanVEX, show)
+				finish(res)
 				return
 			}
 			// a JSON SBOM is read here and checked as a list (one request, answered at once)
@@ -144,10 +149,7 @@ cat versions.txt | vulnx scan`,
 					if err != nil {
 						fatalAPI("scan", err)
 					}
-					if scanFull || scanVEX != "" {
-						fillProductCVEs(&res) // a VEX states every CVE, not a product's 10 most urgent
-					}
-					writeStackOutput(res, scanVEX, show)
+					finish(res)
 					return
 				}
 			}
@@ -159,14 +161,14 @@ cat versions.txt | vulnx scan`,
 			last := ""
 			res, err := vulnxClient.WaitStack(ctx, id, func(status string) {
 				if status != last && status != "ready" {
-					gologger.Info().Msgf("scan %s", status)
+					gologger.Info().Msgf("scan %s", termtext.Clean(status))
 					last = status
 				}
 			})
 			if err != nil {
 				fatalAPI("scan", err)
 			}
-			writeStackOutput(res, scanVEX, show)
+			finish(res)
 		},
 	}
 )
@@ -235,8 +237,9 @@ func readEntriesFrom(f *os.File) ([]string, error) {
 }
 
 // fillProductCVEs replaces a product item's top rows with its full CVE list (a stack item carries the 10 most
-// urgent; /v1/products/.../versions/... pages through all of them).
-func fillProductCVEs(res *vulnx.StackResult) {
+// urgent; /v1/products/.../versions/... pages through all of them). A failure is returned rather than leaving the
+// item's top rows, since --full and VEX output promise every CVE.
+func fillProductCVEs(ctx context.Context, res *vulnx.StackResult) error {
 	for i := range res.Items {
 		it := &res.Items[i]
 		key, isProduct := strings.CutPrefix(it.Package, "cpe/")
@@ -247,13 +250,13 @@ func fillProductCVEs(res *vulnx.StackResult) {
 		if !ok {
 			continue
 		}
-		rows, err := vulnxClient.ProductVersionCVEs(context.Background(), vendor, product, it.Version)
+		rows, err := vulnxClient.ProductVersionCVEs(ctx, vendor, product, it.Version)
 		if err != nil {
-			gologger.Warning().Msgf("full CVE list for %s %s: %s", key, it.Version, err)
-			continue
+			return fmt.Errorf("%s %s: %w", key, it.Version, err)
 		}
 		it.AdvisoryRows = rows
 	}
+	return nil
 }
 
 var severityRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "none": 4, "": 5}
@@ -282,10 +285,12 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) {
 			gologger.Info().Msgf("Wrote %s", outputFile)
 			return
 		}
-		_, _ = os.Stdout.Write(append(data, '\n'))
+		if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
+			gologger.Error().Msgf("writing output: %s", err)
+		}
 		return
 	}
-	fmt.Print(renderStackText(res, show))
+	fmt.Print(termtext.Clean(renderStackText(res, show)))
 }
 
 // shortOSPackageName shows an OS package purl as name@version
@@ -412,7 +417,7 @@ func renderStackText(res vulnx.StackResult, show int) string {
 
 func init() {
 	scanCmd.Flags().StringVar(&scanList, "list", "", "read package versions from a file (one per line or comma-separated)")
-	scanCmd.Flags().BoolVar(&scanFull, "full", false, "list every CVE of a product version (a scan lists its 10 most urgent)")
+	scanCmd.Flags().BoolVar(&scanFull, "full", false, "list every CVE of a product version (a scan lists its 10 most urgent); text output shows all unless --show is set")
 	scanCmd.Flags().IntVar(&scanShow, "show", 10, "CVEs to list per package in text output (0: all)")
 	scanCmd.Flags().StringVar(&scanVEX, "vex", "", "write a VEX document instead: openvex or cyclonedx")
 	scanCmd.Flags().StringVar(&scanAuthor, "vex-author", "vulnx", "author of the OpenVEX document")

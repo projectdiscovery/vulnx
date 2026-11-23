@@ -73,13 +73,20 @@ type vexStatement struct {
 
 func vexStatements(res StackResult) []vexStatement {
 	var out []vexStatement
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	add := func(s vexStatement) {
-		k := s.cve + "|" + s.product
-		if s.cve == "" || seen[k] {
+		if s.cve == "" {
 			return
 		}
-		seen[k] = true
+		k := s.cve + "|" + s.product
+		// a duplicate row keeps the first statement but can still supply its fixed version
+		if i, ok := seen[k]; ok {
+			if out[i].fix == "" {
+				out[i].fix = s.fix
+			}
+			return
+		}
+		seen[k] = len(out)
 		out = append(out, s)
 	}
 	for _, it := range res.Items {
@@ -155,7 +162,13 @@ func CycloneDXVEX(res StackResult, now time.Time) ([]byte, error) {
 		Affects  []affect `json:"affects"`
 	}
 	vulns := []vuln{}
+	components := []map[string]string{}
+	refs := map[string]bool{}
 	for _, s := range vexStatements(res) {
+		if !refs[s.product] {
+			refs[s.product] = true
+			components = append(components, vexComponent(s.product))
+		}
 		v := vuln{ID: s.cve, Affects: []affect{{Ref: s.product}}}
 		if strings.HasPrefix(s.cve, "CVE-") {
 			v.Source = map[string]string{"name": "NVD", "url": "https://nvd.nist.gov/vuln/detail/" + s.cve}
@@ -178,7 +191,30 @@ func CycloneDXVEX(res StackResult, now time.Time) ([]byte, error) {
 		"specVersion":     "1.5",
 		"version":         1,
 		"metadata":        map[string]any{"timestamp": now.UTC().Format(time.RFC3339), "tools": []map[string]string{{"name": "vulnx", "vendor": "ProjectDiscovery"}}},
+		"components":      components,
 		"vulnerabilities": vulns,
 	}
 	return json.MarshalIndent(doc, "", "  ")
+}
+
+// vexComponent is the CycloneDX component an affects ref points to: its bom-ref is the purl or CPE itself, with
+// the name and version read from it.
+func vexComponent(ref string) map[string]string {
+	c := map[string]string{"type": "library", "bom-ref": ref, "name": ref}
+	switch {
+	case strings.HasPrefix(ref, "pkg:"):
+		c["purl"] = ref
+		body, _, _ := strings.Cut(strings.TrimPrefix(ref, "pkg:"), "?")
+		path, version, _ := strings.Cut(body, "@")
+		c["name"] = path[strings.LastIndex(path, "/")+1:]
+		if version != "" {
+			c["version"] = version
+		}
+	case strings.HasPrefix(ref, "cpe:"):
+		c["cpe"] = ref
+		if cpe, err := parseCPE(ref); err == nil {
+			c["name"], c["version"] = cpe.vendor+":"+cpe.product, cpe.version
+		}
+	}
+	return c
 }
