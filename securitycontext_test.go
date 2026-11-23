@@ -366,3 +366,14 @@ func TestTranslateQuotesAndEscapes(t *testing.T) {
 		t.Error("unescaped parentheses inside a term accepted")
 	}
 }
+
+func TestParseCPENotApplicable(t *testing.T) {
+	// NVD's name for a plain release: update and edition are - (not applicable)
+	got, err := parseCPE("cpe:2.3:o:linux:linux_kernel:5.10:-:-:*:*:*:*:*")
+	if err != nil || *got != (cpeRef{"linux", "linux_kernel", "5.10"}) {
+		t.Errorf("NA attributes: %+v %v", got, err)
+	}
+	if _, err := parseCPE("cpe:2.3:o:linux:linux_kernel:5.10:rc1:*:*:*:*:*:*"); err == nil {
+		t.Error("a named update was accepted")
+	}
+}

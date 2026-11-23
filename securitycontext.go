@@ -102,7 +102,9 @@ type cpeRef struct{ vendor, product, version string }
 
 // parseCPE reads a CPE 2.3 formatted string or a CPE 2.2 URI naming one product version. Components are decoded
 // (2.3 backslash escapes, 2.2 percent-encoding). Attributes after the version (update, edition, language, target
-// software, ...) must be wildcards: the version endpoint lists a whole version and cannot narrow by them.
+// software, ...) must be * (any) or - (not applicable): the version endpoint lists a whole version and cannot narrow
+// by them. - is accepted because NVD names a plain release that way (cpe:2.3:o:linux:linux_kernel:5.10:-:...), and
+// the version list is that release's CVEs; a named value such as sp1 is rejected.
 func parseCPE(s string) (*cpeRef, error) {
 	s = strings.TrimSpace(s)
 	low := strings.ToLower(s)
