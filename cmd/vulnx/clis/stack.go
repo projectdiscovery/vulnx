@@ -41,6 +41,7 @@ var (
 	scanImage   string
 	scanPlat    string
 	scanHost    bool
+	scanImages  bool
 	scanRoot    string
 
 	scanCmd = &cobra.Command{
@@ -58,7 +59,8 @@ Or a folder: its lockfiles and manifests (package-lock.json, npm-shrinkwrap.json
 requirements*.txt, Pipfile.lock, poetry.lock, uv.lock, go.mod, Cargo.lock, Gemfile.lock, composer.lock) and JSON
 SBOMs are read here, with the packages installed in it (node_modules, site-packages, gem specifications), its Go
 and Rust programs and the MCP servers its own configuration starts. Only names and versions are sent; no file is
-uploaded and paths stay on this machine. A git, local or unpinned dependency is listed as not checked.
+uploaded and paths stay on this machine. A git, local or unpinned dependency is listed as not checked. The
+images its Dockerfiles and Compose files name are listed; --images has SecurityContext pull and scan them.
 
 Or give package versions directly (arguments, --list file, or stdin), checked in one request:
   ecosystem/name@version          npm/lodash@4.17.20, pypi/django@3.2.0, maven/org.apache.logging.log4j:log4j-core@2.14.1
@@ -83,6 +85,7 @@ Or an operating system:
 vulnx scan package-lock.json
 vulnx scan .
 vulnx scan ~/src/app --fail-on high --sbom
+vulnx scan ~/src/app --images
 vulnx scan sbom.cdx.json --vex openvex -o sbom.vex.json
 vulnx scan compose.yaml --json
 vulnx scan npm/lodash@4.17.20 pypi/django@3.2.0
@@ -643,6 +646,7 @@ func init() {
 	scanCmd.Flags().StringVar(&scanSBOM, "sbom", "", "with --host: name the CycloneDX SBOM of what was checked, written beside the JSON report as vulnx-host-<date>.cdx.json unless named (an existing file is not overwritten; with --json, -o or --vex it is written only when named); with a folder: write its SBOM (vulnx-folder-<date>.cdx.json unless named)")
 	scanCmd.Flags().Lookup("sbom").NoOptDefVal = "auto"
 	scanCmd.Flags().BoolVar(&scanGraph, "graph", false, "with --host: also write a local graph page of the findings (opens in a browser, nothing uploaded)")
+	scanCmd.Flags().BoolVar(&scanImages, "images", false, "with a folder: also scan the images its Dockerfiles and Compose files name (pulled by SecurityContext; only the image names are sent)")
 	scanCmd.Flags().BoolVar(&scanReport, "report", false, "with --host or a folder: upload the SBOM and print a report link that expires in 24 hours (the runtime snapshot stays local)")
 	scanCmd.Flags().StringVar(&scanFailOn, "fail-on", "", "with --host or a folder: exit 2 if a reachable finding is at or above this level: kev (known exploited), critical or high")
 	scanCmd.Flags().StringVar(&scanRoot, "root", "", "with --host: read a mounted Linux root filesystem instead of this machine (no runtime snapshot)")

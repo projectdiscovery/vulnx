@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/projectdiscovery/gologger"
@@ -46,6 +47,9 @@ func runFolderScan(ctx context.Context, dir string, show int) (failed bool, err 
 		return false, fmt.Errorf("failed to read %s: %w", dir, err)
 	}
 	res, err := checkInventory(ctx, inv)
+	if err == nil && scanImages {
+		scanFolderImages(ctx, &inv, &res)
+	}
 	hostProgress("")
 	if err != nil {
 		return false, err
@@ -173,9 +177,30 @@ func renderFolder(inv vulnx.HostInventory, res vulnx.StackResult, from scanSourc
 		renderGrid(&b, "SOURCE", rows, total, c)
 		b.WriteString("\n")
 	}
-	if len(inv.NotAssessed) > 0 {
+	deps := inv
+	deps.Sources, deps.NotAssessed = nil, nil
+	for _, src := range inv.Sources {
+		if src.Name != imagesSource {
+			deps.Sources = append(deps.Sources, src)
+		}
+	}
+	var images []vulnx.HostComponent
+	for _, na := range inv.NotAssessed {
+		if na.Source == imagesSource {
+			images = append(images, na)
+		} else {
+			deps.NotAssessed = append(deps.NotAssessed, na)
+		}
+	}
+	if len(deps.NotAssessed) > 0 {
 		b.WriteString(dim(hostLabel("Not checked")+fmt.Sprintf("%s git, local or unpinned dependencies: %s",
-			formatNumber(len(inv.NotAssessed)), notCheckedSources(inv))) + "\n")
+			formatNumber(len(deps.NotAssessed)), notCheckedSources(deps))) + "\n")
+	}
+	for _, im := range images {
+		b.WriteString(dim(hostLabel("Not checked")+"image "+termtext.Clean(im.Name)+": "+termtext.Clean(im.Reason)) + "\n")
+	}
+	if !scanImages && len(inv.Images) > 0 {
+		b.WriteString(imagesLine(inv.Images, c))
 	}
 	if n.NotLinked > 0 {
 		b.WriteString(dim(hostLabel("Not counted")+notLinkedText(n.NotLinked)) + "\n")
@@ -226,4 +251,115 @@ func purlDisplay(in string) string {
 		body = unesc
 	}
 	return body
+}
+
+// imagesSource is the source a folder scan counts its images that could not be scanned under.
+const imagesSource = "images"
+
+// imageScanParallel is how many images a folder scan has SecurityContext pull at once.
+const imageScanParallel = 3
+
+// imagesShown is how many image references the Images line names before "+N more".
+const imagesShown = 6
+
+// imagesLine says which images the folder names, unscanned: each reference once, by the first file that names
+// it, and how to scan them.
+func imagesLine(images []vulnx.FolderImage, c *renderer.ColorConfig) string {
+	var parts, open []string
+	shown, resolved := 0, 0
+	for i, im := range images {
+		if im.Unresolved {
+			open = append(open, termtext.Clean(im.Ref)+" ("+termtext.Clean(im.Files[0])+")")
+			continue
+		}
+		resolved++
+		if shown == imagesShown {
+			continue
+		}
+		shown++
+		part := termtext.Clean(im.Ref)
+		// a file is named once, after the last of its references in a row
+		if next := i + 1; next >= len(images) || images[next].Unresolved || images[next].Files[0] != im.Files[0] || shown == imagesShown {
+			part += " (" + termtext.Clean(im.Files[0]) + ")"
+		}
+		parts = append(parts, part)
+	}
+	text := fmt.Sprintf("%s found, not scanned: %s", formatNumber(resolved), strings.Join(parts, ", "))
+	if resolved > shown {
+		text += fmt.Sprintf(", +%d more", resolved-shown)
+	}
+	if resolved == 0 {
+		text = "none to scan"
+	}
+	if len(open) > 0 {
+		text += fmt.Sprintf("; %d with a variable no file sets: %s", len(open), strings.Join(open, ", "))
+	}
+	dim := func(t string) string { return c.Colorize(t, renderer.Gray) }
+	out := dim(hostLabel("Images")+text) + "\n"
+	if resolved > 0 {
+		out += dim(hostIndent+"Add --images to scan them (pulled by SecurityContext; can take minutes each)") + "\n"
+	}
+	return out
+}
+
+// scanFolderImages has SecurityContext pull and scan each image the folder names, imageScanParallel at a time:
+// an image scanned is a source of its own ("image debian:12-slim") with its packages in the result; one that
+// could not be (private, missing, unresolved) is listed as not checked with why. Only image names are sent.
+func scanFolderImages(ctx context.Context, inv *vulnx.HostInventory, res *vulnx.StackResult) {
+	var refs []string
+	notChecked := func(ref, why string) {
+		inv.NotAssessed = append(inv.NotAssessed, vulnx.HostComponent{Name: ref, Source: imagesSource, Reason: why})
+	}
+	for _, im := range inv.Images {
+		if im.Unresolved {
+			notChecked(im.Ref, "a variable no file sets")
+			continue
+		}
+		refs = append(refs, im.Ref)
+	}
+	results := make([]vulnx.StackResult, len(refs))
+	errs := make([]error, len(refs))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	done := 0
+	slots := make(chan struct{}, imageScanParallel)
+	hostProgress(fmt.Sprintf("Scanning %s ...", plural(len(refs), "image", "images")))
+	for i, ref := range refs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			id, err := vulnxClient.ScanImage(ctx, ref, scanPlat)
+			if err == nil {
+				results[i], err = vulnxClient.WaitStack(ctx, id, nil)
+			}
+			errs[i] = err
+			mu.Lock()
+			done++
+			if done < len(refs) {
+				hostProgress(fmt.Sprintf("Scanning %s: %d done ...", plural(len(refs), "image", "images"), done))
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	failed := 0
+	for i, ref := range refs {
+		if errs[i] != nil {
+			notChecked(ref, errs[i].Error())
+			failed++
+			continue
+		}
+		name := "image " + ref
+		for _, it := range results[i].Items {
+			inv.Entries = append(inv.Entries, it.Input)
+			inv.EntrySource[it.Input] = name
+		}
+		inv.Sources = append(inv.Sources, vulnx.HostSource{Name: name, Sent: len(results[i].Items)})
+		vulnx.MergeResults(res, results[i])
+	}
+	if n := failed + len(inv.Images) - len(refs); n > 0 {
+		inv.Sources = append(inv.Sources, vulnx.HostSource{Name: imagesSource, NotAssessed: n})
+	}
 }

@@ -274,10 +274,17 @@ The terminal shows the grid with one row per source (each lockfile by its path, 
 Rust programs), then the affected packages; `--show-all` lists the clean ones too. `--json`, `-o`, `--vex`,
 `--full`, `--fail-on`, `--sbom` (the folder's SBOM, `vulnx-folder-<date>.cdx.json` unless named) and `--report`
 work as with `--host`; Go reachability is checked for the programs in the folder.
+
+The images its Dockerfiles (FROM lines; build stages and `scratch` are not images, ARG defaults fill variables)
+and Compose files (`image:` of services not built here; `${VAR:-default}` resolved) name are listed under the grid,
+not scanned. `--images` has SecurityContext pull and scan each, three at a time: each becomes a row of the grid
+and its packages join the list; an image that is private, missing, or names a variable no file sets is listed as
+not checked. Only the image names are sent.
 ```bash
 vulnx scan .                            # the current directory
 vulnx scan ~/src/app --fail-on high     # exit 2 if a reachable finding is known exploited, critical or high
 vulnx scan ~/src/app --json -o app.json
+vulnx scan ~/src/app --images           # also scan the images its Dockerfiles and Compose files name
 ```
 **Scan an operating system:** a container image, or the machine vulnx runs on:
 ```bash

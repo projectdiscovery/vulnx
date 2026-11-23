@@ -205,6 +205,10 @@ func (w *folderWalk) file(path, rel string, d fs.DirEntry) {
 		w.notRead(rel, err)
 		return
 	}
+	if dockerfileName(name) || composeName(name) {
+		w.images(path, rel, dockerfileName(name))
+		return
+	}
 	if folderSBOM(name) {
 		raw, err := readCapped(path, maxUploadFile)
 		if err != nil {
@@ -289,4 +293,37 @@ func executableFormat(path string) bool {
 		return true
 	}
 	return magic[0] == 'M' && magic[1] == 'Z'
+}
+
+// images records the container images a Dockerfile's FROM lines or a Compose file's services name.
+func (w *folderWalk) images(path, rel string, dockerfile bool) {
+	raw, err := readCapped(path, maxConfigFile)
+	if err != nil {
+		w.notRead(rel, err)
+		return
+	}
+	var refs, unresolved []string
+	if dockerfile {
+		refs, unresolved = dockerfileImages(raw)
+	} else if refs, unresolved, err = composeImages(raw); err != nil {
+		w.notRead(rel, err)
+		return
+	}
+	add := func(ref string, open bool) {
+		for i := range w.h.inv.Images {
+			if im := &w.h.inv.Images[i]; im.Ref == ref {
+				if !slices.Contains(im.Files, rel) {
+					im.Files = append(im.Files, rel)
+				}
+				return
+			}
+		}
+		w.h.inv.Images = append(w.h.inv.Images, FolderImage{Ref: ref, Files: []string{rel}, Unresolved: open})
+	}
+	for _, ref := range refs {
+		add(ref, false)
+	}
+	for _, ref := range unresolved {
+		add(ref, true)
+	}
 }

@@ -389,6 +389,9 @@ func staleCursor(err error) bool {
 	return refusedFor(err, "invalid cursor")
 }
 
+// MergeResults adds b's items and counts to a: two checks shown as one result.
+func MergeResults(a *StackResult, b StackResult) { mergeStack(a, b) }
+
 // mergeStack adds b's items and counts to a.
 func mergeStack(a *StackResult, b StackResult) {
 	a.Items = append(a.Items, b.Items...)

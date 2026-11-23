@@ -72,6 +72,8 @@ type HostInventory struct {
 	// Extensions are the installed editor extensions as entries (pkg:vscode-extension/publisher/name@version), kept
 	// out of Entries until AddExtensions: an API that does not know the type would refuse the whole list.
 	Extensions []string `json:"-"`
+	// Images are the container images a folder's Dockerfiles and Compose files name (folder scans only)
+	Images []FolderImage `json:"images,omitempty"`
 
 	runtimePlaces map[string]bool
 }
