@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -119,45 +120,46 @@ func checkHost(ctx context.Context, root string) (vulnx.HostInventory, vulnx.Sta
 }
 
 // printHostScan prints the chosen view and writes the day's JSON report, then the files --graph, --sbom and
-// --report ask for.
+// --report ask for. A failed write to stdout fails the scan, as a failed file write does.
 func printHostScan(ctx context.Context, inv vulnx.HostInventory, res vulnx.StackResult, elapsed time.Duration) error {
 	c := colorConfig()
-	fmt.Print(renderHost(scanView, inv, res, elapsed, scanShowAll, c))
+	out := &stdoutText{}
+	out.print(renderHost(scanView, inv, res, elapsed, scanShowAll, c))
 	path, err := writeHostReportJSON(inv, res)
 	if err != nil {
 		return fmt.Errorf("failed to write the report: %w", err)
 	}
-	fmt.Printf("  JSON: %s\n", path)
+	out.printf("  JSON: %s\n", path)
 	if scanView == "grid" && !scanReport {
-		fmt.Println("  " + c.Colorize("Add --report for a shareable link (expires in 24 hours)", renderer.Gray))
+		out.print("  " + c.Colorize("Add --report for a shareable link (expires in 24 hours)", renderer.Gray) + "\n")
 	}
 	if scanGraph {
 		path, err := writeHostGraph(inv, res)
 		if err != nil {
 			return fmt.Errorf("failed to write the graph: %w", err)
 		}
-		fmt.Printf("  Graph: %s\n", path)
+		out.printf("  Graph: %s\n", path)
 	}
 	if scanSBOM != "" || scanReport {
 		path, err := writeHostSBOM(scanSBOM, inv)
 		if err != nil {
 			return fmt.Errorf("failed to write the SBOM: %w", err)
 		}
-		fmt.Printf("  SBOM: %s\n", path)
+		out.printf("  SBOM: %s\n", path)
 		if scanReport {
-			if err := shareHostReport(ctx, path); err != nil {
+			if err := shareHostReport(ctx, path, out); err != nil {
 				return err
 			}
 		}
 	}
 	if scanView == "grid" {
-		fmt.Print(hostFooter(inv, elapsed, c))
+		out.print(hostFooter(inv, elapsed, c))
 	}
-	return nil
+	return out.err
 }
 
 // shareHostReport uploads the SBOM at path as a stored stack whose link expires, and prints the link.
-func shareHostReport(ctx context.Context, path string) error {
+func shareHostReport(ctx context.Context, path string, out *stdoutText) error {
 	hostProgress("Uploading the SBOM to SecurityContext ...")
 	id, expiresAt, err := vulnxClient.ShareFile(ctx, path, shareExpiry)
 	if err == nil {
@@ -172,9 +174,23 @@ func shareHostReport(ctx context.Context, path string) error {
 		return fmt.Errorf("--report: %w", err)
 	}
 	if expiresAt == "" {
-		fmt.Printf("  Report: %s (the API did not say when it expires: the link may not)\n", vulnxClient.StackPage(id))
+		out.printf("  Report: %s (the API did not say when it expires: the link may not)\n", vulnxClient.StackPage(id))
 		return nil
 	}
-	fmt.Printf("  Report: %s (expires in 24 hours)\n", vulnxClient.StackPage(id))
+	out.printf("  Report: %s (expires in 24 hours)\n", vulnxClient.StackPage(id))
 	return nil
 }
+
+// stdoutText prints a scan's text to stdout and keeps the first write error, which the scan returns: output that
+// did not arrive is a failure. It returns an error rather than exiting, so the scan's context is cancelled first.
+type stdoutText struct{ err error }
+
+func (o *stdoutText) print(s string) {
+	if o.err == nil {
+		if _, err := os.Stdout.WriteString(s); err != nil {
+			o.err = fmt.Errorf("failed to write output: %w", err)
+		}
+	}
+}
+
+func (o *stdoutText) printf(format string, a ...any) { o.print(fmt.Sprintf(format, a...)) }

@@ -59,6 +59,8 @@ type scQuery struct {
 	cpe    *cpeRef // a cpe: term: the CVEs of that product version
 	// productName is a product given without its vendor; the client resolves it to vendor:product.
 	productName string
+	// today is the day age_in_days terms count from
+	today time.Time
 }
 
 // restrictIDs narrows the allowed CVE ids to those also in ids: terms joined by && must all hold.
@@ -167,7 +169,13 @@ type queryTerm struct {
 // translateQuery turns vulnx's field:value query into /v1/cves parameters. Terms are ANDed; an OR is accepted
 // only between values of one field (severity:a || severity:b).
 func translateQuery(q string) (*scQuery, error) {
-	out := &scQuery{params: url.Values{}}
+	return translateAt(q, nowUTC())
+}
+
+// translateAt translates q with today as the day age_in_days counts from, read once so every term (and every
+// nested group) uses the same date.
+func translateAt(q string, today time.Time) (*scQuery, error) {
+	out := &scQuery{params: url.Values{}, today: today}
 	q = strings.TrimSpace(q)
 	if q == "" {
 		return out, nil
@@ -202,7 +210,7 @@ func translateQuery(q string) (*scQuery, error) {
 		// "(a && b)" inside a conjunct: flatten
 		if inner, ok := stripParens(c); ok {
 			if parts, _ := splitTop(inner, "&&"); len(parts) > 1 {
-				sub, err := translateQuery(inner)
+				sub, err := translateAt(inner, today)
 				if err != nil {
 					return nil, err
 				}
@@ -418,7 +426,7 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if t.neg {
 			return unsupported("NOT age_in_days is not supported")
 		}
-		today := nowUTC()
+		today := out.today
 		day := func(d int) string { return today.AddDate(0, 0, -d).Format("2006-01-02") }
 		switch op {
 		case "<":
@@ -610,7 +618,7 @@ func parseTerm(s string) (queryTerm, error) {
 	case strings.HasPrefix(s, "!"), strings.HasPrefix(s, "-") && strings.Contains(s, ":"):
 		t.neg, s = true, strings.TrimSpace(s[1:])
 	}
-	if strings.ContainsAny(s, "()") {
+	if hasUnescaped(s, "()") {
 		return t, unsupported("could not read %q (nested groups beyond AND of ORs are not supported)", s)
 	}
 	if m := termPattern.FindStringSubmatch(s); m != nil && !strings.HasPrefix(s, `"`) && !strings.HasPrefix(s, "'") {
@@ -627,30 +635,46 @@ func parseTerm(s string) (queryTerm, error) {
 	return t, nil
 }
 
-// splitTop splits s on op outside parentheses and quotes. The words AND and OR (spaced) count as && and ||.
+// hasUnescaped reports whether s holds one of chars not preceded by a backslash (a CPE 2.3 escape such as \().
+func hasUnescaped(s, chars string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++
+			continue
+		}
+		if strings.IndexByte(chars, s[i]) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// splitTop splits s on op outside parentheses and quotes. The words AND and OR (spaced) count as && and ||. A
+// quote ends only at the delimiter that opened it, and a backslash escapes the next character (CPE punctuation).
 func splitTop(s, op string) ([]string, error) {
 	word := map[string]string{"&&": " AND ", "||": " OR "}[op]
 	var parts []string
-	depth, inQuote, start := 0, false, 0
+	var quote byte
+	depth, start := 0, 0
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '"', '\'':
-			inQuote = !inQuote
-		case '(':
-			if !inQuote {
-				depth++
+		c := s[i]
+		switch {
+		case c == '\\':
+			i++
+		case quote != 0:
+			if c == quote {
+				quote = 0
 			}
-		case ')':
-			if !inQuote {
-				depth--
-				if depth < 0 {
-					return nil, unsupported("unbalanced parentheses in %q", s)
-				}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth < 0 {
+				return nil, unsupported("unbalanced parentheses in %q", s)
 			}
-		default:
-			if inQuote || depth != 0 {
-				continue
-			}
+		case depth == 0:
 			n := 0
 			switch {
 			case strings.HasPrefix(s[i:], op):
@@ -665,21 +689,23 @@ func splitTop(s, op string) ([]string, error) {
 			}
 		}
 	}
-	if depth != 0 || inQuote {
+	if depth != 0 || quote != 0 {
 		return nil, unsupported("unbalanced parentheses or quotes in %q", s)
 	}
 	return append(parts, s[start:]), nil
 }
 
-// stripParens removes one pair of parentheses that wraps the whole of s.
+// stripParens removes one pair of parentheses that wraps the whole of s; escaped parentheses do not count.
 func stripParens(s string) (string, bool) {
 	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") {
+	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") || strings.HasSuffix(s, "\\)") {
 		return s, false
 	}
 	depth := 0
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
+		case '\\':
+			i++
 		case '(':
 			depth++
 		case ')':

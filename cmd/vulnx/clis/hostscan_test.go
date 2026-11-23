@@ -133,3 +133,29 @@ func TestRunHostScanJSON(t *testing.T) {
 		t.Errorf("--json left %v (%v)", left, err)
 	}
 }
+
+// TestStdoutTextFails reports a write to a stdout that is gone, and keeps the first error: a scan whose output did
+// not arrive fails.
+func TestStdoutTextFails(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	t.Cleanup(func() { os.Stdout = saved })
+	os.Stdout = w
+	out := &stdoutText{}
+	out.print("report\n")
+	first := out.err
+	out.printf("%s\n", "more")
+	os.Stdout = saved
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if first == nil || out.err != first {
+		t.Errorf("%v %v", first, out.err)
+	}
+}

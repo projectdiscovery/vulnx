@@ -318,8 +318,9 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) error {
 	case jsonOutput || outputFile != "":
 		data, err = json.MarshalIndent(res, "", "  ")
 	default:
-		fmt.Print(renderStackText(res, show))
-		return nil
+		out := &stdoutText{}
+		out.print(renderStackText(res, show))
+		return out.err
 	}
 	if err != nil {
 		return fmt.Errorf("failed to render output: %w", err)
@@ -330,8 +331,9 @@ func writeStackOutput(res vulnx.StackResult, vex string, show int) error {
 // writeData writes a rendered document to -o's file, which must not exist yet, or to stdout.
 func writeData(data []byte) error {
 	if outputFile == "" {
-		_, err := os.Stdout.Write(append(data, '\n'))
-		return err
+		out := &stdoutText{}
+		out.print(string(data) + "\n")
+		return out.err
 	}
 	if err := writeNewFile(outputFile, data); err != nil {
 		return err

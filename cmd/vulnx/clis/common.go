@@ -424,9 +424,7 @@ func writeVulnsOutput(vulns []*vulnx.Vulnerability, single bool) {
 		return
 	}
 
-	if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
-		gologger.Error().Msgf("Failed to write JSON to stdout: %s", err)
-	}
+	writeStdout(data)
 }
 
 // renderVulnsCSV converts vulnerabilities to CSV rows.
@@ -436,6 +434,14 @@ func renderVulnsCSV(vulns []*vulnx.Vulnerability) ([]byte, error) {
 		entries = append(entries, renderer.FromVulnerability(vuln))
 	}
 	return renderer.RenderCSV(entries)
+}
+
+// writeStdout prints data and a newline to stdout. A failed write (a closed pipe, a full disk) ends the run with
+// a non-zero status, so a caller never takes truncated JSON or VEX output as a success.
+func writeStdout(data []byte) {
+	if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
+		gologger.Fatal().Msgf("Failed to write output: %s", err)
+	}
 }
 
 // writeNewFile writes data to path, refusing to overwrite an existing file.

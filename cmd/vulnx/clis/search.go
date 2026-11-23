@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -230,9 +229,7 @@ vulnx search --product apache:tomcat --version 8.5.62
 					gologger.Info().Msgf("Wrote output to file: %s", outputFile)
 					return
 				}
-				if _, err := os.Stdout.Write(append(data, '\n')); err != nil {
-					gologger.Error().Msgf("Failed to write JSON output: %s", err)
-				}
+				writeStdout(data)
 				return
 			}
 

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -28,6 +30,7 @@ func (s *versionServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	s.mu.Lock()
 	s.limits = append(s.limits, q.Get("limit"))
+	found := s.found
 	s.mu.Unlock()
 	start, _ := strconv.Atoi(q.Get("cursor"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -44,7 +47,14 @@ func (s *versionServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if start+len(rows) < s.total {
 		next = strconv.Itoa(start + len(rows))
 	}
-	writeJSON(s.t, w, map[string]any{"found": s.found, "advisories_total": s.total, "advisories": rows, "cursor": next})
+	writeJSON(s.t, w, map[string]any{"found": found, "advisories_total": s.total, "advisories": rows, "cursor": next})
+}
+
+// pageLimits returns the limit of each request received so far.
+func (s *versionServer) pageLimits() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.limits)
 }
 
 const tomcatCPE = "cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:*"
@@ -87,7 +97,7 @@ func TestSearchCPEPaging(t *testing.T) {
 			if r.Results[0].Vendor != "apache" || r.Results[0].Product != "tomcat" {
 				t.Errorf("product not filled from the CPE: %s:%s", r.Results[0].Vendor, r.Results[0].Product)
 			}
-			if got := strings.Join(s.limits, ","); got != c.wantLimits {
+			if got := strings.Join(s.pageLimits(), ","); got != c.wantLimits {
 				t.Errorf("page limits %s, want %s", got, c.wantLimits)
 			}
 		})
@@ -107,7 +117,7 @@ func TestSearchCPEErrors(t *testing.T) {
 	if err := search(tomcatCPE+" && severity:high", SearchParams{}); !errors.Is(err, ErrUnsupportedQuery) || !strings.Contains(err.Error(), strconv.Itoa(cpeMaxRows)) {
 		t.Errorf("filter on a version past the cap: %v", err)
 	}
-	if n := len(s.limits); n != 1 {
+	if n := len(s.pageLimits()); n != 1 {
 		t.Errorf("past the cap after %d requests, want 1", n)
 	}
 	for _, bad := range []struct {
@@ -123,7 +133,9 @@ func TestSearchCPEErrors(t *testing.T) {
 			t.Errorf("%s %+v: %v", bad.q, bad.p, err)
 		}
 	}
+	s.mu.Lock()
 	s.found = false
+	s.mu.Unlock()
 	if err := search(tomcatCPE, SearchParams{}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown product: %v", err)
 	}
@@ -188,5 +200,47 @@ func TestSortRowsUsesShownTimestamp(t *testing.T) {
 	sortRows(rows, "published_date:desc")
 	if rows[0].CVE != "late" {
 		t.Errorf("same-day rows not ordered by published_at: %s first", rows[0].CVE)
+	}
+}
+
+func TestSearchCPEIncomplete(t *testing.T) {
+	page := func(n int, cursor string) map[string]any {
+		rows := []map[string]any{}
+		for i := range n {
+			rows = append(rows, map[string]any{"cve": fmt.Sprintf("CVE-2020-%04d", i), "severity": "high"})
+		}
+		return map[string]any{"found": true, "advisories_total": 250, "advisories": rows, "cursor": cursor}
+	}
+	for _, c := range []struct {
+		name    string
+		pages   []map[string]any
+		params  SearchParams
+		wantErr string
+	}{
+		{"truncated list with --all", []map[string]any{page(100, "")}, SearchParams{All: true}, "paging ended early after 100 of 250"},
+		{"truncated list before a filter", []map[string]any{page(100, "")}, SearchParams{Query: Ptr("severity:high")}, "paging ended early"},
+		{"empty page repeating the cursor", []map[string]any{page(100, "a"), page(0, "a")}, SearchParams{All: true}, "repeated a page cursor"},
+		{"bare search with its rows", []map[string]any{page(100, "")}, SearchParams{Limit: Ptr(50)}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var n atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, c.pages[min(int(n.Add(1))-1, len(c.pages)-1)])
+			}))
+			defer srv.Close()
+			p := c.params
+			q := tomcatCPE
+			if p.Query != nil {
+				q += " && " + *p.Query
+			}
+			p.Query = &q
+			_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), p)
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Errorf("unexpected error: %v", err)
+			case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+				t.Errorf("err %v, want %q", err, c.wantErr)
+			}
+		})
 	}
 }

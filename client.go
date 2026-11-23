@@ -298,6 +298,12 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 	}
 
 	if tq.idsSet {
+		if len(facetReqs) > 0 {
+			return resp, unsupported("facets are not available with cve_id: (each id is fetched as one record)")
+		}
+		if sortKey != "" {
+			return resp, unsupported("cve_id: lookups return the records in the order given; sorting is not available")
+		}
 		if params.All {
 			limit = len(tq.ids)
 		}
@@ -311,7 +317,7 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 	}
 	want := max(offset+limit, 1) // a facet-only request still needs one row
 	if params.All {
-		want = offset + scMaxPage // the first page tells the total
+		want = scMaxPage // the first page tells the total; offset is not added, so it cannot overflow
 	}
 	skipped, consumed := 0, 0
 	cursor := ""
@@ -354,16 +360,17 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 		if params.Progress != nil {
 			params.Progress(len(resp.Results), resp.Total)
 		}
+		// a cursor already used means the next page would repeat rows, so these rows cannot be trusted as a result
+		if list.Cursor != "" && seen[list.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
+		}
 		if consumed >= want {
 			break
 		}
-		// the search is short of the rows it needs: an end of paging here leaves the result incomplete
-		if seen[list.Cursor] {
-			return resp, incomplete("the server repeated a page cursor", len(resp.Results), limit)
-		}
 		if list.Cursor == "" || pageRows == 0 {
-			if params.All {
-				return resp, incomplete("paging ended early", len(resp.Results), limit)
+			// the reported total says more rows exist than paging returned
+			if consumed < min(want, resp.Total) {
+				return resp, incomplete("paging ended early", len(resp.Results), min(limit, max(resp.Total-offset, 0)))
 			}
 			break
 		}
@@ -395,13 +402,13 @@ func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, 
 	start := min(offset, len(ids))
 	for _, id := range ids[start : start+min(limit, len(ids)-start)] {
 		one, err := c.GetVulnerabilityByID(ctx, id, nil)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+		case err != nil:
 			return resp, err
+		default:
+			resp.Results = append(resp.Results, *one.Data)
 		}
-		resp.Results = append(resp.Results, *one.Data)
 		if progress != nil {
 			progress(len(resp.Results), resp.Total)
 		}
@@ -692,11 +699,10 @@ func wrapErr(sentinel, cause error) error {
 // maxRateLimitWait is reported as just over it, so a huge value cannot overflow into a short wait.
 func retryAfter(h string, now time.Time) (time.Duration, bool) {
 	h = strings.TrimSpace(h)
-	if n, err := strconv.ParseInt(h, 10, 64); err == nil {
-		if n < 0 {
-			return 0, false
-		}
-		if n > int64(maxRateLimitWait/time.Second) {
+	if h != "" && strings.Trim(h, "0123456789") == "" {
+		// all digits: a delay in seconds, however long (one too big for int64 is still over the cap)
+		n, err := strconv.ParseInt(h, 10, 64)
+		if err != nil || n > int64(maxRateLimitWait/time.Second) {
 			return maxRateLimitWait + time.Second, true
 		}
 		return time.Duration(n)*time.Second + 500*time.Millisecond, true
