@@ -130,7 +130,8 @@ func modelFindings(root string) modelFinding {
 		if err != nil || rel == "." {
 			rel = d.Name()
 		}
-		if i := strings.Index(rel, string(filepath.Separator)); i > 0 && strings.Contains(filepath.ToSlash(root), "/snapshots") {
+		rel = filepath.ToSlash(rel) // a report names paths with / on every system
+		if i := strings.Index(rel, "/"); i > 0 && strings.Contains(filepath.ToSlash(root), "/snapshots") {
 			rel = rel[i+1:] // a snapshot's revision is not part of the file's name
 		}
 		switch ext := strings.ToLower(filepath.Ext(p)); {

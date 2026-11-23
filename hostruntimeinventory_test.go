@@ -124,6 +124,7 @@ func TestRuntimeInventoryKnownAndSkipped(t *testing.T) {
 }
 
 func TestRuntimeInventoryFailures(t *testing.T) {
+	skipOnWindows(t)
 	for _, kind := range []string{"unsupported", "unverified", "replaced", "deleted", "changed_during_read", "cancelled", "too_large", "permission"} {
 		t.Run(kind, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "tool")
@@ -259,6 +260,7 @@ func TestReadRuntimeModules(t *testing.T) {
 }
 
 func TestRuntimeMetadataUsesVerifiedDescriptor(t *testing.T) {
+	skipOnWindows(t)
 	path := filepath.Join(t.TempDir(), "tool")
 	runtimeInventoryFile(t, path)
 	p := runtimeInventoryProcess(t, 1, path)

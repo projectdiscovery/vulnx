@@ -20,6 +20,7 @@ func writePlist(t *testing.T, root, app, id, version string) {
 }
 
 func TestHostAITools(t *testing.T) {
+	skipOnWindows(t)
 	root := t.TempDir()
 	writePlist(t, root, "Cursor", "com.todesktop.230313mzl4w4u92", "1.2.3")
 	writePlist(t, root, "LM Studio", "ai.elementlabs.lmstudio", "0.3.1")

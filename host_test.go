@@ -17,6 +17,15 @@ import (
 	"time"
 )
 
+// skipOnWindows skips a test of what --host reads on a Unix machine: --host reads Linux and macOS only, and the test
+// needs Unix executables (ELF or Mach-O, execute bits) or renames a file it holds open.
+func skipOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("--host reads Linux and macOS; this test needs Unix executables or file semantics")
+	}
+}
+
 func writeFile(t *testing.T, root, rel, body string) {
 	t.Helper()
 	p := filepath.Join(root, rel)
@@ -295,6 +304,7 @@ func hasNone(t *testing.T, got []string, unwanted ...string) {
 
 // TestHostLinuxSources reads a Linux root with every source: OS packages, Python, npm, gems, Go and Rust binaries.
 func TestHostLinuxSources(t *testing.T) {
+	skipOnWindows(t)
 	root := t.TempDir()
 	writeFile(t, root, "etc/os-release", "ID=ubuntu\nVERSION_ID=\"22.04\"\n")
 	writeFile(t, root, "var/lib/dpkg/status", "Package: bash\nStatus: install ok installed\nArchitecture: amd64\nVersion: 5.1-6ubuntu1\n")
@@ -423,6 +433,7 @@ func appPlist(id, version string) string {
 // TestHostHomebrew judges a formula by its NVD product when the table names one, else by the packages and
 // binaries it carries, and lists the rest as not assessed.
 func TestHostHomebrew(t *testing.T) {
+	skipOnWindows(t)
 	root := t.TempDir()
 	cellar := "opt/homebrew/Cellar/"
 	writeFile(t, root, cellar+"openssl@3/3.4.0_1/lib/libssl.dylib", "")
@@ -503,6 +514,7 @@ func TestCPEEscape(t *testing.T) {
 
 // TestGoFunctionTable reads this test binary's own function table, as advisories name functions.
 func TestGoFunctionTable(t *testing.T) {
+	skipOnWindows(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -553,6 +565,7 @@ func TestGoFunctionTable(t *testing.T) {
 // TestMarkReachability marks each row and binary by what the binary links: a listed function it links, a package
 // it does not link at all, and an advisory with no list (unknown).
 func TestMarkReachability(t *testing.T) {
+	skipOnWindows(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

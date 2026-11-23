@@ -293,6 +293,7 @@ func (h *hostReader) scan(root, kind, name, where string) {
 		if err != nil || rel == "." {
 			rel = d.Name()
 		}
+		rel = filepath.ToSlash(rel) // a report names paths with / on every system
 		if m := pipeToShell.Find(raw); m != nil && found["pipe_to_shell"] == "" {
 			found["pipe_to_shell"] = rel + ": " + pipeSummary(string(m))
 		}
