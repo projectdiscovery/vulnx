@@ -834,3 +834,15 @@ func TestSearchCVEIDsProgressOnMissing(t *testing.T) {
 		t.Errorf("progress %v, want %v", calls, want)
 	}
 }
+
+func TestIncompleteCleansServerText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bad := "CVE-2024-0001\x1b[2J\u202e"
+		writeJSON(t, w, map[string]any{"total": 3, "items": []map[string]any{{"cve": bad}, {"cve": bad}}, "cursor": "x"})
+	}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv).SearchVulnerabilities(context.Background(), SearchParams{Limit: Ptr(3)})
+	if err == nil || strings.ContainsAny(err.Error(), "\x1b\u202e") || !strings.Contains(err.Error(), "returned CVE-2024-0001[2J twice") {
+		t.Errorf("duplicate-CVE error: %q, want the id without control or bidi characters", err)
+	}
+}

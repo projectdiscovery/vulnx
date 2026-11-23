@@ -388,8 +388,9 @@ const defaultSort = "published_date:desc"
 
 // incomplete reports a paged search that stopped before returning the rows it needed. The rows fetched so far are
 // in the response, but they are not the full result.
+// why can quote server text (a CVE id), so it is cleaned for a terminal.
 func incomplete(why string, got, want int) error {
-	return wrapErr(ErrUnknownAPIError, fmt.Errorf("%s after %d of %d results; the index may have changed during the search, retry", why, got, want))
+	return wrapErr(ErrUnknownAPIError, fmt.Errorf("%s after %d of %d results; the index may have changed during the search, retry", termtext.Clean(why), got, want))
 }
 
 // lookupIDs fetches cve_id: terms one record at a time; Total counts the distinct ids asked for, found or not.
