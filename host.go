@@ -497,7 +497,11 @@ func linuxPackages(ctx context.Context, root, id, version string) (string, []str
 		return "?" + extra.Encode()
 	}
 	if raw, err := readCapped(filepath.Join(root, "var/lib/dpkg/status"), maxPackageDB); err == nil {
-		for _, p := range dpkgInstalled(bytes.NewReader(raw)) {
+		pkgs, err := dpkgInstalled(bytes.NewReader(raw))
+		if err != nil {
+			return "", nil, fmt.Errorf("OS packages: dpkg's status file under %s could not be read whole: %w", root, err)
+		}
+		for _, p := range pkgs {
 			extra := url.Values{}
 			if p.arch != "" {
 				extra.Set("arch", p.arch)
@@ -514,7 +518,11 @@ func linuxPackages(ctx context.Context, root, id, version string) (string, []str
 		return "dpkg", entries, nil
 	}
 	if raw, err := readCapped(filepath.Join(root, "lib/apk/db/installed"), maxPackageDB); err == nil {
-		for _, p := range apkInstalled(bytes.NewReader(raw)) {
+		pkgs, err := apkInstalled(bytes.NewReader(raw))
+		if err != nil {
+			return "", nil, fmt.Errorf("OS packages: apk's installed database under %s could not be read whole: %w", root, err)
+		}
+		for _, p := range pkgs {
 			extra := url.Values{}
 			if p.source != "" && p.source != p.name {
 				extra.Set("upstream", p.source)
@@ -561,8 +569,9 @@ func linuxPackages(ctx context.Context, root, id, version string) (string, []str
 
 type osPackage struct{ name, version, arch, source, sourceVersion string }
 
-// dpkgInstalled reads dpkg's status file: installed packages with their source package.
-func dpkgInstalled(f io.Reader) []osPackage {
+// dpkgInstalled reads dpkg's status file: installed packages with their source package. A scan that stops early
+// (a line over 1 MiB) is an error: a part of the database would read as all of it.
+func dpkgInstalled(f io.Reader) ([]osPackage, error) {
 	var out []osPackage
 	var cur osPackage
 	installed := false
@@ -598,12 +607,16 @@ func dpkgInstalled(f io.Reader) []osPackage {
 			cur.source, cur.sourceVersion = strings.TrimSpace(src), strings.TrimSuffix(ver, ")")
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
 	flush()
-	return out
+	return out, nil
 }
 
-// apkInstalled reads apk's installed database: P: name, V: version, o: origin (the source package).
-func apkInstalled(f io.Reader) []osPackage {
+// apkInstalled reads apk's installed database: P: name, V: version, o: origin (the source package). A scan that
+// stops early is an error, as for dpkgInstalled.
+func apkInstalled(f io.Reader) ([]osPackage, error) {
 	var out []osPackage
 	var cur osPackage
 	sc := bufio.NewScanner(f)
@@ -634,8 +647,11 @@ func apkInstalled(f io.Reader) []osPackage {
 			cur.source = line[2:]
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
 	flush()
-	return out
+	return out, nil
 }
 
 // languagePackages reads installed Python, Node and Ruby packages. On Linux the distribution's own directories

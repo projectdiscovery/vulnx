@@ -878,3 +878,22 @@ func TestHostRPMRoot(t *testing.T) {
 		t.Errorf("source %q, not read %q", inv.Source, notRead)
 	}
 }
+
+// TestHostPackageDatabaseCutShort reads no OS packages from a database the scanner stops in (a line over its
+// 1 MiB buffer): a part of it would read as all of it.
+func TestHostPackageDatabaseCutShort(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "etc/os-release", "ID=debian\nVERSION_ID=12\n")
+	writeFile(t, root, "var/lib/dpkg/status", "Package: bash\nStatus: install ok installed\nVersion: 5.2.15-2\n\n"+
+		"Description: "+strings.Repeat("x", 2<<20)+"\n\nPackage: zlib1g\nStatus: install ok installed\nVersion: 1.2.13\n\n")
+	inv, err := HostEntries(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Entries) != 0 || !strings.Contains(strings.Join(inv.NotRead, "\n"), "could not be read whole") {
+		t.Errorf("%q %q", inv.Entries, inv.NotRead)
+	}
+	if _, err := apkInstalled(strings.NewReader("P:musl\nV:" + strings.Repeat("1", 2<<20) + "\n")); err == nil {
+		t.Error("apk: a line over the buffer read as the whole database")
+	}
+}
