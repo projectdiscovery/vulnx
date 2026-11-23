@@ -68,7 +68,9 @@ const (
 
 	apiKeyHeader = "X-Api-Key"
 	// maxRateLimitWait bounds how long the client waits on a Retry-After before giving up.
-	maxRateLimitWait  = 65 * time.Second
+	maxRateLimitWait = 65 * time.Second
+	// longWaitNotice is the shortest retry wait announced at the default log level.
+	longWaitNotice    = 5 * time.Second
 	maxResponseBytes  = 64 << 20
 	maxErrorBodyBytes = 64 << 10
 	maxErrorMessage   = 500
@@ -81,6 +83,7 @@ var (
 	ErrNotFound            = errors.New("not found: resource does not exist")
 	ErrTooManyRequests     = errors.New("too many requests: SecurityContext allows anonymous callers a limited number of requests a minute per address")
 	ErrInternalServerError = errors.New("internal server error: something went wrong on the server")
+	ErrServiceUnavailable  = errors.New("service unavailable: the SecurityContext API did not answer; try again later")
 	ErrUnknownAPIError     = errors.New("unknown api error")
 
 	ErrRequestBuildFailure = errors.New("failed to build request")
@@ -556,12 +559,16 @@ func keyRedirectPolicy(next func(*http.Request, []*http.Request) error) func(*ht
 func (c *Client) do(req *http.Request, out any) error {
 	resp, err := c.send(req)
 	if wait, ok := c.retryDelay(req, resp, err); ok {
-		reason := "request failed"
+		reason, rateLimited := "request failed", false
 		if resp != nil {
-			reason = resp.Status
+			reason, rateLimited = resp.Status, resp.StatusCode == http.StatusTooManyRequests
 			c.discard(resp)
 		}
-		gologger.Info().Msgf("SecurityContext: %s; retrying in %s", reason, wait.Round(100*time.Millisecond))
+		// an intermittent failure that a retry fixes is not the user's concern: only --verbose/--debug show it
+		gologger.Debug().Msgf("SecurityContext: %s; retrying in %s", reason, wait.Round(100*time.Millisecond))
+		if msg := waitNotice(wait, rateLimited); msg != "" {
+			gologger.Info().Msg(msg)
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-req.Context().Done():
@@ -617,6 +624,19 @@ func (c *Client) discard(resp *http.Response) {
 	}
 }
 
+// waitNotice is the line shown at the default log level for a retry wait: none for a short wait, one neutral line
+// for a wait of longWaitNotice or more, so the CLI does not look hung.
+func waitNotice(wait time.Duration, rateLimited bool) string {
+	if wait < longWaitNotice {
+		return ""
+	}
+	what := "the API"
+	if rateLimited {
+		what = "the API rate limit"
+	}
+	return fmt.Sprintf("waiting %s for %s", wait.Round(time.Second), what)
+}
+
 // retryDelay decides whether a failed attempt is retried and after how long: a 429 or 503 (the server did not
 // act on the request) with a Retry-After of at most maxRateLimitWait, and, for GET and HEAD only, a network
 // error, another 5xx, or a 503 without a usable Retry-After. A POST that may have reached the server is not
@@ -655,6 +675,8 @@ func (c *Client) handleAPIError(resp *http.Response) error {
 		kind = ErrTooManyRequests
 	case http.StatusInternalServerError:
 		kind = ErrInternalServerError
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		kind = ErrServiceUnavailable
 	}
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	if err != nil {
@@ -686,6 +708,9 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("%s (HTTP %d)", e.kind, e.StatusCode)
+	}
 	return fmt.Sprintf("%s (HTTP %d): %s", e.kind, e.StatusCode, e.Message)
 }
 
