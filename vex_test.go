@@ -134,3 +134,16 @@ func TestCycloneDXVEXComponents(t *testing.T) {
 		t.Errorf("cpe component: %v", c)
 	}
 }
+
+func TestVEXComponentDecodesPURL(t *testing.T) {
+	for ref, want := range map[string][2]string{
+		"pkg:deb/debian/foo@1%3A2.0-1?distro=debian-12": {"foo", "1:2.0-1"},
+		"pkg:golang/github.com/a/b@v1.2.3#sub/dir":      {"b", "v1.2.3"},
+		"pkg:npm/%40babel/core@7.0.0":                   {"core", "7.0.0"},
+	} {
+		c := vexComponent(ref)
+		if c["name"] != want[0] || c["version"] != want[1] || c["purl"] != ref || c["bom-ref"] != ref {
+			t.Errorf("%s: %v, want name %s version %s", ref, c, want[0], want[1])
+		}
+	}
+}

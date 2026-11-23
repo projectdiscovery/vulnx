@@ -12,6 +12,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -204,11 +205,13 @@ func vexComponent(ref string) map[string]string {
 	switch {
 	case strings.HasPrefix(ref, "pkg:"):
 		c["purl"] = ref
-		body, _, _ := strings.Cut(strings.TrimPrefix(ref, "pkg:"), "?")
+		// pkg:type/namespace/name@version?qualifiers#subpath, with name and version percent-encoded
+		body, _, _ := strings.Cut(strings.TrimPrefix(ref, "pkg:"), "#")
+		body, _, _ = strings.Cut(body, "?")
 		path, version, _ := strings.Cut(body, "@")
-		c["name"] = path[strings.LastIndex(path, "/")+1:]
+		c["name"] = unescapePURL(path[strings.LastIndex(path, "/")+1:])
 		if version != "" {
-			c["version"] = version
+			c["version"] = unescapePURL(version)
 		}
 	case strings.HasPrefix(ref, "cpe:"):
 		c["cpe"] = ref
@@ -217,4 +220,12 @@ func vexComponent(ref string) map[string]string {
 		}
 	}
 	return c
+}
+
+// unescapePURL percent-decodes a purl component, keeping it as written when it is not valid encoding.
+func unescapePURL(s string) string {
+	if d, err := url.PathUnescape(s); err == nil {
+		return d
+	}
+	return s
 }

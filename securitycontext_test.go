@@ -327,3 +327,42 @@ func TestParseCPEDecoding(t *testing.T) {
 		t.Error("a 2.2 CPE with an update was accepted")
 	}
 }
+
+func TestTranslateReadsClockOnce(t *testing.T) {
+	base := time.Date(2026, 11, 23, 23, 59, 59, 0, time.UTC)
+	calls := 0
+	orig := nowUTC
+	t.Cleanup(func() { nowUTC = orig })
+	// each read of the clock lands on a later day, as if UTC midnight passed during translation
+	nowUTC = func() time.Time { calls++; return base.AddDate(0, 0, calls-1) }
+	got, err := translateQuery("age_in_days:>=1 && (age_in_days:<=1 && severity:high)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("clock read %d times, want once", calls)
+	}
+	if since, before := got.params.Get("published_since"), got.params.Get("published_before"); since != "2026-11-22" || before != "2026-11-23" {
+		t.Errorf("published_since %s, published_before %s; want one day from one clock read", since, before)
+	}
+}
+
+func TestTranslateQuotesAndEscapes(t *testing.T) {
+	got, err := translateQuery(`description:"researcher's AND developer's notes" && severity:low`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := got.params.Get("q"); q != "researcher's AND developer's notes" || got.params.Get("severity") != "low" {
+		t.Errorf("quoted AND split: q=%q params %v", q, got.params)
+	}
+	got, err = translateQuery(`cpe:2.3:a:vendor:product:1.2\(x\):*:*:*:*:*:*:* && severity:high`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.cpe == nil || got.cpe.version != "1.2(x)" {
+		t.Errorf("escaped parentheses in a CPE: %+v", got.cpe)
+	}
+	if _, err := translateQuery(`severity:(high)x`); err == nil {
+		t.Error("unescaped parentheses inside a term accepted")
+	}
+}
