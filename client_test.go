@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -247,15 +248,28 @@ func TestRetry(t *testing.T) {
 	}
 }
 
-// signalTransport reports each response it receives, so a test can act once the client has one in hand.
-type signalTransport struct {
-	got chan int
+// closeSignalTransport reports when a response body is closed. do closes a retryable response only after
+// retryDelay has accepted it, just before waiting, so the signal marks the start of the retry wait.
+type closeSignalTransport struct {
+	closed chan int
 }
 
-func (s signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+type signalBody struct {
+	io.ReadCloser
+	status int
+	closed chan int
+}
+
+func (b signalBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closed <- b.status
+	return err
+}
+
+func (s closeSignalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err == nil {
-		s.got <- resp.StatusCode
+		resp.Body = signalBody{ReadCloser: resp.Body, status: resp.StatusCode, closed: s.closed}
 	}
 	return resp, err
 }
@@ -263,22 +277,25 @@ func (s signalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestRetryWaitCancelled(t *testing.T) {
 	srv, calls := statusServer(t, []int{503}, "30")
 	defer srv.Close()
-	got := make(chan int, 2)
+	closed := make(chan int, 2)
 	hc := retryablehttp.NewClient(retryablehttp.DefaultOptionsSingle)
-	hc.HTTPClient.Transport = signalTransport{got: got}
+	hc.HTTPClient.Transport = closeSignalTransport{closed: closed}
 	c := newTestClient(t, srv, WithClient(hc))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		// cancel only once the 503 (with its 30s Retry-After) has reached the client
-		if <-got == http.StatusServiceUnavailable {
+		// the 503's body is closed once its 30s Retry-After was accepted: cancel during that wait
+		if <-closed == http.StatusServiceUnavailable {
 			cancel()
 		}
 	}()
 	start := time.Now()
 	_, err := c.GetVulnerabilityByID(ctx, "CVE-2021-44228", nil)
-	if err == nil || time.Since(start) > 5*time.Second {
-		t.Errorf("cancelled retry wait: err %v after %s, want an error well before 30s", err, time.Since(start))
+	if !errors.Is(err, ErrRequestFailed) || !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled retry wait: %v, want ErrRequestFailed wrapping context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("returned after %s, want well before the 30s Retry-After", elapsed)
 	}
 	if calls() != 1 {
 		t.Errorf("calls = %d, want 1 (no request after the cancelled wait)", calls())
