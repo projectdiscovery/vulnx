@@ -18,6 +18,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/levels"
+	"github.com/projectdiscovery/gologger/writer"
 )
 
 func TestNormalizeCheckEntry(t *testing.T) {
@@ -621,5 +625,26 @@ func TestCheckCompactChunkFails(t *testing.T) {
 	}
 	if !slices.Equal(sizes(), []int{CompactChunkEntries, CompactChunkEntries}) {
 		t.Errorf("requests %v: the check goes on after a failed part", sizes())
+	}
+}
+
+// TestPollRetryQuiet waits after a transient polling error without a word at the default log level, and says one
+// neutral line for a wait long enough to look hung.
+func TestPollRetryQuiet(t *testing.T) {
+	logs := &logLines{}
+	gologger.DefaultLogger.SetWriter(logs)
+	gologger.DefaultLogger.SetMaxLevel(levels.LevelInfo)
+	t.Cleanup(func() { gologger.DefaultLogger.SetWriter(writer.NewCLI()) })
+	cause := fmt.Errorf("%w (HTTP 503)", ErrServiceUnavailable)
+	if err := pollRetry(context.Background(), cause, time.Millisecond); err != nil || len(logs.lines) != 0 {
+		t.Fatalf("err %v, logged %q", err, logs.lines)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := pollRetry(ctx, cause, 6*time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if len(logs.lines) != 1 || !strings.Contains(logs.lines[0], "waiting 6s for the API") || strings.Contains(logs.lines[0], "503") {
+		t.Errorf("logged %q", logs.lines)
 	}
 }

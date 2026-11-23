@@ -184,7 +184,9 @@ func TestProgressAroundLogLines(t *testing.T) {
 	var out bytes.Buffer
 	saved := progress.out
 	savedTerminal := progress.terminal
-	t.Cleanup(func() { progress.out, progress.terminal, progress.line, progress.failed = saved, savedTerminal, "", false })
+	t.Cleanup(func() {
+		progress.out, progress.terminal, progress.line, progress.failed = saved, savedTerminal, "", false
+	})
 	progress.out, progress.terminal = &out, func() bool { return true }
 	w := progressWriter{next: fakeLog{&out}}
 	w.Write([]byte("[INF] before any progress"), levels.LevelInfo)

@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/projectdiscovery/gologger"
 )
 
 // StackAdvisory is one advisory row of a stack item.
@@ -677,7 +679,7 @@ func (c *Client) WaitStackReady(ctx context.Context, id string) (StackResult, er
 		err = c.do(req, &p)
 		if transientPollError(ctx, err) && failures < maxPollFailures {
 			failures++
-			if err := sleepCtx(ctx, stackReadyPoll); err != nil {
+			if err := pollRetry(ctx, err, stackReadyPoll); err != nil {
 				return res, err
 			}
 			continue
@@ -711,6 +713,16 @@ const maxPollFailures = 3
 
 // transientPollError is an error a poll may meet once and not again: a network error or a 5xx. An answer that
 // refuses the request (400, 401, 404, a rate limit do() could not wait out) is the same on every poll.
+// pollRetry waits before polling again after a transient error, as the client waits before a retry: the error
+// only at debug level (a retry that then succeeds is not the user's concern), one neutral line for a long wait.
+func pollRetry(ctx context.Context, err error, wait time.Duration) error {
+	gologger.Debug().Msgf("SecurityContext: %v; polling again in %s", err, wait.Round(100*time.Millisecond))
+	if msg := waitNotice(wait, false); msg != "" {
+		gologger.Info().Msg(msg)
+	}
+	return sleepCtx(ctx, wait)
+}
+
 func transientPollError(ctx context.Context, err error) bool {
 	return err != nil && ctx.Err() == nil &&
 		!errors.Is(err, ErrBadRequest) && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrNotFound) &&
@@ -777,7 +789,7 @@ func (c *Client) WaitStack(ctx context.Context, id string, progress func(status 
 		res, err := c.getStack(ctx, id)
 		if transientPollError(ctx, err) && failures < maxPollFailures {
 			failures++
-			if err := sleepCtx(ctx, delay); err != nil {
+			if err := pollRetry(ctx, err, delay); err != nil {
 				return res, err
 			}
 			continue
@@ -993,7 +1005,7 @@ func (c *Client) CheckManyWith(ctx context.Context, entries []string, opts Check
 			return retry, err
 		}
 		if err != nil && len(entries) > size {
-			return all, fmt.Errorf("failed to check components %d to %d of %d: %w", start+1, end, len(entries), err)
+			return all, fmt.Errorf("checking components %d to %d of %d: %w", start+1, end, len(entries), err)
 		}
 		if err != nil {
 			return all, err
