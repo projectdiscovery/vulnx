@@ -36,12 +36,12 @@ var cpeFilterable = map[string]bool{
 	"published_before": true, "cwe": true, "remote": true, "authentication_required": true, "nvd_status": true,
 }
 
-func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, hasFacets bool, limit, offset int, all bool) (SearchResponse, error) {
+func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, hasFacets bool, limit, offset int, all bool, progress func(int, int)) (SearchResponse, error) {
 	var resp SearchResponse
 	if hasFacets {
 		return resp, unsupported("facets are not available with cpe: (a product version's CVE list)")
 	}
-	if len(tq.ids) > 0 {
+	if tq.idsSet {
 		return resp, unsupported("cve_id: and cpe: cannot be combined")
 	}
 	for k := range tq.params {
@@ -54,11 +54,8 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 			return resp, unsupported("%s cannot be combined with cpe: (it already names the product)", name)
 		}
 	}
-	filtered := len(tq.params) > 0
-	if sortKey == "published_date:desc" { // vulnx's default sort; a version's CVEs come most urgent first
-		sortKey = ""
-	}
-	full := filtered || sortKey != "" || all
+	// with no sort a version's CVEs keep the endpoint's order, most urgent first
+	full := len(tq.params) > 0 || sortKey != "" || all
 	ref := tq.cpe
 	path := fmt.Sprintf("/v1/products/%s/%s/versions/%s", url.PathEscape(ref.vendor), url.PathEscape(ref.product), url.PathEscape(ref.version))
 	want := offset + limit
@@ -97,8 +94,15 @@ func (c *Client) searchCPE(ctx context.Context, tq *scQuery, sortKey string, has
 		if full && max(p.AdvisoriesTotal, len(rows)) > cpeMaxRows {
 			return resp, unsupported("%s:%s %s has more than %d CVEs; filters, sorting and --all fetch at most %d (narrow with a bare --cpe search)", ref.vendor, ref.product, ref.version, cpeMaxRows, cpeMaxRows)
 		}
-		if p.Cursor == "" || len(p.Advisories) == 0 || (!full && len(rows) >= want) || seen[p.Cursor] {
+		if progress != nil {
+			progress(len(rows), resp.Total)
+		}
+		if p.Cursor == "" || len(p.Advisories) == 0 || !full && len(rows) >= want {
 			break
+		}
+		// the whole list is needed (or more rows than read): a repeated cursor would leave it incomplete
+		if seen[p.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(rows), max(p.AdvisoriesTotal, want))
 		}
 		seen[p.Cursor] = true
 		cursor = p.Cursor
@@ -210,9 +214,10 @@ func sortRows(rows []scCVE, sortKey string) {
 		case "epss_score":
 			return r.EpssScore
 		case "published_date", "modified_date":
-			d := cmp.Or(r.PublishedDate, r.PublishedAt)
+			// the same precedence toVulnerability shows
+			d := cmp.Or(r.PublishedAt, r.PublishedDate)
 			if field == "modified_date" {
-				d = cmp.Or(r.ModifiedDate, r.ModifiedAt)
+				d = cmp.Or(r.ModifiedAt, r.ModifiedDate)
 			}
 			if t := scTime(d); t != nil {
 				return float64(t.Unix())

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -52,25 +53,69 @@ func setParam(out *scQuery, field, k, val string) error {
 // scQuery is a translated search: the /v1/cves parameters, or one CVE id to fetch directly.
 type scQuery struct {
 	params url.Values
+	// ids is the set of CVE ids the query allows, in the order given; idsSet tells an empty set from no cve_id: term
 	ids    []string
+	idsSet bool
 	cpe    *cpeRef // a cpe: term: the CVEs of that product version
 	// productName is a product given without its vendor; the client resolves it to vendor:product.
 	productName string
 }
 
+// restrictIDs narrows the allowed CVE ids to those also in ids: terms joined by && must all hold.
+func (out *scQuery) restrictIDs(ids []string) error {
+	var set []string
+	for _, id := range ids {
+		if !slices.Contains(set, id) {
+			set = append(set, id)
+		}
+	}
+	if !out.idsSet {
+		out.ids, out.idsSet = set, true
+		return nil
+	}
+	var kept []string
+	for _, id := range out.ids {
+		if slices.Contains(set, id) {
+			kept = append(kept, id)
+		}
+	}
+	if len(kept) == 0 {
+		return unsupported("cve_id terms joined by && name no common CVE (%s and %s)", strings.Join(out.ids, ", "), strings.Join(set, ", "))
+	}
+	out.ids = kept
+	return nil
+}
+
+// setCPE records a cpe: term, rejecting a second, different one.
+func (out *scQuery) setCPE(ref *cpeRef) error {
+	if out.cpe != nil && *out.cpe != *ref {
+		return unsupported("one cpe: per search")
+	}
+	out.cpe = ref
+	return nil
+}
+
 // cpeRef is the product version a cpe: term names.
 type cpeRef struct{ vendor, product, version string }
 
-// parseCPE reads a CPE 2.3 string or a CPE 2.2 URI naming one product version.
+// parseCPE reads a CPE 2.3 formatted string or a CPE 2.2 URI naming one product version. Components are decoded
+// (2.3 backslash escapes, 2.2 percent-encoding). Attributes after the version (update, edition, language, target
+// software, ...) must be wildcards: the version endpoint lists a whole version and cannot narrow by them.
 func parseCPE(s string) (*cpeRef, error) {
 	s = strings.TrimSpace(s)
 	low := strings.ToLower(s)
 	var parts []string
 	switch {
 	case strings.HasPrefix(low, "cpe:2.3:"):
-		parts = strings.Split(s[len("cpe:2.3:"):], ":")
+		parts = splitEscaped(s[len("cpe:2.3:"):])
 	case strings.HasPrefix(low, "cpe:/"):
-		parts = strings.Split(s[len("cpe:/"):], ":")
+		for _, p := range strings.Split(s[len("cpe:/"):], ":") {
+			d, err := url.PathUnescape(p)
+			if err != nil {
+				return nil, unsupported("%q: %v", s, err)
+			}
+			parts = append(parts, d)
+		}
 	default:
 		return nil, unsupported("%q is not a CPE (cpe:2.3:a:vendor:product:version:... or cpe:/a:vendor:product:version)", s)
 	}
@@ -81,8 +126,36 @@ func parseCPE(s string) (*cpeRef, error) {
 	if ver == "" || ver == "*" || ver == "-" {
 		return nil, unsupported("%q has no version: give one to list the CVEs affecting it", s)
 	}
-	unesc := func(x string) string { return strings.ReplaceAll(x, "\\", "") }
-	return &cpeRef{vendor: strings.ToLower(unesc(parts[1])), product: strings.ToLower(unesc(parts[2])), version: unesc(ver)}, nil
+	names := []string{"update", "edition", "language", "software edition", "target software", "target hardware", "other"}
+	for i, v := range parts[4:] {
+		if v != "" && v != "*" && v != "-" {
+			name := "an attribute"
+			if i < len(names) {
+				name = names[i]
+			}
+			return nil, unsupported("%q sets %s %q; the version endpoint lists the whole version, so give it as *", s, name, v)
+		}
+	}
+	return &cpeRef{vendor: strings.ToLower(parts[1]), product: strings.ToLower(parts[2]), version: ver}, nil
+}
+
+// splitEscaped splits a CPE 2.3 formatted string on unescaped colons and removes the escaping backslashes.
+func splitEscaped(s string) []string {
+	var parts []string
+	var cur strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\\' && i+1 < len(s):
+			i++
+			cur.WriteByte(s[i])
+		case s[i] == ':':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(s[i])
+		}
+	}
+	return append(parts, cur.String())
 }
 
 type queryTerm struct {
@@ -124,7 +197,7 @@ func translateQuery(q string) (*scQuery, error) {
 	for _, c := range conjuncts {
 		c = strings.TrimSpace(c)
 		if c == "" {
-			continue
+			return nil, unsupported("an operand of && is empty in %q", q)
 		}
 		// "(a && b)" inside a conjunct: flatten
 		if inner, ok := stripParens(c); ok {
@@ -152,9 +225,15 @@ func translateQuery(q string) (*scQuery, error) {
 						}
 					}
 				}
-				out.ids = append(out.ids, sub.ids...)
+				if sub.idsSet {
+					if err := out.restrictIDs(sub.ids); err != nil {
+						return nil, err
+					}
+				}
 				if sub.cpe != nil {
-					out.cpe = sub.cpe
+					if err := out.setCPE(sub.cpe); err != nil {
+						return nil, err
+					}
 				}
 				if sub.productName != "" {
 					if out.productName != "" && out.productName != sub.productName {
@@ -219,24 +298,29 @@ var boolParam = map[string]string{
 	"is_oss":    "oss",
 }
 
-// datePeriod reads 2024, 2024-03 or 2024-03-05 as [start, end): the first day and the day after the period.
+// datePeriod reads 2024, 2024-03, 2024-03-05 or an RFC 3339 timestamp (its day) as [start, end): the first day and
+// the day after the period. The whole value must match one of these forms.
 func datePeriod(d string) (string, string, bool) {
+	day := func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 	for _, f := range []struct {
 		layout string
 		next   func(time.Time) time.Time
 	}{
-		{"2006-01-02", func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }},
+		{"2006-01-02", day},
 		{"2006-01", func(t time.Time) time.Time { return t.AddDate(0, 1, 0) }},
 		{"2006", func(t time.Time) time.Time { return t.AddDate(1, 0, 0) }},
+		{time.RFC3339, day},
 	} {
-		if len(d) >= len(f.layout) {
-			if t, err := time.Parse(f.layout, d[:len(f.layout)]); err == nil && (len(d) == len(f.layout) || f.layout == "2006-01-02") {
-				return t.Format("2006-01-02"), f.next(t).Format("2006-01-02"), true
-			}
+		if t, err := time.Parse(f.layout, d); err == nil {
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+			return t.Format("2006-01-02"), f.next(t).Format("2006-01-02"), true
 		}
 	}
 	return "", "", false
 }
+
+// nowUTC is the clock age_in_days counts from.
+var nowUTC = func() time.Time { return time.Now().UTC() }
 
 func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) error {
 	field := strings.ToLower(t.field)
@@ -262,8 +346,7 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if t.neg {
 			b = !b
 		}
-		out.params.Set(p, strconv.FormatBool(b))
-		return nil
+		return setParam(out, t.field, p, strconv.FormatBool(b))
 	}
 	switch field {
 	case "cpe":
@@ -274,17 +357,12 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if err != nil {
 			return err
 		}
-		if out.cpe != nil && *out.cpe != *ref {
-			return unsupported("one cpe: per search")
-		}
-		out.cpe = ref
-		return nil
+		return out.setCPE(ref)
 	case "cve_id", "id", "doc_id":
 		if t.neg || !IsCVEID(v) {
 			return unsupported("%s:%s: only CVE ids are served (template records without a CVE are not)", t.field, v)
 		}
-		out.ids = append(out.ids, strings.ToUpper(v))
-		return nil
+		return out.restrictIDs([]string{strings.ToUpper(v)})
 	case "severity":
 		return set("severity", strings.ToLower(v))
 	case "vuln_status", "nvd_status":
@@ -324,7 +402,7 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if t.neg || op != ">=" {
 			return unsupported("%s takes a minimum only (%s:>=N); SecurityContext has no upper bound or exact match", t.field, t.field)
 		}
-		if _, err := strconv.ParseFloat(num, 64); err != nil {
+		if f, err := strconv.ParseFloat(num, 64); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 			return unsupported("%s:%s is not a number", t.field, v)
 		}
 		return set(map[string]string{"cvss_score": "min_cvss", "epss_score": "min_epss"}[field], num)
@@ -340,7 +418,7 @@ func applyTerm(out *scQuery, t queryTerm, addExploit func(string, bool) error) e
 		if t.neg {
 			return unsupported("NOT age_in_days is not supported")
 		}
-		today := time.Now().UTC()
+		today := nowUTC()
 		day := func(d int) string { return today.AddDate(0, 0, -d).Format("2006-01-02") }
 		switch op {
 		case "<":
@@ -430,13 +508,14 @@ func applyOr(out *scQuery, terms []queryTerm, addExploit func(string, bool) erro
 	case "vendor", "affected_products.vendor", "product", "affected_products.product":
 		return unsupported("one %s per search (got %s); SecurityContext filters on one", strings.TrimPrefix(field, "affected_products."), strings.Join(values, ", "))
 	case "cve_id", "id", "doc_id":
-		for _, v := range values {
+		ids := make([]string, len(values))
+		for i, v := range values {
 			if !IsCVEID(v) {
 				return unsupported("%s:%s: only CVE ids are served", field, v)
 			}
-			out.ids = append(out.ids, strings.ToUpper(v))
+			ids[i] = strings.ToUpper(v)
 		}
-		return nil
+		return out.restrictIDs(ids)
 	case "":
 		return unsupported("OR between keywords (%s) is not supported: keywords are all required; run one search per keyword", strings.Join(values, " || "))
 	}
@@ -548,8 +627,9 @@ func parseTerm(s string) (queryTerm, error) {
 	return t, nil
 }
 
-// splitTop splits s on op outside parentheses and quotes.
+// splitTop splits s on op outside parentheses and quotes. The words AND and OR (spaced) count as && and ||.
 func splitTop(s, op string) ([]string, error) {
+	word := map[string]string{"&&": " AND ", "||": " OR "}[op]
 	var parts []string
 	depth, inQuote, start := 0, false, 0
 	for i := 0; i < len(s); i++ {
@@ -568,25 +648,27 @@ func splitTop(s, op string) ([]string, error) {
 				}
 			}
 		default:
-			if !inQuote && depth == 0 && strings.HasPrefix(s[i:], op) {
+			if inQuote || depth != 0 {
+				continue
+			}
+			n := 0
+			switch {
+			case strings.HasPrefix(s[i:], op):
+				n = len(op)
+			case strings.HasPrefix(s[i:], word):
+				n = len(word)
+			}
+			if n > 0 {
 				parts = append(parts, s[start:i])
-				start = i + len(op)
-				i += len(op) - 1
+				start = i + n
+				i += n - 1
 			}
 		}
 	}
 	if depth != 0 || inQuote {
 		return nil, unsupported("unbalanced parentheses or quotes in %q", s)
 	}
-	parts = append(parts, s[start:])
-	// a top-level " AND " / " OR " written as words
-	if op == "&&" && len(parts) == 1 && strings.Contains(s, " AND ") {
-		return splitTop(strings.ReplaceAll(s, " AND ", " && "), op)
-	}
-	if op == "||" && len(parts) == 1 && strings.Contains(s, " OR ") {
-		return splitTop(strings.ReplaceAll(s, " OR ", " || "), op)
-	}
-	return parts, nil
+	return append(parts, s[start:]), nil
 }
 
 // stripParens removes one pair of parentheses that wraps the whole of s.
@@ -709,8 +791,12 @@ func translateFacets(term, rangeFacets []string, defaultSize int) ([]facetReq, s
 			dims = append(dims, m.facet)
 		}
 	}
-	if len(dims) > scMaxFacets {
-		return nil, "", unsupported("at most %d facets per search (asked: %s)", scMaxFacets, strings.Join(dims, ", "))
+	if len(reqs) > scMaxFacets {
+		names := make([]string, len(reqs))
+		for i, r := range reqs {
+			names[i] = r.name
+		}
+		return nil, "", unsupported("at most %d facets per search (asked: %s)", scMaxFacets, strings.Join(names, ", "))
 	}
 	return reqs, strings.Join(dims, ","), nil
 }
@@ -731,6 +817,12 @@ func buildFacets(reqs []facetReq, sc map[string][]scBucket, total int) map[strin
 				}
 			}
 			buckets = []map[string]any{{"key": "true", "count": float64(n)}, {"key": "false", "count": float64(total - n)}}
+			if total-n > n {
+				buckets[0], buckets[1] = buckets[1], buckets[0]
+			}
+			if r.size > 0 && r.size < len(buckets) {
+				buckets = buckets[:r.size]
+			}
 		} else {
 			for _, b := range sc[r.facet] {
 				if r.size > 0 && len(buckets) >= r.size {

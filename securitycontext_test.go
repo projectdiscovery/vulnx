@@ -10,8 +10,19 @@ import (
 	"time"
 )
 
+// fixClock pins the clock age_in_days counts from, so expected dates cannot drift across midnight.
+func fixClock(t *testing.T) time.Time {
+	t.Helper()
+	now := time.Date(2026, 11, 23, 12, 0, 0, 0, time.UTC)
+	orig := nowUTC
+	nowUTC = func() time.Time { return now }
+	t.Cleanup(func() { nowUTC = orig })
+	return now
+}
+
 func TestTranslateQuery(t *testing.T) {
-	day := func(d int) string { return time.Now().UTC().AddDate(0, 0, -d).Format("2006-01-02") }
+	now := fixClock(t)
+	day := func(d int) string { return now.AddDate(0, 0, -d).Format("2006-01-02") }
 	cases := []struct {
 		q    string
 		want map[string]string
@@ -81,6 +92,19 @@ func TestTranslateQueryRejects(t *testing.T) {
 		"is_kev:true && is_kev:false",
 		"(severity:high",
 		"apache NOT tomcat",
+		"&&",
+		"severity:high && ",
+		"is_remote:true && is_remote:false",
+		"is_auth:true && NOT is_auth:true",
+		"cve_id:CVE-2021-44228 && cve_id:CVE-2023-4966",
+		"cve_id:CVE-2021-44228 && (cve_id:CVE-2023-4966 || cve_id:CVE-2024-3400)",
+		"cvss_score:>=NaN",
+		"epss_score:>=Inf",
+		"cve_created_at:2024-03-05oops",
+		"cve_created_at:2024-13",
+		"cpe:2.3:a:apache:tomcat:8.5.62:*:*:*:*:*:*:* && (cpe:2.3:a:apache:tomcat:9.0.0:*:*:*:*:*:*:* && severity:high)",
+		"cpe:2.3:a:microsoft:windows_10:1607:sp1:*:*:*:*:*:*",
+		"cpe:2.3:a:vendor:product:1.0:*:*:*:*:node.js:*:*",
 	} {
 		_, err := translateQuery(q)
 		if err == nil {
@@ -104,8 +128,8 @@ func TestSortAndFacets(t *testing.T) {
 	if _, err := sortParam(nil, s("poc_count")); err == nil {
 		t.Error("sort poc_count accepted")
 	}
-	reqs, dims, err := translateFacets([]string{"severity:5", "is_kev", "is_poc", "affected_products.vendor:10"}, nil, 10)
-	if err != nil || dims != "severity,exploit,vendor" || len(reqs) != 4 {
+	reqs, dims, err := translateFacets([]string{"severity:5", "is_kev", "affected_products.vendor:10"}, nil, 10)
+	if err != nil || dims != "severity,exploit,vendor" || len(reqs) != 3 {
 		t.Fatalf("facets: %v %q %v", reqs, dims, err)
 	}
 	f := buildFacets(reqs, map[string][]scBucket{
@@ -113,8 +137,20 @@ func TestSortAndFacets(t *testing.T) {
 		"exploit":  {{Value: "known_exploited", Count: 2}},
 	}, 10)
 	kev := f["is_kev"].(map[string]any)["buckets"].([]any)
-	if kev[0].(map[string]any)["count"].(float64) != 2 || kev[1].(map[string]any)["count"].(float64) != 8 {
-		t.Errorf("is_kev buckets: %v", kev)
+	if len(kev) != 2 || kev[0].(map[string]any)["key"] != "false" || kev[0].(map[string]any)["count"].(float64) != 8 ||
+		kev[1].(map[string]any)["count"].(float64) != 2 {
+		t.Errorf("is_kev buckets, largest first: %v", kev)
+	}
+	reqs, _, err = translateFacets([]string{"is_kev:1"}, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := buildFacets(reqs, map[string][]scBucket{"exploit": {{Value: "known_exploited", Count: 2}}}, 10)
+	if b := one["is_kev"].(map[string]any)["buckets"].([]any); len(b) != 1 || b[0].(map[string]any)["key"] != "false" {
+		t.Errorf("is_kev:1 buckets: %v", b)
+	}
+	if _, _, err := translateFacets([]string{"severity", "is_kev", "is_vkev", "is_poc"}, nil, 0); err == nil {
+		t.Error("4 facets sharing 2 dimensions accepted")
 	}
 	if _, _, err := translateFacets([]string{"tags"}, nil, 0); err == nil {
 		t.Error("facet tags accepted")
@@ -238,5 +274,51 @@ func TestFacetFields(t *testing.T) {
 		if f.FacetPossible && !slices.Contains(fields, f.Field) {
 			t.Errorf("filter %s says it can be faceted but is not a facet field", f.Field)
 		}
+	}
+}
+
+func TestTranslateQueryEdgeCases(t *testing.T) {
+	for q, want := range map[string]map[string]string{
+		"is_remote:true && is_remote:true":          {"remote": "true"},
+		"description:'research AND development'":    {"q": "research AND development"},
+		`"research OR development" && severity:low`: {"q": "research OR development", "severity": "low"},
+		"severity:high AND is_kev:true":             {"severity": "high", "exploit": "known_exploited"},
+		"cve_created_at:2024-03-05T10:00:00Z":       {"published_since": "2024-03-05", "published_before": "2024-03-06"},
+	} {
+		got, err := translateQuery(q)
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
+		}
+		for k, v := range want {
+			if got.params.Get(k) != v {
+				t.Errorf("%q: %s=%q, want %q (all: %v)", q, k, got.params.Get(k), v, got.params)
+			}
+		}
+	}
+	got, err := translateQuery("(cve_id:CVE-2021-44228 || cve_id:CVE-2023-4966) && cve_id:cve-2023-4966")
+	if err != nil || !slices.Equal(got.ids, []string{"CVE-2023-4966"}) {
+		t.Errorf("AND of id sets: %v %v, want the intersection", got.ids, err)
+	}
+	got, err = translateQuery("cve_id:CVE-2021-44228 || cve_id:cve-2021-44228")
+	if err != nil || !slices.Equal(got.ids, []string{"CVE-2021-44228"}) {
+		t.Errorf("OR of the same id: %v %v", got.ids, err)
+	}
+}
+
+func TestParseCPEDecoding(t *testing.T) {
+	for in, want := range map[string]cpeRef{
+		`cpe:2.3:a:vendor:product:1.2\:3:*:*:*:*:*:*:*`: {"vendor", "product", "1.2:3"},
+		`cpe:2.3:a:ven\_dor:product:2.0:-:*:*:*:*:*:*`:  {"ven_dor", "product", "2.0"},
+		"cpe:/a:vendor:product:1.2%2b3":                 {"vendor", "product", "1.2+3"},
+		"cpe:/a:apache:tomcat:8.5.62":                   {"apache", "tomcat", "8.5.62"},
+	} {
+		got, err := parseCPE(in)
+		if err != nil || *got != want {
+			t.Errorf("%s: %+v %v, want %+v", in, got, err, want)
+		}
+	}
+	if _, err := parseCPE("cpe:/a:vendor:product:1.0:sp1"); err == nil {
+		t.Error("a 2.2 CPE with an update was accepted")
 	}
 }

@@ -41,7 +41,6 @@ import (
 	"net/url"
 	"os"
 	"runtime/debug"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,8 +151,9 @@ func WithClient(hc *retryablehttp.Client) Option {
 
 // WithUserAgent sets the User-Agent sent with every request; an empty value keeps the default.
 func WithUserAgent(ua string) Option {
+	ua = strings.TrimSpace(ua)
 	return func(c *Client) {
-		if ua = strings.TrimSpace(ua); ua != "" {
+		if ua != "" {
 			c.userAgent = ua
 		}
 	}
@@ -270,6 +270,13 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 	if params.Offset != nil {
 		offset = *params.Offset
 	}
+	if offset < 0 || limit < 0 {
+		return resp, unsupported("offset and limit must not be negative")
+	}
+	// compared without adding, so a huge offset cannot wrap around
+	if !params.All && (offset > MaxResultWindow || limit > MaxResultWindow-offset) {
+		return resp, unsupported("offset + limit can be at most %d (SecurityContext pages by cursor, %d rows a request); set All (vulnx search --all) to fetch every result", MaxResultWindow, scMaxPage)
+	}
 
 	if tq.cpe != nil {
 		if strings.Contains(tq.params.Get("exploit"), "ransomware") {
@@ -279,22 +286,20 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 			!strings.HasPrefix(sortKey, "published_date") && !strings.HasPrefix(sortKey, "modified_date") {
 			return resp, unsupported("with cpe:, sort by cve_created_at, cve_updated_at, cvss_score or epss_score")
 		}
-		r, err := c.searchCPE(ctx, tq, sortKey, len(facetReqs) > 0, limit, offset, params.All)
+		r, err := c.searchCPE(ctx, tq, sortKey, len(facetReqs) > 0, limit, offset, params.All, params.Progress)
 		r.fields = params.Fields
 		return r, err
 	}
 
-	if len(tq.ids) > 0 {
-		return c.lookupIDs(ctx, tq, limit, offset, params.Fields)
+	if tq.idsSet {
+		if params.All {
+			limit = len(tq.ids)
+		}
+		return c.lookupIDs(ctx, tq, limit, offset, params.Fields, params.Progress)
 	}
 
-	if !params.All && offset+limit > MaxResultWindow {
-		return resp, unsupported("offset + limit can be at most %d (SecurityContext pages by cursor, %d rows a request); set All (vulnx search --all) to fetch every result", MaxResultWindow, scMaxPage)
-	}
 	query := tq.params
-	if sortKey != "" {
-		query.Set("sort", sortKey)
-	}
+	query.Set("sort", cmp.Or(sortKey, defaultSort))
 	if facets != "" {
 		query.Set("facets", facets)
 	}
@@ -329,6 +334,7 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 				limit, want = max(list.Total-offset, 0), list.Total
 			}
 		}
+		pageRows := len(list.Items)
 		for i := range list.Items {
 			consumed++
 			if skipped < offset {
@@ -342,7 +348,17 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 		if params.Progress != nil {
 			params.Progress(len(resp.Results), resp.Total)
 		}
-		if list.Cursor == "" || len(list.Items) == 0 || consumed >= want || seen[list.Cursor] {
+		if consumed >= want {
+			break
+		}
+		// the search is short of the rows it needs: an end of paging here leaves the result incomplete
+		if seen[list.Cursor] {
+			return resp, incomplete("the server repeated a page cursor", len(resp.Results), limit)
+		}
+		if list.Cursor == "" || pageRows == 0 {
+			if params.All {
+				return resp, incomplete("paging ended early", len(resp.Results), limit)
+			}
 			break
 		}
 		seen[list.Cursor] = true
@@ -352,21 +368,26 @@ func (c *Client) SearchVulnerabilities(ctx context.Context, params SearchParams)
 	return resp, nil
 }
 
+// defaultSort is the order of a search that sets no sort: newest first.
+const defaultSort = "published_date:desc"
+
+// incomplete reports a paged search that stopped before returning the rows it needed. The rows fetched so far are
+// in the response, but they are not the full result.
+func incomplete(why string, got, want int) error {
+	return wrapErr(ErrUnknownAPIError, fmt.Errorf("%s after %d of %d results; the index may have changed during the search, retry", why, got, want))
+}
+
 // lookupIDs fetches cve_id: terms one record at a time; Total counts the distinct ids asked for, found or not.
-func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, fields []string) (SearchResponse, error) {
+func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, fields []string, progress func(int, int)) (SearchResponse, error) {
 	resp := SearchResponse{fields: fields}
 	if len(tq.params) > 0 {
 		return resp, unsupported("cve_id: cannot be combined with other filters")
 	}
-	var ids []string
-	for _, id := range tq.ids {
-		if !slices.Contains(ids, id) {
-			ids = append(ids, id)
-		}
-	}
+	ids := tq.ids
 	resp.Total = len(ids)
 	// offset and limit page through the ids asked for, so a missing id leaves its page short
-	for _, id := range ids[min(offset, len(ids)):min(offset+limit, len(ids))] {
+	start := min(offset, len(ids))
+	for _, id := range ids[start : start+min(limit, len(ids)-start)] {
 		one, err := c.GetVulnerabilityByID(ctx, id, nil)
 		if errors.Is(err, ErrNotFound) {
 			continue
@@ -375,6 +396,9 @@ func (c *Client) lookupIDs(ctx context.Context, tq *scQuery, limit, offset int, 
 			return resp, err
 		}
 		resp.Results = append(resp.Results, *one.Data)
+		if progress != nil {
+			progress(len(resp.Results), resp.Total)
+		}
 	}
 	resp.Count = len(resp.Results)
 	return resp, nil
@@ -463,17 +487,23 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.apiKey != "" {
-		if keySafeURL(req.URL) {
-			req.Header.Set(apiKeyHeader, c.apiKey)
-		} else {
-			c.keyWarn.Do(func() {
-				gologger.Error().Msgf("the API key is not sent to %s: a key goes only over https or to a loopback host", req.URL.Host)
-			})
-		}
-	}
-	req.Header.Set("User-Agent", c.userAgent)
+	c.setHeaders(req)
 	return req, nil
+}
+
+// setHeaders sets the User-Agent and, when the URL allows it, the API key.
+func (c *Client) setHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", c.userAgent)
+	if c.apiKey == "" {
+		return
+	}
+	if keySafeURL(req.URL) {
+		req.Header.Set(apiKeyHeader, c.apiKey)
+		return
+	}
+	c.keyWarn.Do(func() {
+		gologger.Error().Msgf("the API key is not sent to %s: a key goes only over https or to a loopback host", req.URL.Host)
+	})
 }
 
 // keySafeURL reports whether an API key may be sent to u: over https, or to a loopback host.
@@ -573,33 +603,34 @@ func (c *Client) discard(resp *http.Response) {
 
 // retryDelay decides whether a failed attempt is retried and after how long: a 429 or 503 (the server did not
 // act on the request) with a Retry-After of at most maxRateLimitWait, and, for GET and HEAD only, a network
-// error or another 5xx. A POST that may have reached the server is not sent twice.
+// error, another 5xx, or a 503 without a usable Retry-After. A POST that may have reached the server is not
+// sent twice.
 func (c *Client) retryDelay(req *http.Request, resp *http.Response, err error) (time.Duration, bool) {
 	if req.Context().Err() != nil {
 		return 0, false
 	}
 	idempotent := req.Method == http.MethodGet || req.Method == http.MethodHead
 	if err != nil {
-		return c.retryWait, idempotent
+		// a response with an error is a redirect the redirect policy refused, not a network failure
+		return c.retryWait, idempotent && resp == nil
 	}
 	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable &&
 		(!idempotent || resp.StatusCode < 500) {
 		return 0, false
 	}
-	if wait, ok := retryAfter(resp.Header.Get("Retry-After")); ok {
+	if wait, ok := retryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
 		return wait, wait <= maxRateLimitWait
 	}
 	// a 429 without Retry-After says nothing about when to come back
-	return c.retryWait, resp.StatusCode != http.StatusTooManyRequests
+	return c.retryWait, idempotent && resp.StatusCode != http.StatusTooManyRequests
 }
 
 // handleAPIError turns a non-2xx response into an error carrying the server's message, cleaned for a terminal.
 func (c *Client) handleAPIError(resp *http.Response) error {
-	if resp.StatusCode == http.StatusNotFound {
-		return ErrNotFound
-	}
 	kind := ErrUnknownAPIError
 	switch resp.StatusCode {
+	case http.StatusNotFound:
+		kind = ErrNotFound
 	case http.StatusBadRequest:
 		kind = ErrBadRequest
 	case http.StatusUnauthorized:
@@ -651,11 +682,22 @@ func wrapErr(sentinel, cause error) error {
 	return fmt.Errorf("%w: %w", sentinel, cause)
 }
 
-// retryAfter reads a Retry-After header given in seconds.
-func retryAfter(h string) (time.Duration, bool) {
-	n, err := strconv.Atoi(strings.TrimSpace(h))
-	if err != nil || n < 0 {
+// retryAfter reads a Retry-After header, in seconds or as an HTTP date, as a wait from now. A wait past
+// maxRateLimitWait is reported as just over it, so a huge value cannot overflow into a short wait.
+func retryAfter(h string, now time.Time) (time.Duration, bool) {
+	h = strings.TrimSpace(h)
+	if n, err := strconv.ParseInt(h, 10, 64); err == nil {
+		if n < 0 {
+			return 0, false
+		}
+		if n > int64(maxRateLimitWait/time.Second) {
+			return maxRateLimitWait + time.Second, true
+		}
+		return time.Duration(n)*time.Second + 500*time.Millisecond, true
+	}
+	t, err := http.ParseTime(h)
+	if err != nil {
 		return 0, false
 	}
-	return time.Duration(n)*time.Second + 500*time.Millisecond, true
+	return min(max(t.Sub(now), 0), maxRateLimitWait+time.Second) + 500*time.Millisecond, true
 }
