@@ -83,6 +83,9 @@ func TestEnrichRuntimeInventory(t *testing.T) {
 }
 
 func TestRuntimeInventoryMixedGenerations(t *testing.T) {
+	// os.SameFile on Windows reads a stat's file ID through its path when first asked, so after the rename the
+	// old generation's identity is the new file's: telling generations apart needs a Unix inode
+	skipOnWindows(t)
 	path := filepath.Join(t.TempDir(), "tool")
 	runtimeInventoryFile(t, path)
 	old := runtimeInventoryProcess(t, 1, path)
