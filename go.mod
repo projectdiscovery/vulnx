@@ -6,9 +6,9 @@ require (
 	github.com/jedib0t/go-pretty/v6 v6.9.2
 	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/pkg/errors v0.9.1
-	github.com/projectdiscovery/gologger v1.1.76
-	github.com/projectdiscovery/retryablehttp-go v1.3.35
-	github.com/projectdiscovery/utils v0.11.14
+	github.com/projectdiscovery/gologger v1.1.77
+	github.com/projectdiscovery/retryablehttp-go v1.3.36
+	github.com/projectdiscovery/utils v0.11.16
 	github.com/shirou/gopsutil/v4 v4.26.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
@@ -63,11 +63,11 @@ require (
 	github.com/muesli/termenv v0.15.3-0.20240618155329-98d742f6907a // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/projectdiscovery/blackrock v0.0.2 // indirect
-	github.com/projectdiscovery/fastdialer v0.6.2 // indirect
-	github.com/projectdiscovery/hmap v0.0.104 // indirect
+	github.com/projectdiscovery/fastdialer v0.6.3 // indirect
+	github.com/projectdiscovery/hmap v0.0.105 // indirect
 	github.com/projectdiscovery/machineid v0.0.0-20250715113114-c77eb3567582 // indirect
-	github.com/projectdiscovery/networkpolicy v0.1.58 // indirect
-	github.com/projectdiscovery/retryabledns v1.0.118 // indirect
+	github.com/projectdiscovery/networkpolicy v0.1.59 // indirect
+	github.com/projectdiscovery/retryabledns v1.0.119 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
